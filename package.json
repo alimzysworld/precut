@@ -1,0 +1,44 @@
+{
+  "name": "precut",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json",
+    "dist": "electron-vite build && electron-builder --mac dmg --arm64"
+  },
+  "dependencies": {
+    "@blocknote/core": "0.56.0",
+    "@blocknote/mantine": "0.56.0",
+    "@blocknote/react": "0.56.0",
+    "@mantine/core": "8.3.18",
+    "@mantine/hooks": "8.3.18",
+    "@phosphor-icons/react": "^2.1.10",
+    "framer-motion": "^12.23.24",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
+    "react-peeps": "^0.1.10"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.14",
+    "@types/node": "^22.15.3",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^35.2.1",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^3.1.0",
+    "playwright": "^1.49.1",
+    "tailwindcss": "^4.1.14",
+    "typescript": "^5.7.3",
+    "vite": "^6.3.5"
+  },
+  "description": "Tag a shoot, sync a mic and cut precuts and selects for DaVinci Resolve.",
+  "license": "MIT",
+  "author": "sidething"
+}

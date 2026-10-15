@@ -1,0 +1,43 @@
+appId: com.sidething.precut
+productName: precut
+directories:
+  output: dist
+  buildResources: build
+asar: true
+files:
+  - out/main/**
+  - out/preload/**
+  - out/renderer/**
+  - package.json
+  - "!out/web/**"
+  - "!**/{fixtures,qa,briefs,docs,reference}/**"
+  - "!**/{__pycache__,.pytest_cache}/**"
+  - "!**/*.pyc"
+extraResources:
+  - from: pipeline
+    to: pipeline
+    filter:
+      - "**/*.py"
+      - "**/*.swift"
+      - "!**/__pycache__/**"
+  - from: prompts
+    to: prompts
+    filter:
+      - "**/*.md"
+mac:
+  target:
+    - target: dmg
+      arch:
+        - arm64
+  identity: null
+  icon: build/icon.icns
+artifactName: precut.${ext}
+dmg:
+  sign: false
+  contents:
+    - x: 130
+      y: 180
+    - x: 410
+      y: 180
+      type: link
+      path: /Applications

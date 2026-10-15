@@ -1,0 +1,11 @@
+node_modules/
+out/
+dist/
+qa/S2/fixture/
+.DS_Store
+tsconfig.*.tsbuildinfo
+qa/logs/
+qa/R2/music/
+__pycache__/
+*.pyc
+qa/**/userdata/
