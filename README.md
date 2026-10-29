@@ -4,6 +4,14 @@ precut turns a folder of raw footage into first edits for short videos. Point it
 
 precut is made by sidething and is free software under the GNU AGPL, version 3.
 
+![A shoot open on Ideas: the ideas precut made from the footage, some with an edit ready](screenshots/01-shoot.jpg)
+
+![An edit open: the 9:16 preview with captions on, the tools rail and the timeline](screenshots/02-editor.jpg)
+
+![The Look panel on the same edit, with looks to pick from and their strength](screenshots/03-look.jpg)
+
+![A finished export, with post copy for each place you post](screenshots/04-export.png)
+
 ## Start in a minute
 
 1. Download `precut.dmg` from [Releases](https://github.com/alimzysworld/precut/releases), open it and drag precut into Applications. It is signed with sidething's Developer ID and notarised by Apple.
