@@ -1,141 +1,281 @@
-import { useEffect, useState } from "react";
-import { AnimatePresence, LayoutGroup, motion } from "framer-motion";
-import { CircleNotch } from "@phosphor-icons/react";
-import type { Cut, ReelIdea, Shoot, SidekickMessage } from "../../../shared/schema";
-import { frameAt, getApi } from "../data";
+import { useModelAccess, openModelSignIn, ModelSignIn } from "../components/ModelAccess";
+import { InlineError, Row } from "../components/ui";
+import { useActivity } from "../components/Activity";
+import { useEffect, useRef, useState } from "react";
+import { ChevronLeft as ArrowLeft, Close } from "../components/icons";
+import type { Cut, ReelIdea, Shoot, ShootRequest, SkillFormat } from "../../../shared/schema";
+import { getApi } from "../data";
 import { go, useNav } from "../nav";
-import { dur, ease, imgIn, spring } from "../motion";
-import { Button, EmptyState, FOCUS, Img, MotionItem, MotionList, reducedTransition, useMotionPresets } from "../components/ui";
-import { refreshSidekick, selectSidekickCut, SidekickChat, sidekickSend, useSidekickWorkspace } from "../components/SidekickChat";
+import { Badge, Button, EmptyState, FOCUS, SegmentedControl } from "../components/ui";
+import { useShortcuts } from "../hooks/useShortcuts";
+import { refreshSidekick, selectSidekickCut, useSidekickWorkspace } from "../components/SidekickChat";
+import { AskPanel } from "../components/finish/AskPanel";
+import { useAskWorkspace, setAskWorkspace } from "../components/finish/askWorkspace";
+import { ShortcutSheet } from "../components/ShortcutSheet";
+import { IdeaCard, ideaDraftState, ideaReadiness, type BoardIdea } from "../components/ideas/IdeaCard";
+import { shootCanMake } from "../components/videoTypes";
+import { usePageActive } from "../hooks/usePageActivity";
 
-// Resolve historical take and b-roll ids in the same shoot order as CutView.
-function ideaFrames(shoot: Shoot, uses: string[]) {
-  const broll = shoot.clips.flatMap((clip) => {
-    const judgement = clip.judgement;
-    if (!judgement || !(String(judgement.kind).replace("-", "") === "broll" || (judgement.verdict === "maybe" && /b-?roll/i.test(judgement.summary)))) return [];
-    const spans = judgement.usableSpans.length ? judgement.usableSpans : [[0, clip.meta?.durationS ?? 0]];
-    return spans.map(([s]) => ({ clipId: clip.id, s }));
-  });
-  return uses.flatMap((id) => {
-    const voice = /^L(\d+)A(\d+)$/i.exec(id);
-    const attempt = voice ? shoot.takes.find((take) => take.lineIndex === Number(voice[1]) - 1)?.attempts[Number(voice[2]) - 1] : undefined;
-    const b = /^B(\d+)$/i.exec(id);
-    const moment = attempt ?? (b ? broll[Number(b[1]) - 1] : undefined);
-    const src = moment ? frameAt(shoot, moment.clipId, moment.s) : null;
-    return src ? [{ id, src }] : [];
-  }).slice(0, 4);
+export type IdeaFilter = "all" | "ready" | "missing" | "requests";
+export function matchesIdea(idea: ReelIdea, filter: IdeaFilter, query: string) {
+  if (filter === "ready" && ideaReadiness(idea) !== "Ready") return false;
+  if (filter === "missing" && ideaReadiness(idea) !== "Needs footage") return false;
+  if (filter === "requests" && !idea.requestId) return false;
+  return [idea.title, idea.concept, idea.hook, ...idea.missing].join(" ").toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
 }
+const plainError = (error: unknown, fallback: string) => error instanceof Error && error.message.length < 350
+  ? error.message.replace(/^Error invoking remote method '[^']+':\s*/i, "") : fallback;
 
 export default function IdeasPage() {
+  const active = usePageActive();
   const { params } = useNav();
   const [shoot, setShoot] = useState<Shoot | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
+    if (!active) return;
     let alive = true;
     let request = 0;
-    setLoading(true); setShoot(null); setError(null);
+    let reading = false, pending = false;
+    if (!shoot || params.shoot && shoot.root !== params.shoot) { setLoading(true); setShoot(null); }
+    setError(null);
     let activeRoot = params.shoot;
     const load = async () => {
+      if (!alive) return;
+      if (reading) { pending = true; return; }
+      reading = true;
       const current = ++request;
       try {
-        activeRoot ??= (await getApi().listShoots()).find((entry) => entry.online)?.root;
+        activeRoot ??= (await getApi().listShoots()).find(entry => entry.online)?.root;
         const result = activeRoot ? await getApi().loadShoot(activeRoot) : null;
         if (alive && current === request) setShoot(result);
       } catch { if (alive && current === request) setError("Couldn't load this shoot. Check its drive is connected and reopen it."); }
-      finally { if (alive && current === request) setLoading(false); }
+      finally {
+        reading = false;
+        if (alive && current === request) setLoading(false);
+        if (alive && pending) { pending = false; void load(); }
+      }
     };
     void load();
-    const off = getApi().onProgress((event) => { if (event.root === activeRoot) void load(); });
+    const off = getApi().onProgress(event => { if (event.root === activeRoot && event.stage !== 'proxy') void load(); });
     return () => { alive = false; off(); };
-  }, [params.shoot]);
-  if (loading) return <p role="status" className="text-[13px] text-muted">Loading ideas…</p>;
-  if (!shoot) return <EmptyState title="Pick a shoot first" body={error ?? "Open a shoot to find ideas in its footage."}><Button variant="primary" onClick={() => go("shoots")}>Go to folder</Button></EmptyState>;
+  }, [params.shoot, active]);
+  if (loading) return <p role="status" className="text-small text-muted">Loading ideas…</p>;
+  if (!shoot) return <EmptyState title="Pick a shoot first" body={error ?? "Open a shoot to find ideas in its footage."}><Button variant="primary" onClick={() => go("shoots")}>Go to shoots</Button></EmptyState>;
+  // Saved ideas and cached storyboards remain available without a model sign-in.
   return <IdeasWorkspace key={shoot.root} shoot={shoot} />;
 }
 
-function IdeasWorkspace({ shoot }: { shoot: Shoot }) {
+export function IdeasWorkspace({ shoot }: { shoot: Shoot }) {
+  const active = usePageActive();
+  const modelReady = useModelAccess();
   const state = useSidekickWorkspace(shoot.root);
+  const ask = useAskWorkspace(shoot.root);
+  const [savingIds, setSavingIds] = useState<Set<string>>(() => new Set());
+  const activities = useActivity({ root: shoot.root, state: "running" });
+  const { params } = useNav();
+  const [aspect, setAspect] = useState<SkillFormat["aspect"]>();
   const [cuts, setCuts] = useState<Cut[]>([]);
+  const [cutsError, setCutsError] = useState<string | null>(null);
+  const [requests, setRequests] = useState<ShootRequest[]>([]);
+  const [requestsError, setRequestsError] = useState<string | null>(null);
+  const requestRevision = useRef(0);
+  const cutting = useRef(new Set<string>());
+  const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [passing, setPassing] = useState<string | null>(null);
-  const sets = state.messages.filter((message) => message.role === "sidekick" && message.ideas?.length);
-  const latest = sets.at(-1);
-  const earlier = sets.slice(0, -1).reverse();
-  const processing = shoot.clips.some((clip) => clip.stage !== "done" && clip.stage !== "error");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [focusedId, setFocusedId] = useState<string | null>(null);
+  const [filter, setFilter] = useState<IdeaFilter>("all");
+  const query = "";
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [passing, setPassing] = useState(false);
+  const [undo, setUndo] = useState<{ entry: BoardIdea; until: number } | null>(null);
+  const boardRef = useRef<HTMLDivElement>(null);
+  const processing = shoot.clips.some(clip => clip.stage !== "done" && clip.stage !== "error");
+  const byId = new Map<string, BoardIdea>();
+  state.messages.forEach(message => message.ideas?.forEach((idea, index) => {
+    const id = idea.id ?? `${message.id}:${index}`;
+    byId.set(id, { idea: { ...idea, id }, messageId: message.id, index });
+  }));
+  // Revisions replace their own card without disturbing first-appearance order.
+  const board = [...byId.values()];
+  const canMake = shootCanMake(state.messages);
+  const visibleIdeas = board.filter(({ idea }) => !idea.passed && matchesIdea(idea, filter, query));
+  const passedIdeas = board.filter(({ idea }) => idea.passed && matchesIdea(idea, filter, query));
+  const selected = selectedId ? byId.get(selectedId) : undefined;
+  const talking = ask.idea ? byId.get(ask.idea.id) : undefined;
+  const askIdea = talking ? { id: talking.idea.id!, messageId: talking.messageId, index: talking.index,
+    title: talking.idea.title, concept: talking.idea.concept, uses: talking.idea.uses, missing: talking.idea.missing } : ask.idea;
+  const ideaGeneration = activities.find(activity => activity.kind === "ideas" && !activity.target?.ideaId);
+  const adding = !!state.pending?.context.addIdeas || !!ideaGeneration;
+  const shownRequests = requests.filter(request => (filter === "requests" || (filter === "all" && request.state !== "done"))
+    && request.text.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
+
   useEffect(() => {
     let alive = true;
-    let revision = 0;
-    const load = async () => {
-      const current = ++revision;
-      try { const result = await getApi().listCuts(shoot.root); if (alive && current === revision) setCuts(result); }
-      catch { if (alive && current === revision) setError("Couldn't read the cuts. Reopen this shoot to try again."); }
-    };
-    void load();
-    const off = getApi().onSidekickChanged((root) => { if (root === shoot.root) void load(); });
-    return () => { alive = false; off(); };
+    void getApi().listSkills().then(skills => { if (alive) setAspect(skills.find(skill => skill.global)?.format?.aspect); }).catch(() => {});
+    return () => { alive = false; };
   }, [shoot.root]);
-  async function pass(messageId: string, index: number, passed: boolean) {
+  useEffect(() => {
+    const ideaId = new URLSearchParams(window.location.hash.split("?")[1]).get("idea");
+    if (ideaId) setSelectedId(ideaId);
+  }, [params]);
+  useEffect(() => {
+    let alive = true, cutRevision = 0;
+    if (!active) return;
+    let loading = false, pending = false;
+    const load = () => {
+      if (!alive) return;
+      // Preview progress can arrive faster than a full history can be read.
+      // Keep one request and one trailing refresh, never a queue of histories.
+      if (loading) { pending = true; return; }
+      loading = true;
+      const request = ++requestRevision.current, cut = ++cutRevision;
+      const requests = getApi().listRequests(shoot.root).then(result => {
+        if (alive && request === requestRevision.current) { setRequests(result); setRequestsError(null); }
+      }).catch(reason => { if (alive && request === requestRevision.current) setRequestsError(plainError(reason, "Couldn't load your requests.")); });
+      const cuts = getApi().listCuts(shoot.root).then(result => {
+        if (alive && cut === cutRevision) { setCuts(result); setCutsError(null); }
+      }).catch(() => { if (alive && cut === cutRevision) setCutsError("Couldn't check saved edits. You can still open an idea and try again."); });
+      void Promise.all([requests, cuts]).finally(() => {
+        loading = false;
+        if (alive && pending) { pending = false; load(); }
+      });
+    };
+    void refreshSidekick(shoot.root);
+    load();
+    const offThread = getApi().onSidekickChanged(root => { if (root === shoot.root) { void refreshSidekick(root); load(); } });
+    const offActivity = getApi().onActivity(activity => { if (activity.root === shoot.root && activity.state !== 'running') load(); });
+    const offSteps = getApi().onStepsChanged(root => { if (root === shoot.root) load(); });
+    return () => { alive = false; offThread(); offActivity(); offSteps(); };
+  }, [shoot.root, active]);
+  useEffect(() => {
+    if (!undo) return;
+    const timer = window.setTimeout(() => setUndo(null), Math.max(0, undo.until - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [undo]);
+
+  const returnToBoard = () => {
+    setSelectedId(null);
+    requestAnimationFrame(() => {
+      const card = [...document.querySelectorAll<HTMLElement>("[data-idea-card]")].find(node => node.dataset.ideaId === selectedId);
+      card?.focus();
+    });
+  };
+  const openDetails = (entry: BoardIdea) => setSelectedId(entry.idea.id!);
+  async function pass(entry: BoardIdea, passed: boolean) {
     if (passing) return;
-    setPassing(`${messageId}-${index}`); setError(null);
-    try { await getApi().passIdea(shoot.root, messageId, index, passed); await refreshSidekick(shoot.root); }
-    catch { setError("Couldn't save that choice. Try again."); }
-    finally { setPassing(null); }
+    setPassing(true); setError(null);
+    try {
+      await getApi().passIdea(shoot.root, entry.messageId, entry.index, passed);
+      await refreshSidekick(shoot.root);
+      setUndo(passed ? { entry, until: Date.now() + 5000 } : null);
+      if (passed && selectedId === entry.idea.id) setSelectedId(null);
+    } catch { setError("Couldn't save that choice. Try again."); }
+    finally { setPassing(false); }
   }
-  function open(idea: ReelIdea) {
-    if (!idea.cutId) return;
-    const cut = cuts.find((entry) => entry.cutId === idea.cutId);
-    const linked = [...state.messages].reverse().find((message) => message.cut?.cutId === idea.cutId)?.cut;
-    const version = cut?.versions.at(-1)?.version ?? linked?.version ?? 1;
-    selectSidekickCut(shoot.root, { cutId: idea.cutId, version });
-    go("precuts", { shoot: shoot.root, cut: idea.cutId, v: String(version) });
+  const discuss = (entry: BoardIdea) => setAskWorkspace(shoot.root, { open: true, idea: {
+    id: entry.idea.id!, messageId: entry.messageId, index: entry.index, title: entry.idea.title,
+    concept: entry.idea.concept, uses: entry.idea.uses, missing: entry.idea.missing,
+  } });
+  async function cut(entry: BoardIdea) {
+    if (cutting.current.has(entry.idea.id!)) return;
+    cutting.current.add(entry.idea.id!); setError(null);
+    setSavingIds(current => new Set([...current, entry.idea.id!]));
+    try {
+      const cutId = entry.idea.cutId;
+      const availableCuts = cutId ? await getApi().listCuts(shoot.root) : [];
+      const version = availableCuts.find(item => item.cutId === cutId)?.versions.at(-1)?.version;
+      if (cutId && version !== undefined) {
+        setCuts(availableCuts);
+        selectSidekickCut(shoot.root, { cutId, version });
+        go("precuts", { shoot: shoot.root, cut: cutId, v: String(version) });
+        return;
+      }
+      if (!modelReady) { openModelSignIn("firstEdits", () => void cut(entry)); return; }
+      if (ideaDraftState(entry, activities, requests, state.pending?.context.fromIdea)) return;
+      const request = await getApi().addRequest(shoot.root, entry.idea.concept, { messageId: entry.messageId, index: entry.index });
+      ++requestRevision.current;
+      setRequests(current => [...current.filter(item => item.id !== request.id), request]);
+    } catch (reason) { setError(plainError(reason, "Couldn't make this edit. Try again.")); }
+    finally {
+      cutting.current.delete(entry.idea.id!);
+      setSavingIds(current => { const next = new Set(current); next.delete(entry.idea.id!); return next; });
+    }
   }
-  const renderSet = (message: SidekickMessage) => <IdeaSet key={message.id} shoot={shoot} message={message} pending={!!state.pending} cuttingIndex={state.pending?.context.fromIdea?.messageId === message.id ? state.pending.context.fromIdea.index : undefined} passing={passing} onPass={(index, passed) => void pass(message.id, index, passed)} onCut={(idea, index) => { void sidekickSend(shoot.root, idea.concept, { fromIdea: { messageId: message.id, index } }); }} onOpen={open} />;
-  return <div className="h-full min-h-0"><div data-ideas-workspace className="st-glass-surface grid h-full min-h-0 grid-cols-[370px_minmax(0,1fr)] overflow-hidden rounded-[24px] max-[1000px]:grid-cols-[320px_minmax(0,1fr)] max-[700px]:grid-cols-[minmax(240px,0.8fr)_minmax(0,1fr)]">
-    <aside aria-label="Sidekick" className="flex min-h-0 min-w-0 flex-col">
-      
-      <div className="min-h-0 flex-1"><SidekickChat shoot={shoot} cutContext={null} placeholder={!latest ? "Add a link, storyboard or sentence" : undefined} /></div>
-    </aside>
-    <section aria-label="Idea board" className="min-h-0 min-w-0 overflow-y-auto overscroll-contain bg-ink/[0.025] p-6 lg:p-7">
-      <header className="mb-6"><p className="text-[11.5px] text-muted">{shoot.name}</p><h2 className="font-display mt-1 text-[24px] font-semibold tracking-tight text-ink">Ideas</h2></header>
-      {error ? <p role="alert" className="mb-4 text-[13px] text-ink">{error}</p> : null}
-      {latest ? renderSet(latest) : <div className="flex min-h-[340px] flex-col items-center justify-center gap-5 px-4 text-center">
-        <p className="max-w-[320px] text-[14px] leading-relaxed text-muted">{state.loading ? "Loading your ideas…" : processing ? "Ideas come once your clips are tagged." : "Find what you could make from this footage."}</p>
-        {!state.loading ? <Button variant="primary" disabled={processing || !!state.pending} onClick={() => { void sidekickSend(shoot.root, "what reels could I make from this?"); }}>Find ideas</Button> : null}
-      </div>}
-      {earlier.length ? <details className="mt-8 text-[13px] text-muted"><summary className={`w-fit cursor-pointer rounded-sm py-2 hover:text-ink ${FOCUS}`}>earlier ideas ({earlier.length} sets)</summary><div className="mt-4 space-y-8">{earlier.map(renderSet)}</div></details> : null}
-    </section>
-  </div></div>;
-}
+  const focused = selected ?? [...visibleIdeas, ...passedIdeas].find(entry => entry.idea.id === focusedId) ?? visibleIdeas[0];
+  const moveFocus = (key: string) => {
+    const cards = [...(boardRef.current?.querySelectorAll<HTMLElement>("[data-idea-card]") ?? [])].filter(card => card.getClientRects().length > 0);
+    if (!cards.length) return;
+    const index = cards.findIndex(card => card.dataset.ideaId === focusedId);
+    const columns = cards.filter(card => Math.abs(card.offsetTop - cards[0].offsetTop) < 2).length || 1;
+    const step = key === "ArrowLeft" ? -1 : key === "ArrowRight" ? 1 : key === "ArrowUp" ? -columns : columns;
+    const next = cards[index < 0 ? 0 : Math.max(0, Math.min(cards.length - 1, index + step))];
+    setFocusedId(next.dataset.ideaId!); next.focus(); next.scrollIntoView({ block: "nearest" });
+  };
+  const shortcuts = useShortcuts("ideas", [
+    ...["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].map(key => ({ id: `ideas-${key}`, scope: "ideas", keys: [key], label: key === "ArrowLeft" ? "Previous idea" : key === "ArrowRight" ? "Next idea" : key === "ArrowUp" ? "Previous row" : "Next row", enabled: !selected, handler: () => moveFocus(key) })),
+    { id: "ideas-open", scope: "ideas", keys: ["Enter"], label: "Open or make edit", enabled: !!focused && !selected, handler: event => {
+      // Buttons keep their native Enter action; the card itself opens or cuts.
+      if ((event.target as HTMLElement)?.closest("button, summary, a")) (event.target as HTMLElement).click();
+      else if (focused) void cut(focused);
+    } },
+    { id: "ideas-pass", scope: "ideas", keys: ["p"], label: "Pass idea", enabled: !!focused && !selected, handler: () => { if (focused) void pass(focused, !focused.idea.passed); } },
+    { id: "ideas-ask", scope: "ideas", keys: ["9"], label: "Ask", handler: () => setAskWorkspace(shoot.root, { open: !ask.open }) },
+    { id: "ideas-close-ask", scope: "ideas", keys: ["Escape"], label: "Close Ask", enabled: ask.open, handler: () => setAskWorkspace(shoot.root, { open: false }) },
+    { id: "ideas-back", scope: "ideas", keys: ["Escape"], label: "Back to ideas", enabled: !!selected && !ask.open, handler: returnToBoard },
+    { id: "ideas-help", scope: "ideas", keys: ["?"], label: "Keyboard shortcuts", handler: () => setHelpOpen(true) },
+  ], !helpOpen);
+  const renderCard = (entry: BoardIdea, expanded = false) => <IdeaCard key={entry.idea.id} shoot={shoot} entry={entry} expanded={expanded}
+    editLengthS={cuts.find(item => item.cutId === entry.idea.cutId)?.versions.at(-1)?.lengthS}
+    linked={!!entry.idea.cutId && cuts.some(item => item.cutId === entry.idea.cutId && item.versions.length > 0)}
+    drafting={ideaDraftState(entry, activities, requests, state.pending?.context.fromIdea) === "making"}
+    queued={ideaDraftState(entry, activities, requests, state.pending?.context.fromIdea) === "queued"} saving={savingIds.has(entry.idea.id!)} passing={passing}
+    failure={[...requests].reverse().find(r => r.fromIdea && (r.ideaIds.includes(entry.idea.id!) || r.fromIdea.messageId === entry.messageId && r.fromIdea.index === entry.index))?.error}
+    aspect={aspect}
+    onDiscuss={() => discuss(entry)} onFocus={() => setFocusedId(entry.idea.id!)} onOpen={() => openDetails(entry)} onCut={() => { void cut(entry); }} onPass={() => { void pass(entry, !entry.idea.passed); }} />;
 
-function Spinner() {
-  const { reduced } = useMotionPresets();
-  return <motion.span aria-hidden="true" className="inline-flex" animate={reduced ? undefined : { rotate: 360 }} transition={{ duration: dur.smooth + dur.smooth, ease: ease.out, repeat: Infinity }}><CircleNotch size={14} /></motion.span>;
-}
+  return <div data-ideas-workspace className="relative flex h-full min-h-0 flex-col text-ink">
+    <div className="flex min-h-0 flex-1 gap-4">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+    <Row className="mb-3 shrink-0 justify-end"><Button variant="secondary" title="Ask (9)" aria-expanded={ask.open} onClick={() => setAskWorkspace(shoot.root, { open: !ask.open })}>Ask</Button></Row>
+    {error || state.error || cutsError || requestsError ? <InlineError className="mb-3 text-small text-danger">{error ?? state.error ?? cutsError ?? requestsError}</InlineError> : null}
+    {notice && <p role="status" className="mb-3 text-small text-muted">{notice}</p>}
+    {selected ? <>
+      <div className="mb-3"><Button type="button" variant="ghost" onClick={returnToBoard}><ArrowLeft size={16} />All ideas</Button></div>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="min-h-0 overflow-y-auto pb-5">{renderCard(selected, true)}</div>
+      </div>
+    </> : <>
+      {canMake && <details data-can-make className="mb-3 shrink-0 text-small"><summary className="flex cursor-pointer gap-2"><span className="shrink-0 font-medium">Your brief</span><span className="truncate text-muted">{canMake.split("\n")[0]}</span></summary><p className="mt-2 whitespace-pre-wrap text-muted">{canMake}</p></details>}
+      <Row className="mb-4 shrink-0 flex-wrap">
+        <SegmentedControl<IdeaFilter> label="Filter ideas" value={filter} options={[
+          { value: "all", label: "All ideas" }, { value: "ready", label: "Ready" }, { value: "missing", label: "Needs footage" }, { value: "requests", label: "Your requests" },
+        ]} onChange={setFilter} />
 
-function IdeaSet({ shoot, message, pending, cuttingIndex, passing, onPass, onCut, onOpen }: {
-  shoot: Shoot; message: SidekickMessage; pending: boolean; cuttingIndex?: number; passing: string | null;
-  onPass: (index: number, passed: boolean) => void; onCut: (idea: ReelIdea, index: number) => void; onOpen: (idea: ReelIdea) => void;
-}) {
-  const { reduced } = useMotionPresets();
-  const ideas = message.ideas ?? [];
-  const passed = ideas.map((idea, index) => ({ idea, index })).filter(({ idea }) => idea.passed);
-  return <LayoutGroup id={`ideas-${message.id}`}>
-    <MotionList className="grid grid-cols-1 gap-4 min-[1200px]:grid-cols-2">
-      <AnimatePresence>{ideas.map((idea, index) => !idea.passed ? <MotionItem key={`${message.id}-${index}`} index={index} layoutId={reduced ? undefined : `${message.id}-${index}`} exit={reduced ? { opacity: 0, transition: reducedTransition } : { opacity: 0, y: 24, scale: 0.97, transition: { duration: dur.base, ease: ease.out } }} className="st-glass-surface flex min-w-0 flex-col rounded-[20px] p-5" data-idea-card>
-        <div className="mb-3 flex min-h-4 flex-wrap items-center justify-between gap-2 text-[11px] text-muted"><span>{idea.pick ? "sidekick's pick" : ""}</span><span className="tnum">{idea.lengthS} s</span></div>
-        <h3 className="font-display text-[19px] font-semibold leading-snug tracking-tight text-ink">{idea.title}</h3>
-        <p className="mt-3 text-[13px] leading-relaxed text-ink">“{idea.hook}”</p>
-        <div className="mt-auto pt-5">
-          <div className="flex gap-1.5 overflow-hidden" aria-label="Footage used">{ideaFrames(shoot, idea.uses).map(({ id, src }, i) => <Img key={`${id}-${i}`} src={src} alt={id} loading="lazy" className="aspect-[4/3] min-w-0 max-w-[calc((100%-18px)/4)] flex-1 rounded-lg object-cover" />)}</div>
-          {idea.missing.length ? <p className="mt-3 text-[11.5px] leading-relaxed text-muted">needs: {idea.missing.join("; ")}</p> : null}
-          <div className="mt-5 flex flex-wrap items-center justify-between gap-2">
-            <div className="grid"><AnimatePresence initial={false}>{cuttingIndex === index ? <motion.span key="cutting" role="status" className="flex items-center gap-2 px-3.5 py-1.5 text-[13px] text-muted [grid-area:1/1]" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={reduced ? reducedTransition : imgIn}><Spinner />cutting</motion.span> : <motion.div key={idea.cutId ? "open" : "cut"} className="[grid-area:1/1]" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={reduced ? reducedTransition : imgIn}><Button variant={idea.cutId ? "secondary" : "primary"} disabled={!idea.cutId && pending} onClick={() => idea.cutId ? onOpen(idea) : onCut(idea, index)} aria-label={`${idea.cutId ? "Open cut" : "Cut this"}: ${idea.title}`}>{idea.cutId ? "Open cut" : "Cut this"}</Button></motion.div>}</AnimatePresence></div>
-            <Button variant="ghost" className="!px-1 !text-[12px]" disabled={!!passing || cuttingIndex === index} onClick={() => onPass(index, true)} aria-label={`Not this: ${idea.title}`}>Not this</Button>
-          </div>
-        </div>
-      </MotionItem> : null)}</AnimatePresence>
-    </MotionList>
-    {passed.length ? <motion.details layout={!reduced} transition={reduced ? reducedTransition : spring.soft} className="mt-5 text-[12px] text-muted" data-passed-pile><summary className={`w-fit cursor-pointer rounded-sm py-2 hover:text-ink ${FOCUS}`}>passed ({passed.length})</summary><div className="mt-1 space-y-2">{passed.map(({ idea, index }) => <motion.div key={index} layoutId={reduced ? undefined : `${message.id}-${index}`} transition={reduced ? reducedTransition : spring.soft} className="flex items-center justify-between gap-3 rounded-xl bg-ink/[0.035] px-4 py-3"><span>{idea.title}</span><Button variant="ghost" disabled={!!passing} onClick={() => onPass(index, false)} aria-label={`Undo pass: ${idea.title}`}>Undo</Button></motion.div>)}</div></motion.details> : null}
-  </LayoutGroup>;
+      </Row>
+      <section ref={boardRef} aria-label="Idea board" className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-5">
+        {shownRequests.length > 0 && <ul aria-label="Your requests" className="mb-4 space-y-2">{shownRequests.map(request => <li key={request.id} data-request-id={request.id} className="flex flex-wrap items-start gap-3 rounded-2xl bg-surface px-4 py-3">
+          <div className="min-w-0 flex-1"><div className="text-small"><details><summary className="cursor-pointer truncate">{request.text.split("\n")[0]}</summary><p className="mt-2 whitespace-pre-wrap">{request.text}</p></details></div>{request.error && <p className="mt-1 text-small text-muted">{request.error}</p>}</div>
+          <Badge tone={request.state === "failed" ? "pink" : request.state === "done" ? "lime" : "neutral"}>{({ queued: "Queued", working: "Working", done: "Done", failed: "Failed" })[request.state]}</Badge>
+        </li>)}</ul>}
+        {!visibleIdeas.length && !adding && (!modelReady && !state.loading && !board.length && !query && filter === "all"
+          // ONB2/REL1: without an AI ideas never "appear"; say what makes them, and how to get it.
+          ? <div className="max-w-[460px] py-6"><ModelSignIn feature="ideas" onReady={() => void getApi().retryStage(shoot.root, "group").then(() => getApi().retryStage(shoot.root, "ideas")).catch(() => {})} /></div>
+          : <EmptyState variant="inline" as="p" role="status" className="py-8 text-small text-muted">{state.loading ? "Loading your ideas…" : board.length || query || filter !== "all" ? "No ideas match this view yet." : processing ? "Ideas will appear as your footage is understood." : "Ideas will appear here as they're generated. Open Ask to say what you want."}</EmptyState>)}
+        <div data-idea-grid className={`grid auto-rows-fr items-stretch gap-3 ${ask.open ? "grid-cols-2 min-[1100px]:grid-cols-3 max-[850px]:grid-cols-1" : "grid-cols-3 min-[1100px]:grid-cols-4 max-[850px]:grid-cols-2 max-[520px]:grid-cols-1"}`}>{visibleIdeas.map(entry => renderCard(entry))}</div>
+        {passedIdeas.length > 0 && <details className="mt-5"><summary className={`w-fit cursor-pointer py-2 text-small text-muted ${FOCUS}`}>Passed · {passedIdeas.length}</summary>
+          <div className="mt-3 grid grid-cols-3 gap-3 min-[1100px]:grid-cols-4 max-[850px]:grid-cols-2 max-[520px]:grid-cols-1">{passedIdeas.map(entry => renderCard(entry))}</div>
+        </details>}
+      </section>
+    </>}
+    </div>
+    {ask.open && <aside aria-label="Ask sidebar" className="flex w-[360px] min-w-0 shrink-0 flex-col rounded-3xl bg-surface p-4 max-[850px]:w-[300px]">
+      <Row className="shrink-0"><span className="font-medium">Ask</span><Button variant="ghost" aria-label="Close Ask" onClick={() => setAskWorkspace(shoot.root, { open: false })}><Close size={16} /></Button></Row>
+      <AskPanel root={shoot.root} version={0} screenContext={{ panel: "ask", idea: askIdea }} />
+    </aside>}
+    </div>
+    {undo && <div role="status" className="absolute bottom-24 left-1/2 z-40 flex -translate-x-1/2 items-center gap-4 rounded-full bg-surface px-5 py-3 text-small"><span>Idea passed</span><Button variant="ghost" disabled={passing} onClick={() => { void pass(undo.entry, false); }}>Undo</Button></div>}
+    {helpOpen && <ShortcutSheet shortcuts={shortcuts} onClose={() => setHelpOpen(false)} />}
+  </div>;
 }

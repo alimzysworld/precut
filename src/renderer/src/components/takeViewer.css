@@ -1,0 +1,60 @@
+/* VO7-7: the take viewer and Clean read review. Soft fills only: no outlines, rings, strokes, blur or glow. */
+.tv-root { display:flex; flex:1; flex-direction:column; gap:12px; min-height:0; }
+.tv { display:flex; flex-direction:column; gap:10px; flex-shrink:0; padding:12px; border-radius:16px; background:var(--surface-hover); }
+.tv-head { display:flex; align-items:center; gap:8px; }
+.tv-title { flex:1; min-width:0; display:flex; align-items:baseline; gap:8px; font-family:Outfit,Inter,sans-serif; font-size:16px; font-weight:600; cursor:grab; }
+.tv-length, .tv-muted { font-family:Inter,sans-serif; font-size:12px; font-weight:400; color:var(--muted); font-variant-numeric:tabular-nums; }
+.vo-panel .tv-icon { display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; width:32px; height:32px; padding:0; border-radius:999px; background:transparent; }
+.vo-panel .tv-icon:hover, .vo-panel .tv-icon[data-playing] { background:var(--selection-fill); }
+.tv-wave { position:relative; height:84px; border-radius:10px; overflow:hidden; cursor:text; touch-action:none; background:var(--surface); color:var(--muted); }
+.tv-svg { position:absolute; inset:6px 0; width:100%; height:calc(100% - 12px); pointer-events:none; }
+.tv-svg path { stroke:currentColor; stroke-width:.62; }
+.tv-wave-empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:12px; color:var(--muted); }
+.tv-keep { position:absolute; top:0; bottom:0; background:color-mix(in srgb, var(--accent) 14%, transparent); pointer-events:none; }
+.tv-range { position:absolute; top:0; bottom:0; background:var(--selection-fill); cursor:grab; }
+.tv-range + .tv-svg, .tv-keep ~ .tv-svg { color:var(--ink); }
+.tv-head-line { position:absolute; top:0; bottom:0; left:-1px; width:2px; border-radius:1px; background:var(--accent); pointer-events:none; will-change:transform; }
+.tv-transport { display:flex; align-items:center; gap:8px; min-height:32px; font-size:13px; }
+.tv-time { font-variant-numeric:tabular-nums; }
+.tv-marks { flex:1; min-width:0; display:flex; align-items:center; justify-content:flex-end; gap:6px; font-variant-numeric:tabular-nums; }
+.vo-panel .tv-clear { padding:4px 10px; font-size:12px; background:transparent; }
+.vo-panel .tv-clear:hover { background:var(--selection-fill); }
+.tv-actions { display:flex; gap:8px; }
+.tv-actions button { flex:1; min-height:38px; }
+.vo-panel .tv-actions button:not(.st-button-primary):not(.tv-on) { background:var(--surface); }
+.vo-panel .tv-actions button:not(.st-button-primary):not(:disabled):hover { background:var(--selection-fill); }
+.vo-panel .tv-actions button.tv-on { background:var(--selection-fill); }
+/* The scroll bar sits in the panel's own side padding, never over a row's Play button. */
+.tv-body { flex:1; min-height:0; overflow:auto; margin-right:-14px; padding-right:14px; }
+.tv-words { margin:0; font-size:14px; line-height:22px; color:var(--muted); }
+.tv-words > span { border-radius:4px; cursor:pointer; }
+.tv-words > span:hover, .tv-words > span[data-marked] { color:var(--ink); background:var(--selection-fill); }
+.tv-words > span[data-current] { color:var(--ink); background:color-mix(in srgb, var(--accent) 22%, transparent); }
+
+.cr { display:flex; flex-direction:column; gap:14px; padding-bottom:4px; }
+.cr-group h3 { margin:0 0 6px; font-size:12px; font-weight:500; color:var(--muted); }
+.cr-group [role="radiogroup"] { display:flex; flex-direction:column; gap:4px; }
+.cr-row { display:flex; align-items:center; gap:4px; }
+.cr-option { flex:1; min-width:0; display:flex; align-items:baseline; gap:8px; padding:8px 10px; border-radius:12px; font-size:13px; line-height:18px; cursor:pointer; color:var(--muted); background:transparent; }
+.cr-option:hover { background:var(--surface-hover); }
+.cr-option[aria-checked="true"] { color:var(--ink); background:var(--selection-fill); }
+.cr-option:focus-visible { background:var(--selection-fill); }
+.cr-time { flex-shrink:0; font-size:12px; font-variant-numeric:tabular-nums; color:var(--muted); }
+.cr-text { flex:1; min-width:0; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+.cr-tag { flex-shrink:0; padding:1px 8px; border-radius:999px; font-size:11px; color:var(--badge-amber-ink); background:var(--badge-amber-fill); }
+.cr-struck-list { display:flex; flex-wrap:wrap; gap:6px; }
+.vo-panel .cr-struck { padding:6px 10px; font-size:12px; color:var(--muted); text-decoration:line-through; background:var(--surface-hover); }
+.vo-panel .cr-struck[data-restored] { color:var(--ink); text-decoration:none; background:var(--selection-fill); }
+.cr-note { margin:0; font-size:12px; line-height:17px; color:var(--muted); }
+.cr-foot { display:flex; flex-direction:column; gap:8px; flex-shrink:0; }
+.cr-foot-row { display:flex; gap:8px; }
+.cr-foot button { flex:1; display:flex; align-items:center; justify-content:center; gap:6px; min-height:44px; }
+.cr-state { display:flex; flex-direction:column; align-items:flex-start; gap:10px; margin:0; padding:4px 2px; font-size:13px; line-height:18px; color:var(--muted); }
+.cr-state p { margin:0; }
+.tv-root :focus, .tv-root :focus-visible { outline:none; box-shadow:none; }
+.vo-panel .tv:focus-within .tv-wave { background:color-mix(in srgb, var(--surface) 70%, var(--selection-fill)); }
+.vo-panel .vo-take .vo-take-open { flex:1; min-width:0; padding:6px 8px; text-align:left; font-weight:400; font-variant-numeric:tabular-nums; background:transparent; }
+.vo-panel .vo-take .vo-take-open:hover, .vo-panel .vo-take .vo-take-open:focus-visible { background:var(--selection-fill); }
+.tv-wave[data-compact] { height:60px; }
+.vo-panel .tv-pill { flex-shrink:0; padding:6px 12px; font-size:12px; background:var(--selection-fill); }
+.vo-panel .tv-pill:hover { background:var(--surface); }

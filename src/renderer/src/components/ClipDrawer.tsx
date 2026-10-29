@@ -1,11 +1,66 @@
+import { clipName } from "../../../shared/clip-name";
+import { formatPercent } from "./processingFormat";
+import { MenuOption } from "./ui";
+import { MenuSurface } from "./ui";
+import { InlineError, SectionHeader } from "./ui";
+import { TranscriptPanel } from "./finish/TranscriptPanel";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Check, Microphone, Pause, Play, Star, X } from "@phosphor-icons/react";
-import { AnimatePresence, motion, useIsPresent, type TargetAndTransition } from "framer-motion";
+import { Check, Microphone, Pause, Play, Star } from "@phosphor-icons/react";
+import { motion, useIsPresent, type TargetAndTransition } from "framer-motion";
 import { dur, ease } from "../motion";
-import { Drawer, Img, Pill, useMotionPresets, reducedTransition, FOCUS } from "./ui";
+import { FullScreen, Volume, VolumeOff } from "./icons";
+import { Drawer, Img, Pill, useMotionPresets, reducedTransition, FOCUS, Slider } from "./ui";
 import { formatBytes, formatTimecode, frameSrc, getApi, proxySrc } from "../data";
-import type { Clip, Shoot } from "../../../shared/schema";
+import type { Activity, Clip, Shoot } from "../../../shared/schema";
+import { humanDate } from "./dates";
+
+// The activity snapshot covers opening a page halfway through an encode;
+// progress events invalidate media URLs even when a remake keeps the filename.
+export function usePreviewProgress(root: string | null) {
+  const [activities, setActivities] = useState<Record<string, Activity>>({});
+  const [revision, setRevision] = useState(0);
+  const [clipRevisions, setClipRevisions] = useState<Record<string, number>>({});
+  useEffect(() => {
+    setActivities({}); setRevision(0); setClipRevisions({});
+    if (!root) return;
+    const api = getApi();
+    let alive = true;
+    const seen = new Set<string>();
+    const off = api.onActivity(activity => {
+      if (activity.root !== root || activity.label !== "Making previews") return;
+      seen.add(activity.id);
+      setActivities(previous => ({ ...previous, [activity.id]: activity }));
+    });
+    const progressOff = api.onProgress(event => {
+      const note = (event as typeof event & { note?: string }).note;
+      if (event.root === root && event.clipId && event.stage === "done" && note?.startsWith("Making previews")) {
+        setRevision(value => value + 1);
+        setClipRevisions(previous => ({ ...previous, [event.clipId]: (previous[event.clipId] ?? 0) + 1 }));
+      }
+    });
+    void api.listActivity().then(list => {
+      if (!alive) return;
+      setActivities(previous => ({ ...Object.fromEntries(list.filter(activity => activity.root === root
+        && activity.label === "Making previews" && !seen.has(activity.id)).map(activity => [activity.id, activity])), ...previous }));
+    }).catch(() => {});
+    return () => { alive = false; off(); progressOff(); };
+  }, [root]);
+  const pending: Record<string, number> = {};
+  for (const activity of Object.values(activities)) {
+    if (activity.root !== root || activity.state !== "running" || !activity.target?.clipId) continue;
+    const match = activity.note?.match(/ · (\d+)%$/);
+    pending[activity.target.clipId] = match ? Number(match[1]) : 0;
+  }
+  return { pending, revision, clipRevisions };
+}
+
+export function PreviewPlaceholder({ pct, src, className = "", message }: { pct: number; src?: string; className?: string; message?: string }) {
+  return <div data-preview-placeholder className={`absolute inset-0 z-10 flex items-center justify-center bg-ground ${className}`}>
+    {src ? <div className="absolute inset-0"><Img src={src} alt="" className="h-full w-full object-contain" /></div> : null}
+    <span role="status" className="relative shrink-0 whitespace-nowrap rounded-full bg-ground px-3 py-1.5 text-micro text-ink">{message ?? `Making preview · ${formatPercent(pct)}`}</span>
+  </div>;
+}
 
 // Keep cards, filters and the drawer on the same interpretation of manual tags.
 export const clipKind = (clip: Clip) => {
@@ -89,7 +144,7 @@ export function ClipTags({ shoot, clip, onShootChange }: {
     }
   };
   const trigger = (label: string, byYou: boolean, warn = false) => (
-    <button type="button" aria-label={`Edit ${label.toLowerCase()} tag for clip ${clip.id}${byYou ? ", set by you" : ""}`}
+    <button type="button" aria-label={`Edit ${label.toLowerCase()} tag for ${clipName(clip)}${byYou ? ", set by you" : ""}`}
       aria-haspopup="menu" aria-expanded={anchor?.dataset.tag === label} aria-controls={anchor?.dataset.tag === label ? menuId : undefined}
       data-tag={label} disabled={saving}
       onClick={(event) => { event.stopPropagation(); setError(null); setAnchor(anchor === event.currentTarget ? null : event.currentTarget); }}
@@ -99,37 +154,30 @@ export function ClipTags({ shoot, clip, onShootChange }: {
   );
   const optionClass = `flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-[13px] text-ink hover:bg-ink/[0.06] disabled:opacity-50 ${FOCUS}`;
   return <>
-    {clip.sound ? <span className="inline-flex items-center px-1 text-muted" title="Sound from mic" aria-label="Sound from mic"><Microphone size={14} /></span> : null}
-    {trigger(kindLabel(kind), clip.byHand?.kind !== undefined)}
-    {trigger(shaky === undefined ? "Shake unmeasured" : shaky ? "Shaky" : "Steady", clip.byHand?.shaky !== undefined, shaky === true)}
+    {!clip.photo && clip.sound ? <span className="inline-flex items-center px-1 text-muted" title="Sound from mic" aria-label="Sound from mic"><Microphone size={14} /></span> : null}
+    {clip.photo ? <Pill>Photo</Pill> : trigger(kindLabel(kind), clip.byHand?.kind !== undefined)}
+    {!clip.photo && trigger(shaky === undefined ? "Shake unmeasured" : shaky ? "Shaky" : "Steady", clip.byHand?.shaky !== undefined, shaky === true)}
     {anchor && createPortal(
-      <motion.div ref={menuRef} id={menuId} role="menu" aria-label={`Tags for clip ${clip.id}`} aria-busy={saving}
+      <MenuSurface ref={menuRef} id={menuId} aria-label={`Tags for ${clipName(clip)}`} aria-busy={saving}
         variants={pop} initial="initial" animate="animate"
         style={position} className="st-glass-pop fixed z-[80] w-[220px] rounded-2xl border-0 p-1.5"
-        onKeyDown={(event) => {
-          if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
-          event.preventDefault();
-          const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'));
-          const current = items.indexOf(document.activeElement as HTMLButtonElement);
-          const index = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (current + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
-          items[index]?.focus();
-        }}>
+        onClose={() => { setAnchor(null); anchor?.focus(); }}>
         <div role="group" aria-label="Kind">
-          {(["talking", "broll", "setup"] as const).map((value) => <button key={value} type="button" role="menuitemradio" aria-checked={kind === value}
+          {(["talking", "broll", "setup"] as const).map((value) => <MenuOption key={value} type="button" role="menuitemradio" aria-checked={kind === value}
             disabled={saving} onClick={() => void save({ kind: value })} className={optionClass}>
             {kindLabel(value)}{kind === value ? <Check size={14} /> : null}
-          </button>)}
+          </MenuOption>)}
         </div>
         <div role="group" aria-label="Shake" className="mt-1 rounded-xl bg-ink/[0.03]">
-          {[true, false].map((value) => <button key={String(value)} type="button" role="menuitemradio" aria-checked={shaky === value}
+          {[true, false].map((value) => <MenuOption key={String(value)} type="button" role="menuitemradio" aria-checked={shaky === value}
             disabled={saving} onClick={() => void save({ shaky: value })} className={optionClass}>
             {value ? "Shaky" : "Steady"}{shaky === value ? <Check size={14} /> : null}
-          </button>)}
+          </MenuOption>)}
         </div>
-        <button type="button" role="menuitem" disabled={saving || !clip.byHand} onClick={() => void save(null)} className={`${optionClass} mt-1 text-muted`}>Use sidething's tags</button>
+        <MenuOption type="button" role="menuitem" disabled={saving || !clip.byHand} onClick={() => void save(null)} className={`${optionClass} mt-1 text-muted`}>Use sidething's tags</MenuOption>
         {saving ? <p role="status" className="px-3 py-2 text-[12px] text-muted">Saving your tags</p> : null}
-        {error ? <p role="alert" className="px-3 py-2 text-[12px] text-danger">{error}</p> : null}
-      </motion.div>, document.body,
+        {error ? <InlineError className="px-3 py-2 text-[12px] text-danger">{error}</InlineError> : null}
+      </MenuSurface>, document.body,
     )}
   </>;
 }
@@ -145,6 +193,7 @@ export function ClipDrawer({
   shoot,
   clip,
   initialTime,
+  endTime,
   onClose,
   onShootChange,
   layout = "drawer",
@@ -152,25 +201,36 @@ export function ClipDrawer({
   shoot: Shoot;
   clip: Clip | null;
   initialTime?: number;
+  endTime?: number;
   onClose: () => void;
   onShootChange?: (shoot: Shoot) => void;
-  layout?: "drawer" | "player";
+  layout?: "drawer" | "preview";
 }) {
   // Chat also opens this drawer without owning the shoot state.
   const [savedShoot, setSavedShoot] = useState<Shoot | null>(null);
   if (!onShootChange && savedShoot?.root === shoot.root && clip) {
     const savedClip = savedShoot.clips.find((item) => item.id === clip?.id);
-    if (savedClip) clip = { ...clip, byHand: savedClip.byHand };
+    if (savedClip) { clip = savedClip; shoot = savedShoot; }
   }
   const updateShoot = (next: Shoot) => {
     setSavedShoot(next);
     onShootChange?.(next);
   };
+  const previews = usePreviewProgress(shoot.root);
+  const updateShootRef = useRef(updateShoot); updateShootRef.current = updateShoot;
+  useEffect(() => {
+    if (!previews.revision) return;
+    let alive = true;
+    void getApi().loadShoot(shoot.root).then(next => { if (alive && next) updateShootRef.current(next); }).catch(() => {});
+    return () => { alive = false; };
+  }, [shoot.root, previews.revision]);
   const present = useIsPresent();
   const liveClip = clip;
   const lastClip = useRef(clip);
   if (clip) lastClip.current = clip;
   clip = clip ?? lastClip.current;
+  const previewPct = clip ? previews.pending[clip.id] : undefined;
+  const previewRevision = clip ? previews.clipRevisions[clip.id] ?? 0 : 0;
   const { item, reduced } = useMotionPresets();
   const detailVariants = { ...item, animate: {
     ...(item.animate as TargetAndTransition),
@@ -190,20 +250,15 @@ export function ClipDrawer({
   const scrubbed = useRef(false);
   const [seeking, setSeeking] = useState(false);
   const [videoReady, setVideoReady] = useState(false);
-  const [playing, setPlaying] = useState(false);
+  const [playing, setPlaying] = useState(false), [muted, setMuted] = useState(false);
   const [playError, setPlayError] = useState(false);
-
+  const selection = useRef({ id: liveClip?.id, initialTime });
   useEffect(() => {
-    if (layout !== "player" || !liveClip || !present) return;
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !event.defaultPrevented) {
-        event.preventDefault();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", escape);
-    return () => window.removeEventListener("keydown", escape);
-  }, [layout, liveClip?.id, present, onClose]);
+    if (previewPct === undefined) return;
+    videoRef.current?.pause();
+    setPlaying(false); setVideoReady(false);
+  }, [previewPct !== undefined]);
+
 
   useEffect(() => {
     if (!present) videoRef.current?.pause();
@@ -211,7 +266,9 @@ export function ClipDrawer({
 
   useEffect(() => {
     if (!liveClip) return;
-    const target = Math.max(0, initialTime ?? 0);
+    const sameSelection = selection.current.id === liveClip.id && selection.current.initialTime === initialTime;
+    const target = Math.max(0, previewRevision && sameSelection ? time : initialTime ?? 0);
+    selection.current = { id: liveClip.id, initialTime };
     videoRef.current?.pause();
     setPlaying(false);
     setPlayError(false);
@@ -226,7 +283,7 @@ export function ClipDrawer({
       video.currentTime = Math.min(Math.max(target, 0), video.duration);
       pendingSeek.current = null;
     }
-  }, [liveClip?.id, clip?.proxy, initialTime]);
+  }, [liveClip?.id, clip?.proxy, initialTime, previewRevision]);
 
   const frames = clip?.frames ?? [];
   const frameIndex = useMemo(() => {
@@ -275,12 +332,12 @@ export function ClipDrawer({
     }
   };
 
-  const title = clip.id.slice(-4);
+  const title = clipName(clip);
   const micLabel = clip.sound?.file.match(/MIC(\d+)/i)?.[1];
-  const soundLabel = clip.sound
+  const soundLabel = clip.photo ? null : clip.sound
     ? `sound from ${micLabel ? `mic ${micLabel}` : clip.sound.file.split(/[\\/]/).pop()} at ${clip.sound.offsetS < 0 ? "−" : ""}${formatTimecode(Math.abs(clip.sound.offsetS))}`
     : clip.sound === null ? "camera sound" : null;
-  const subtitle = judgement ? `${judgement.verdict} · ${formatTimecode(duration)}` : formatTimecode(duration);
+  const subtitle = clip.photo ? ["Photo", humanDate(clip.photo.takenAt)].filter(Boolean).join(" · ") : judgement ? `${judgement.verdict} · ${formatTimecode(duration)}` : formatTimecode(duration);
 
   const tags = <div className="flex flex-col gap-2">
     <div aria-label="Clip tags" className="flex flex-wrap gap-1.5">
@@ -290,15 +347,15 @@ export function ClipDrawer({
   </div>;
 
   const viewer = (
-    <div className={layout === "player" ? "flex min-h-0 min-w-0 flex-col" : ""}>
-      <div className={`relative overflow-hidden rounded-xl bg-ink/[0.04] ${layout === "player" ? "min-h-0 flex-1" : ""}`}>
-        {clip.proxy ? (
+    <div className={""}>
+      <div className={`relative overflow-hidden rounded-xl bg-ink/[0.04] ${""}`}>
+        {clip.proxy && previewPct === undefined ? (
           <video
             ref={videoRef}
-            src={proxySrc(shoot.root, clip.proxy)}
+            src={`${proxySrc(shoot.root, clip.proxy)}${proxySrc(shoot.root, clip.proxy).includes("?") ? "&" : "?"}preview=${previewRevision}`}
             poster={frames[frameIndex] ? frameSrc(shoot.root, frames[frameIndex]) : undefined}
             onLoadedData={() => { if (pendingSeek.current === null && !seekingRef.current) setVideoReady(true); }}
-            className={layout === "player" ? "h-full w-full object-contain" : "aspect-video w-full object-contain"}
+            className={"aspect-video w-full object-contain"}
             controls={false}
             autoPlay={false}
             onPlay={() => setPlaying(true)}
@@ -306,7 +363,7 @@ export function ClipDrawer({
             onEnded={() => setPlaying(false)}
             preload="auto"
             playsInline
-            key={clip.id}
+            key={`${clip.id}:${previewRevision}`}
             aria-busy={seeking}
             onLoadedMetadata={(e) => {
               const video = e.currentTarget;
@@ -320,6 +377,7 @@ export function ClipDrawer({
               setSeeking(true);
             }}
             onTimeUpdate={(e) => {
+              if (endTime != null && !e.currentTarget.paused && e.currentTarget.currentTime >= endTime) e.currentTarget.pause();
               if (!seekingRef.current && pendingSeek.current === null) setTime(e.currentTarget.currentTime);
             }}
             onSeeked={(e) => {
@@ -330,15 +388,16 @@ export function ClipDrawer({
             }}
           />
         ) : frames[frameIndex] ? (
-          <Img instant={scrubbed.current} src={frameSrc(shoot.root, frames[frameIndex])} alt={`clip ${title} frame`} className={layout === "player" ? "h-full w-full object-contain" : "aspect-video w-full object-cover"} />
+          <Img instant={scrubbed.current} src={frameSrc(shoot.root, frames[frameIndex])} alt={`${clipName(clip)} frame`} className={"aspect-video w-full object-cover"} />
         ) : (
-          <div className={`flex items-center justify-center text-[13px] text-muted ${layout === "player" ? "h-full" : "aspect-video"}`}>no frames yet</div>
+          <div className={`flex items-center justify-center text-[13px] text-muted ${"aspect-video"}`}>no frames yet</div>
         )}
         {clip.proxy && !videoReady && frames[frameIndex] ? <Img instant={scrubbed.current} src={frameSrc(shoot.root, frames[frameIndex])} alt="" className="pointer-events-none absolute inset-0 h-full w-full object-contain" /> : null}
+        {previewPct !== undefined ? <PreviewPlaceholder pct={previewPct} src={frames[frameIndex] ? frameSrc(shoot.root, frames[frameIndex]) : undefined} /> : null}
       </div>
       <div className="mt-2 grid shrink-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3">
         <div className="flex items-center gap-2">
-          {clip.proxy ? <button type="button" aria-label={playing ? "Pause clip" : "Play clip"}
+          {clip.proxy ? <button type="button" disabled={previewPct !== undefined} aria-label={playing ? "Pause clip" : "Play clip"}
             onClick={() => {
               const video = videoRef.current;
               if (!video) return;
@@ -351,19 +410,14 @@ export function ClipDrawer({
           </button> : null}
           <span className="tnum text-[12px] text-muted">{formatTimecode(time)}</span>
         </div>
-        <input
-          aria-label="scrub"
-          type="range"
-          min={0}
-          max={Math.max(duration, 0.1)}
-          step={0.1}
-          value={Math.min(time, duration)}
-          onChange={(e) => seek(Number(e.target.value))}
-          className="h-1 w-full min-w-0 cursor-pointer accent-[var(--accent)]"
-        />
-        <span className="tnum text-[12px] text-muted">{formatTimecode(duration)}</span>
+        <Slider compact label="scrub" min={0} max={Math.max(duration, .1)} step={.1} value={Math.min(time, duration)} onChange={seek} />
+        <span className="flex items-center gap-1"><span className="tnum text-[12px] text-muted">{formatTimecode(duration)}</span>
+          {layout === "preview" && clip.proxy ? <>
+            {!clip.photo && <button type="button" aria-label={muted ? "Unmute" : "Mute"} onClick={() => { const video = videoRef.current; if (video) { video.muted = !video.muted; setMuted(video.muted); } }} className={`flex size-6 items-center justify-center rounded-full text-ink hover:bg-ink/[0.06] ${FOCUS}`}>{muted ? <VolumeOff size={14} /> : <Volume size={14} />}</button>}
+            <button type="button" aria-label="Full screen" onClick={() => { void videoRef.current?.requestFullscreen?.(); }} className={`flex size-6 items-center justify-center rounded-full text-ink hover:bg-ink/[0.06] ${FOCUS}`}><FullScreen size={14} /></button>
+          </> : null}</span>
         {/* shake strip shares the scrubber track column so both edges line up */}
-        {!(shake && !shake.measured) && perSecond.length ? (
+        {!clip.photo && layout !== "preview" && !(shake && !shake.measured) && perSecond.length ? (
           <>
             <span aria-hidden="true" />
             <div className="mt-2 flex h-9 w-full min-w-0 items-end gap-[1px] overflow-hidden" role="img" aria-label="shake per second">
@@ -392,22 +446,22 @@ export function ClipDrawer({
           </>
         ) : null}
       </div>
-      {playError ? <p role="alert" className="mt-1 text-[12px] text-danger">Could not play this preview. Try again.</p> : null}
-      {shake && !shake.measured && clip.byHand?.shaky === undefined ? (
+      {playError ? <InlineError className="mt-1 text-[12px] text-danger">Could not play this preview. Try again.</InlineError> : null}
+      {!clip.photo && shake && !shake.measured && clip.byHand?.shaky === undefined ? (
         <p className="mt-2 text-[12.5px] text-muted">too dark to judge shake</p>
       ) : null}
       {/* frame thumbnails */}
-      {frames.length > 1 ? (
+      {layout !== "preview" && frames.length > 1 ? (
         <div className="mt-2 grid shrink-0 grid-cols-8 gap-1">
           {frames.map((f, i) => (
             <button
               key={f}
               type="button"
               onClick={() => seek(duration ? (i / frames.length) * duration : 0)}
-              className={`overflow-hidden rounded-md ${i === frameIndex ? "ring-2 ring-[var(--accent)]" : "opacity-70 hover:opacity-100"}`}
+              className={`overflow-hidden rounded-md ${i === frameIndex ? "bg-[var(--selection-fill)] opacity-100" : "opacity-70 hover:opacity-100"}`}
               aria-label={`frame ${i + 1}`}
             >
-              <Img src={frameSrc(shoot.root, f)} alt="" className={`aspect-video w-full object-cover ${layout === "player" ? "max-h-8" : ""}`} loading="lazy" />
+              <Img src={frameSrc(shoot.root, f)} alt="" className={`aspect-video w-full object-cover ${""}`} loading="lazy" />
             </button>
           ))}
         </div>
@@ -416,11 +470,13 @@ export function ClipDrawer({
 
   );
 
+  // D2 reuses this player and its preview invalidation without duplicating media logic.
+  if (layout === "preview") return <div data-footage-preview>{viewer}</div>;
+
   const details = (
-    <motion.div variants={detailVariants} initial={layout === "player" ? false : "initial"} animate={layout === "player" || landed || reduced ? "animate" : "initial"}
-      className={`flex min-w-0 flex-col gap-5 ${layout === "player" ? "min-h-0 overflow-x-hidden overflow-y-auto overscroll-contain pr-2 pb-3 [&>*]:shrink-0" : ""}`} data-drawer-details
-      role={layout === "player" ? "region" : undefined} aria-label={layout === "player" ? "Clip details" : undefined} tabIndex={layout === "player" ? 0 : undefined}>
-    {layout === "player" ? tags : null}
+    <motion.div variants={detailVariants} initial={"initial"} animate={landed || reduced ? "animate" : "initial"}
+      className={`flex min-w-0 flex-col gap-5 ${""}`} data-drawer-details
+      >
     {judgement ? (
       <div>
         <div className="flex flex-wrap gap-1.5">
@@ -433,26 +489,10 @@ export function ClipDrawer({
 
     {/* transcript */}
     <section>
-      <h3 className="font-display text-[13px] font-semibold tracking-tight text-ink">Transcript</h3>
+      <SectionHeader as="h3" className="font-display text-[13px] font-semibold tracking-tight text-ink">Transcript</SectionHeader>
       {clip.transcript?.length ? (
-        <div className="mt-2 text-[14px] leading-[1.9] text-ink">
-          {clip.transcript.map((seg, si) => (
-            <span key={si}>
-              {seg.words.map((w, wi) => {
-                const active = time >= w.s && time < w.e;
-                return (
-                  <button
-                    key={`${si}-${wi}`}
-                    type="button"
-                    onClick={() => seek(w.s)}
-                    className={`rounded px-[1px] ${active ? "bg-accent/20 text-ink" : "text-ink/85 hover:bg-ink/[0.06]"}`}
-                  >
-                    {w.w}
-                  </button>
-                );
-              })}{" "}
-            </span>
-          ))}
+        <div className="mt-2 text-body leading-[1.9] text-ink">
+          <TranscriptPanel key={`${shoot.root}/${clip.id}`} shoot={shoot} source={{ clipId: clip.id }} time={time} onSeek={seek} onChange={updateShoot} />
         </div>
       ) : (
         <p className="mt-1 text-[13px] text-muted">no transcript for this clip</p>
@@ -462,7 +502,7 @@ export function ClipDrawer({
     {/* takes */}
     {takesInClip.length ? (
       <section>
-        <h3 className="font-display text-[13px] font-semibold tracking-tight text-ink">Takes in this clip</h3>
+        <SectionHeader as="h3" className="font-display text-[13px] font-semibold tracking-tight text-ink">Takes in this clip</SectionHeader>
         <ul className="mt-2 flex flex-col gap-1.5">
           {takesInClip.map((row) => (
             <li key={`${row.lineIndex}-${row.attemptIndex}-${row.s}`}>
@@ -486,7 +526,7 @@ export function ClipDrawer({
 
     {/* metadata */}
     <section>
-      <h3 className="font-display text-[13px] font-semibold tracking-tight text-ink">Details</h3>
+      <SectionHeader as="h3" className="font-display text-[13px] font-semibold tracking-tight text-ink">Details</SectionHeader>
       <dl className="st-glass-surface mt-2 divide-y divide-ink/[0.06] rounded-xl px-4">
         {(
           [
@@ -499,9 +539,9 @@ export function ClipDrawer({
             ["codec", meta?.codec ?? "not recorded"],
             ["picture profile", meta?.pictureProfile ?? "not recorded"],
             ["start timecode", meta?.startTimecode ?? "not recorded"],
-            ["audio", meta ? `${meta.audioChannels} channels, ${meta.sampleRate} Hz` : "not recorded"],
+            ...(!clip.photo ? [["audio", meta ? `${meta.audioChannels} channels, ${meta.sampleRate} Hz` : "not recorded"]] : []),
             ["file size", meta ? formatBytes(meta.sizeBytes) : "not recorded"],
-            ["file", clip.file],
+            ["file", clip.photo?.file ?? clip.file],
           ] as [string, string][]
         ).map(([k, v]) => (
           <div key={k} className="flex items-baseline justify-between gap-4 py-2 text-[13px]">
@@ -514,25 +554,6 @@ export function ClipDrawer({
     </motion.div>
   );
 
-  if (layout === "player") return (
-    <section aria-label={`Clip ${title} player`} aria-hidden={!present} className="flex h-full min-h-0 flex-col gap-3 p-3 sm:p-4"
-      style={{ pointerEvents: present ? undefined : "none" }}>
-      <header className="flex shrink-0 items-center justify-between gap-3">
-        <div className="flex min-w-0 items-baseline gap-3">
-          <h2 className="font-display text-[20px] leading-none font-semibold tracking-tight text-ink">{title}</h2>
-          <span className="tnum truncate text-[12px] text-muted">{subtitle}</span>
-        </div>
-        <button type="button" onClick={onClose} aria-label="Close clip" title="Close clip (Esc)"
-          className={`flex size-7 shrink-0 items-center justify-center rounded-full text-muted hover:bg-ink/[0.06] hover:text-ink ${FOCUS}`}>
-          <X size={16} />
-        </button>
-      </header>
-      <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-3 sm:gap-5">
-        {viewer}
-        {details}
-      </div>
-    </section>
-  );
 
   return (
     <Drawer open={Boolean(liveClip)} onClose={onClose} title={title} subtitle={subtitle} wide onLanded={() => setLanded(true)}>
@@ -545,21 +566,3 @@ export function ClipDrawer({
   );
 }
 
-// Clips owns the sticky space; only the selected content crossfades inside it.
-// Other consumers retain the drawer and its existing navigation behavior.
-export function ClipPlayer(props: {
-  shoot: Shoot;
-  clip: Clip;
-  initialTime?: number;
-  onClose: () => void;
-  onShootChange: (shoot: Shoot) => void;
-}) {
-  const { reduced } = useMotionPresets();
-  return <AnimatePresence initial={false}>
-    <motion.div key={`${props.shoot.root}/${props.clip.id}`} className="absolute inset-0"
-      initial={{ opacity: reduced ? 1 : 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-      transition={reduced ? reducedTransition : { duration: dur.fast, ease: ease.out }}>
-      <ClipDrawer {...props} layout="player" />
-    </motion.div>
-  </AnimatePresence>;
-}

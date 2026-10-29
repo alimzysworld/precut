@@ -1,0 +1,778 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src data:; img-src st-media: data:; media-src st-media: data:">
+  <style>
+    /*__TITLE_FONTS__*/
+    html, body { margin: 0; overflow: hidden; background: transparent; }
+    #stage { position: relative; overflow: hidden; isolation: isolate; }
+    .cue { position: absolute; width: max-content; white-space: pre; }
+    .enter, .exit { transform-origin: center; }
+    .word { display: inline-block; }
+  </style>
+</head>
+<body>
+<div id="stage"></div>
+<script>
+  // This is a fixed interpreter for TitleTrack, never generated HTML or code.
+  // x is anchored by align; y is the centre of the multiline text box.
+  // Lines are explicit newlines; the validator fits the full measured motion envelope.
+  const EASE_OUT = 'cubic-bezier(0.16, 1, 0.3, 1)';
+  // Shared timing contract with titles.ts: the hold includes a complete line
+  // after its last reveal, followed by a separate, quick exit.
+  const ENTER_S = 0.22, EXIT_S = 0.12;
+  // ---- Opening caption styles (25 Oct, src/main/titles/opening.ts). A style is a layout plus a motion recipe:
+  // entrance, emphasis on the punch word, exit. The engine (fitOpening, openingFrame) keeps every guarantee whatever
+  // the style: spoken order top to bottom, no overlap, inside the safe area, a readable minimum size, and nothing
+  // before its first word. Sizes are fractions of the frame's 9:16 width unit (the mockup's 300 px frame).
+  // No blur and no glow, ever. A second style adds an entry here and its name in opening.ts.
+  const OPENING_STYLES = {
+    'build-up': {
+      layout: 'stack',                                   // one screen that fills in, centred, growing as lines arrive
+      sizes: { punch: 54 / 300, phrase: 40 / 300, connector: 30 / 300, payoff: 46 / 300 },
+      lineHeight: { punch: 1, phrase: 1.05, connector: 1.1, payoff: .98 },
+      gap: 4 / 300, maxWidth: .9, minSize: .06,
+      enter: { s: .16, from: .3, over: 1.06 },           // each new line: a quick scale-and-settle pop
+      punch: { s: .18, from: .3, over: 1.14 },           // the punch word lands bigger, with a slight overshoot
+      dim: { s: .15, primary: .75, accent: .75 },         // earlier lines dim as the new one arrives (25 Oct: 75%, readable)
+      exit: 'cut'                                         // hands straight over to the normal captions
+    }
+  };
+  let openingGroups = [];
+  function popScale(p, from, over) {
+    if (p >= 1) return 1;
+    if (p < .6) { const u = p / .6; return from + (over - from) * (1 - (1 - u) ** 3); }
+    const u = (p - .6) / .4; return over + (1 - over) * u * u * (3 - 2 * u);
+  }
+  // Pure function of time: where each phrase of one opening is at t, live and in export. A phrase's slot is its ink
+  // height times its scale, so a popping line pushes its neighbours instead of covering them.
+  function openingFrame(group, t) {
+    const r = group.recipe, rows = group.lines.filter(l => t >= l.s && t < l.e);
+    const out = rows.map((l, i) => {
+      const motion = l.role === 'punch' ? r.punch : r.enter;
+      const p = Math.max(0, Math.min(1, (t - l.s) / motion.s));
+      const next = rows[i + 1], d = next ? Math.max(0, Math.min(1, (t - next.s) / r.dim.s)) : 0;
+      const scale = popScale(p, motion.from, motion.over);
+      // Over bright or busy footage the line wears the caption edge (main measured it: openingEdges in titles.ts); its slot grows by the edge.
+      const edge = openingEdgeAt(group, t), pad = edge ? l.pad : 0;
+      return { line: l, scale, edge, pad, opacity: Math.min(1, .4 + p * 2), dim: d * d * (3 - 2 * d), slot: (l.h + 2 * pad) * scale, gap: i ? group.gap * Math.min(1, p / .6) : 0 };
+    });
+    const total = out.reduce((n, row) => n + row.slot + row.gap, 0);
+    let y = Math.max(group.area.top, Math.min(group.centreY - total / 2, group.area.bottom - total));
+    for (const row of out) { y += row.gap; row.cy = y + row.slot / 2; row.cx = group.cx; y += row.slot; }
+    return out;
+  }
+  function openingBox(row) {
+    const l = row.line;
+    const w = l.w + 2 * row.pad, h = l.h + 2 * row.pad;
+    return { left: row.cx - w * row.scale / 2, right: row.cx + w * row.scale / 2, top: row.cy - h * row.scale / 2, bottom: row.cy + h * row.scale / 2 };
+  }
+  // The edge is on in the spans main measured as hard to read, the same spans live and in export.
+  const openingEdgeAt = (group, t) => group.edges.some(span => t >= span.s && t < span.e);
+  // Every moment an opening's layout can be at its widest: each arrival's pop, settle and dim, and just before the end.
+  function openingTimes(group) {
+    const e = group.lines[0].e, times = [];
+    for (const l of group.lines) for (let k = 0; k <= 12; k++) times.push(Math.min(e - 1e-4, l.s + .3 * k / 12));
+    for (const span of group.edges) times.push(span.s, Math.max(span.s, span.e - 1e-4), Math.max(0, span.s - 1e-4));
+    times.push(e - 1e-4);
+    return times;
+  }
+  const stage = document.getElementById('stage');
+  const measure = document.createElement('canvas').getContext('2d');
+  let cues = [];
+  let overlays = [];
+  let mattes = [];
+  const matteImages = new Map();
+  async function seekMatte(timeS) {
+    const active = mattes.filter(m => timeS >= m.s && timeS < m.e).at(-1);
+    if (!active) return null;
+    const url = active.frames[Math.min(active.frames.length - 1, Math.floor((timeS - active.s) * active.fps + 1e-7))];
+    if (!url || !/^st-media:\/\/local\//.test(url)) throw new Error('Invalid person matte frame');
+    let pending = matteImages.get(url);
+    if (!pending) {
+      const img = document.createElement('img'); img.src = url;
+      pending = img.decode(); matteImages.set(url, pending);
+      if (matteImages.size > 12) matteImages.delete(matteImages.keys().next().value);
+    }
+    await pending;
+    return url;
+  }
+
+  // Pure, seek-based image layout shared by live playback and frame capture.
+  function overlayLayout(item, time, width, height, aspect) {
+    const active = time >= item.s && time < item.e;
+    const enterS = Math.min(.25, (item.e - item.s) / 2);
+    const exitS = Math.min(.15, (item.e - item.s) / 2);
+    const u = Math.max(0, Math.min(1, (time - item.s) / enterS));
+    const v = Math.max(0, Math.min(1, (item.e - time) / exitS));
+    const ease = 1 - (1 - u) ** 3;
+    let scale = 1, opacity = active ? 1 : 0, dy = 0;
+    if (item.enter !== 'none') opacity *= Math.min(1, u * 5);
+    if (item.enter === 'pop') scale = u < .7 ? .6 + .44 * (1 - (1 - u / .7) ** 3) : 1 + .04 * (1 - (u - .7) / .3) ** 2;
+    if (item.enter === 'slide-up') dy = width * .06 * (1 - ease);
+    if (item.enter === 'fade') opacity = (active ? 1 : 0) * ease;
+    if (item.exit !== 'none') opacity *= v;
+    if (item.exit === 'pop') scale *= .8 + .2 * v;
+    const w = item.w * width, h = w / aspect;
+    return { left: item.x * width - w / 2, top: item.y * height - h / 2, width: w, height: h,
+      radius: item.corner === 'round' ? width * .03 : 0, scale, opacity, dy, rotate: item.rotate || 0 };
+  }
+  let animations = [];
+  // Faces that loaded once in this page: they are validated, so later inits only need fonts.check.
+  const fonts = new Set();
+  // VO7-15: a caption font can be any family on this Mac, drawn by name. A family with no bundled face that is
+  // not installed here draws in the default caption font instead, and fontFallback says so (never silently).
+  const BUNDLED = new Set(['Outfit', 'Inter Display', 'Inter', 'Montserrat', 'Poppins', 'Bebas Neue', 'Archivo Black', 'Caveat']);
+  const DEFAULT_FONT = 'Inter Display', installed = new Map();
+  function onThisMac(family) {
+    if (BUNDLED.has(family)) return true;
+    if (!installed.has(family)) {
+      // An installed family changes the width of a sample against at least one generic fallback.
+      const probe = document.createElement('canvas').getContext('2d'), sample = 'mmmmmmmmmmlliWQ@#0';
+      installed.set(family, ['monospace', 'serif', 'sans-serif'].some(generic => {
+        probe.font = `72px ${generic}`; const base = probe.measureText(sample).width;
+        probe.font = `72px "${family}", ${generic}`; return probe.measureText(sample).width !== base;
+      }));
+    }
+    return installed.get(family);
+  }
+  let generation = 0;
+  let seekGeneration = 0;
+
+  function animate(element, frames, delay, duration) {
+    const animation = element.animate(frames, {
+      duration: duration * 1000, delay: delay * 1000,
+      easing: 'linear', fill: 'both'
+    });
+    animation.pause();
+    animation.currentTime = 0;
+    animations.push(animation);
+  }
+
+  function entrance(preset, distance) {
+    switch (preset) {
+      case 'pop': return [
+        { transform: 'scale(0.8)', opacity: 0, offset: 0, easing: EASE_OUT },
+        { transform: 'scale(1.04)', opacity: 1, offset: 0.7, easing: 'cubic-bezier(0.4, 0, 0.6, 1)' },
+        { transform: 'scale(1)', opacity: 1, offset: 1 }
+      ];
+      case 'slide-up': return [
+        { transform: `translateY(${distance}px)`, opacity: 0, offset: 0, easing: EASE_OUT },
+        { transform: `translateY(${-distance * 0.08}px)`, opacity: 1, offset: 0.75, easing: 'cubic-bezier(0.4, 0, 0.6, 1)' },
+        { transform: 'translateY(0)', opacity: 1, offset: 1 }
+      ];
+      case 'slide-left': return [
+        { transform: `translateX(${distance}px)`, opacity: 0, easing: EASE_OUT },
+        { transform: 'translateX(0)', opacity: 1 }
+      ];
+      case 'roll': return [
+        { transform: 'perspective(900px) translateY(0.22em) rotateX(-90deg)', filter: 'blur(5px)', opacity: 0, offset: 0, easing: EASE_OUT },
+        { transform: 'perspective(900px) translateY(-0.02em) rotateX(7deg)', filter: 'blur(0px)', opacity: 1, offset: 0.75, easing: 'cubic-bezier(0.4, 0, 0.6, 1)' },
+        { transform: 'perspective(900px) translateY(0em) rotateX(0deg)', filter: 'blur(0px)', opacity: 1, offset: 1 }
+      ];
+      case 'scale': return [{ transform: 'scale(0.85)', opacity: 0, easing: EASE_OUT }, { transform: 'scale(1)', opacity: 1 }];
+      case 'fade': return [{ opacity: 0, easing: EASE_OUT }, { opacity: 1 }];
+      default: return null; // type is handled by deterministic word reveals.
+    }
+  }
+
+  function departure(preset) {
+    // Older tracks may ask for pop or slide-down exits. Keep their disappearance
+    // quiet and quick too, without stealing time from the reading hold.
+    return preset === 'none' ? null : [{ opacity: 1 }, { opacity: 0 }];
+  }
+
+  function wordsFor(cue, caption) {
+    if (cue.words?.length) {
+      // Keep the authored whitespace, newlines and punctuation; timed words match the text
+      // ignoring case, and only letters or digits between them count as a mismatch.
+      const lower = cue.text.toLowerCase();
+      let cursor = 0;
+      const tokens = [];
+      for (const measuredWord of cue.words) {
+        const word = caption ? { ...measuredWord, text: caption.case === 'upper' ? measuredWord.text.toUpperCase() : caption.case === 'lower' ? measuredWord.text.toLowerCase() : measuredWord.text } : measuredWord;
+        const at = lower.indexOf(word.text.toLowerCase(), cursor);
+        if (at < cursor || /[\p{L}\p{N}]/u.test(cue.text.slice(cursor, at))) {
+          throw new Error(`Timed words do not match cue text: ${cue.id}`);
+        }
+        tokens.push({ gap: cue.text.slice(cursor, at), ...word, text: cue.text.slice(at, at + word.text.length) });
+        cursor = at + word.text.length;
+      }
+      if (/[\p{L}\p{N}]/u.test(cue.text.slice(cursor))) throw new Error(`Missing timed words: ${cue.id}`);
+      return { tokens, tail: cue.text.slice(cursor) };
+    }
+    const matches = [...cue.text.matchAll(/\S+/gu)];
+    let cursor = 0;
+    const step = 0.25;
+    const tokens = matches.map((match, index) => {
+      const token = {
+        gap: cue.text.slice(cursor, match.index), text: match[0],
+        s: cue.s + (cue.enter === 'type' ? index * step : 0), accent: false
+      };
+      cursor = match.index + match[0].length;
+      return token;
+    });
+    return { tokens, tail: cue.text.slice(cursor) };
+  }
+
+  // ---- GFX1: motion graphics. A graphic is a pure function of time, drawn in its own sandboxed frame by this same
+  // interpreter, live and in export. The frame has no network, storage, timers or real clocks; fonts are the bundled ones.
+  const GFX_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src data:; img-src data:";
+  const GFX_BUDGET_MS = 1500;
+  let gfxFonts = null;
+  const graphics = [];
+  // This function's source runs inside the graphic's frame, before the graphic's own script.
+  function graphicHeader() {
+    'use strict';
+    const tell = window.parent.postMessage.bind(window.parent);
+    // A script that fails to load (a syntax error, a throw at the top) is reported with the first frame.
+    let fault = null;
+    addEventListener('error', event => { fault = fault || String(event.message || 'error'); });
+    const EPOCH = 1767225600000;
+    let now = 0, seed = 1, queued = [];
+    const RealDate = Date;
+    function FakeDate(...args) { return args.length ? new RealDate(...args) : new RealDate(EPOCH + now); }
+    FakeDate.prototype = RealDate.prototype; FakeDate.now = () => EPOCH + now; FakeDate.UTC = RealDate.UTC; FakeDate.parse = RealDate.parse;
+    window.Date = FakeDate;
+    Object.defineProperty(performance, 'now', { value: () => now, configurable: false });
+    Math.random = () => { seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+    // The renderer's clock replaces every real one; nothing can be scheduled.
+    const none = () => 0;
+    for (const name of ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'requestIdleCallback', 'cancelIdleCallback', 'cancelAnimationFrame']) window[name] = none;
+    window.requestAnimationFrame = callback => { if (typeof callback === 'function') queued.push(callback); return queued.length; };
+    for (const name of ['fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource', 'Worker', 'SharedWorker', 'indexedDB', 'caches', 'open', 'BroadcastChannel']) {
+      try { Object.defineProperty(window, name, { value: undefined, configurable: false }); } catch {}
+    }
+    navigator.sendBeacon = none;
+    function seek(t, duration) {
+      now = t * 1000; seed = 0x9E3779B9;
+      const root = document.documentElement;
+      root.style.setProperty('--t', String(t));
+      root.style.setProperty('--p', String(duration > 0 ? Math.min(1, t / duration) : 0));
+      for (const animation of document.getAnimations()) { animation.pause(); animation.currentTime = t * 1000; }
+      let error = null;
+      const hook = typeof render === 'function' ? render : null;
+      try { if (hook) hook(t, document.getElementById('gfx')); } catch (e) { error = String(e && e.message || e); }
+      const callbacks = queued; queued = [];
+      for (const callback of callbacks) { try { callback(now); } catch (e) { error = error || String(e && e.message || e); } }
+      void document.body.offsetHeight;
+      return error || fault;
+    }
+    addEventListener('message', async event => {
+      if (event.source !== window.parent) return;
+      const m = event.data;
+      if (!m || m.gfx !== 'seek') return;
+      const error = seek(Number(m.t) || 0, Number(m.duration) || 0);
+      await document.fonts.ready;
+      // Layout is already flushed; the title page's own frame fence paints this frame too.
+      tell({ gfx: 'done', id: m.id, error }, '*');
+    });
+    document.addEventListener('DOMContentLoaded', async () => {
+      const first = seek(0, 0);
+      await document.fonts.ready;
+      tell({ gfx: 'ready', error: first }, '*');
+    });
+  }
+  function graphicDocument(graphic, width, height) {
+    if (/<\/(style|script)/i.test(graphic.css) || /<\/(style|script)/i.test(graphic.js || '')) throw new Error('Invalid graphic source');
+    gfxFonts ??= [...document.styleSheets].flatMap(sheet => [...sheet.cssRules]).filter(rule => rule.type === CSSRule.FONT_FACE_RULE).map(rule => rule.cssText).join('\n');
+    const open = '<scr' + 'ipt>', close = '</scr' + 'ipt>';
+    return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${GFX_CSP}"><style>${gfxFonts}</style>`
+      + `<style>:root{--w:${width}px;--h:${height}px;--u:${Math.min(width, height) / 100}px}html,body{margin:0;width:${width}px;height:${height}px;overflow:hidden;background:transparent}`
+      + `*,*::before,*::after{box-sizing:border-box;animation-play-state:paused!important}#gfx{position:absolute;inset:0;overflow:hidden}</style><style>${graphic.css}</style></head>`
+      + `<body><div id="gfx">${graphic.html}</div>${open}(${graphicHeader.toString()})()${close}${graphic.js ? open + graphic.js + close : ''}</body></html>`;
+  }
+  function graphicHash(g, width, height) {
+    let h = 2166136261;
+    for (const part of [g.html, g.css, g.js || '', g.frame, g.widthPx, g.heightPx, g.durationS, width, height]) {
+      const text = String(part);
+      for (let i = 0; i < text.length; i++) { h ^= text.charCodeAt(i); h = Math.imul(h, 16777619); }
+      h ^= 124; h = Math.imul(h, 16777619);
+    }
+    return (h >>> 0).toString(16) + ':' + g.html.length + ':' + g.css.length;
+  }
+  async function loadGraphic(item, width, height) {
+    const g = item.graphic, full = g.frame === 'full';
+    const designW = full ? width : g.widthPx, designH = full ? height : g.heightPx;
+    const wrap = document.createElement('div'), frame = document.createElement('iframe');
+    wrap.className = 'gfx'; wrap.dataset.graphic = item.id;
+    Object.assign(wrap.style, { position: 'absolute', visibility: 'hidden', overflow: 'hidden', transformOrigin: 'center' });
+    frame.setAttribute('sandbox', 'allow-scripts');
+    frame.setAttribute('tabindex', '-1');
+    Object.assign(frame.style, { position: 'absolute', left: '0', top: '0', width: `${designW}px`, height: `${designH}px`, border: '0', background: 'transparent', transformOrigin: '0 0' });
+    const ready = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('A graphic took too long to load.')), GFX_BUDGET_MS * 3);
+      const listen = event => {
+        if (event.source !== frame.contentWindow || !event.data || event.data.gfx !== 'ready') return;
+        clearTimeout(timer); window.removeEventListener('message', listen); resolve(event.data.error);
+      };
+      window.addEventListener('message', listen);
+    });
+    frame.srcdoc = graphicDocument(g, designW, designH);
+    wrap.append(frame); stage.append(wrap);
+    const error = await ready;
+    if (error) throw new Error(`The graphic's script failed: ${error}`);
+    return { item, wrap, frame, full, designW, designH, aspect: designW / designH, waiting: new Map(), ticket: 0, at: null };
+  }
+  function drawGraphic(gfx, timeS, mask) {
+    const { item, wrap, frame } = gfx, g = item.graphic, active = timeS >= item.s && timeS < item.e;
+    if (!active) { wrap.style.visibility = 'hidden'; return null; }
+    const box = gfx.full ? { left: 0, top: 0, width: gfx.designW, height: gfx.designH, scale: 1, dy: 0, rotate: 0, radius: 0, opacity: 1 }
+      : overlayLayout(item, timeS, gfx.stageW, gfx.stageH, gfx.aspect);
+    Object.assign(wrap.style, { left: `${box.left}px`, top: `${box.top}px`, width: `${box.width}px`, height: `${box.height}px`,
+      borderRadius: `${box.radius}px`, opacity: String(box.opacity), visibility: box.opacity > 0 ? 'visible' : 'hidden',
+      transform: `translateY(${box.dy}px) rotate(${box.rotate}deg) scale(${box.scale})` });
+    frame.style.transform = `scale(${box.width / gfx.designW})`;
+    // Behind the person: shown through the same background-only matte the behind titles use. Live without a matte, it stays in front.
+    const masked = gfx.behind && mask ? `url("${mask}")` : 'none';
+    wrap.style.maskImage = masked; wrap.style.webkitMaskImage = masked;
+    wrap.style.maskSize = wrap.style.webkitMaskSize = `${gfx.stageW}px ${gfx.stageH}px`;
+    wrap.style.maskPosition = wrap.style.webkitMaskPosition = `${-box.left}px ${-box.top}px`; wrap.style.maskRepeat = wrap.style.webkitMaskRepeat = 'no-repeat';
+    const local = Math.max(0, Math.min(g.durationS, timeS - item.s));
+    if (gfx.at === local) return null;
+    gfx.at = local;
+    const id = ++gfx.ticket;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { window.removeEventListener('message', listen); reject(new Error('A graphic took too long to draw.')); }, GFX_BUDGET_MS);
+      const listen = event => {
+        const m = event.data;
+        if (event.source !== frame.contentWindow || !m || m.gfx !== 'done' || m.id !== id) return;
+        clearTimeout(timer); window.removeEventListener('message', listen);
+        if (m.error) reject(new Error(`The graphic's script failed: ${m.error}`)); else resolve();
+      };
+      window.addEventListener('message', listen);
+      frame.contentWindow.postMessage({ gfx: 'seek', id, t: local, duration: g.durationS }, '*');
+    });
+  }
+
+  window.titleRenderer = {
+    overlayLayout,
+    async init(track, options) {
+      const current = ++generation;
+      animations.forEach(animation => animation.cancel());
+      animations = [];
+      cues = [];
+      overlays = [];
+      matteImages.clear();
+      // Export uses these same prepared frames for kinetic-only behind tracks.
+      // Legacy title tracks retain the existing external matte compositor.
+      const preparedBehind = track.cues.filter(c => c.layer === 'behind').every(c => c.id.startsWith('kinetic-'));
+      mattes = options.live || preparedBehind ? track.personMattes || [] : [];
+      // Graphic frames are kept when their design is unchanged: moving a frame in the page would reload it.
+      for (const child of [...stage.children]) if (!child.classList.contains('gfx')) child.remove();
+      const pool = new Map(graphics.map(gfx => [gfx.item.id, gfx]));
+      stage.style.width = `${options.width}px`;
+      stage.style.height = `${options.height}px`;
+      graphics.length = 0;
+      for (const item of options.overlays || []) {
+        if (item.graphic) {
+          if (options.layer !== 'all' && options.layer !== (item.graphic.layer === 'behind' ? 'behind' : 'front')) continue;
+          const key = graphicHash(item.graphic, options.width, options.height), old = pool.get(item.id);
+          if (old && old.key === key) { old.item = item; graphics.push(old); pool.delete(item.id); continue; }
+          const gfx = await loadGraphic(item, options.width, options.height);
+          if (current !== generation) { gfx.wrap.remove(); return; }
+          gfx.key = key; gfx.stageW = options.width; gfx.stageH = options.height; gfx.behind = item.graphic.layer === 'behind';
+          graphics.push(gfx);
+          continue;
+        }
+        if (options.layer === 'behind') continue;
+        const img = document.createElement('img');
+        img.alt = ''; img.draggable = false;
+        // Only image bytes in our cache or main's embedded export payload may load.
+        if (!/^(st-media:\/\/local\/|data:image\/(png|jpeg|webp);base64,)/.test(item.url)) throw new Error('Invalid overlay image');
+        img.src = item.url;
+        await img.decode();
+        if (current !== generation) return;
+        // VO7: the picture is drawn once into a canvas, which shows as soon as it is made visible. A hidden
+        // <img> is rasterised only when it first appears; under export load the capture beat that raster, so
+        // a held last shot came out black until the next caption change forced a fresh capture.
+        const picture = document.createElement('canvas');
+        picture.width = img.naturalWidth; picture.height = img.naturalHeight;
+        picture.getContext('2d').drawImage(img, 0, 0);
+        img.removeAttribute('src');
+        Object.assign(picture.style, { position: 'absolute', visibility: 'hidden', transformOrigin: 'center' });
+        stage.append(picture);
+        overlays.push({ item, img: picture, aspect: picture.width / picture.height, width: options.width, height: options.height, shown: false });
+      }
+      for (const stale of pool.values()) stale.wrap.remove();
+      const missing = [...new Set([track.font, track.captionStyle?.font].filter(name => name && !onThisMac(name)))];
+      window.titleRenderer.fontFallback = missing.length ? { missing, using: DEFAULT_FONT } : null;
+      if (missing.length) console.warn(`Not on this Mac, using ${DEFAULT_FONT}: ${missing.join(', ')}`);
+      const family = name => onThisMac(name) ? name : DEFAULT_FONT;
+      const captionFont = track.captionStyle ? family(track.captionStyle.font) : null, titleFont = family(track.font);
+      // An opening style draws in the edit's caption font.
+      const fontFor = cue => (cue.role === 'subtitle' || cue.opening || cue.id.startsWith('lower-third:')) && captionFont ? captionFont : titleFont;
+      const unit = Math.min(options.width, options.height * 9 / 16);
+      const selected = track.cues; // Reserve regions across both layers before filtering for capture.
+      for (const cue of selected) {
+        if (!CSS.supports('color', cue.color) || (cue.accent && !CSS.supports('color', cue.accent))) {
+          throw new Error(`Invalid title colour: ${cue.id}`);
+        }
+        const font = `${cue.italic ? 'italic' : 'normal'} ${cue.weight} 1000px "${fontFor(cue)}"`;
+        // Faces already loaded for this text need no round trip, so a style change lays out without waiting.
+        // Latin-1 text is covered once its face has loaded; other text asks for its own subset.
+        const text = cue.text || 'H', key = /^[\u0000-\u00ff]*$/.test(text) ? font : `${font}\n${text}`;
+        if (fonts.has(key) || !BUNDLED.has(fontFor(cue))) continue;  // a family on this Mac is drawn by name, nothing to load
+        if (fonts.has(font) && document.fonts.check(font, text)) { fonts.add(key); continue; }
+        const loaded = await document.fonts.load(font, text);
+        if (!loaded.length) throw new Error(`Bundled font did not load: ${fontFor(cue)}`);
+        fonts.add(font); fonts.add(key);
+      }
+      if (document.fonts.status !== 'loaded') await document.fonts.ready;
+      if (current !== generation) return;
+      for (const cue of selected) {
+        // Measure an actual capital, rather than interpreting size as CSS em.
+        measure.font = `${cue.italic ? 'italic' : 'normal'} ${cue.weight} 1000px "${fontFor(cue)}"`;
+        const capRatio = measure.measureText('H').actualBoundingBoxAscent / 1000;
+        if (!(capRatio > 0)) throw new Error(`Cannot measure cap height: ${cue.id}`);
+        const recipe = cue.opening ? OPENING_STYLES[cue.opening.style] || OPENING_STYLES['build-up'] : null;
+        const role = recipe && recipe.sizes[cue.opening.role] ? cue.opening.role : 'phrase';
+        // An opening is sized by its style's role sizes; fitOpening scales a line down only if it would overflow.
+        const cap = recipe ? recipe.sizes[role] * unit * capRatio : cue.size * options.height;
+        const root = document.createElement('div');
+        root.className = 'cue';
+        root.dataset.cue = cue.id;
+        const shift = { left: '0', center: '-50%', right: '-100%' }[cue.align];
+        Object.assign(root.style, {
+          left: `${cue.x * options.width}px`, top: `${cue.y * options.height}px`,
+          transform: `translate(${shift}, -50%)`, visibility: 'hidden',
+          fontFamily: `"${fontFor(cue)}"`, fontSize: `${cap / capRatio}px`,
+          fontWeight: String(cue.weight), fontStyle: cue.italic ? 'italic' : 'normal',
+          fontOpticalSizing: 'none', fontKerning: 'normal', lineHeight: '1.1',
+          textAlign: cue.align, color: cue.color
+        });
+        if (recipe) Object.assign(root.style, { lineHeight: String(recipe.lineHeight[role]), textAlign: 'center', transform: 'none' });
+        const lowerThird = cue.id.startsWith('lower-third:');
+        const caption = cue.role === 'subtitle' ? track.captionStyle : null;
+        if (caption) {
+          if (caption.background !== 'none') {
+            root.style.background = 'rgba(8,10,16,.84)';
+            root.style.padding = `${cap * .28}px ${cap * .45}px`;
+            root.style.borderRadius = caption.background === 'pill' ? `${cap * 2}px` : `${cap * .12}px`;
+          }
+        }
+        // Outline is a caption style, so the opening caption (a kinetic title) wears it too.
+        const outlined = !!(caption ? caption.outline : cue.id.startsWith('kinetic-') && track.captionStyle?.outline);
+        if (outlined) {
+          // Painted under the fill, so half the stroke shows: a solid edge about a tenth of the cap height, readable at phone size.
+          root.style.webkitTextStroke = `${cap * .2}px #000`;
+          root.style.paintOrder = 'stroke fill';
+          root.style.strokeLinejoin = 'round';
+        }
+        const rotated = document.createElement('div');
+        rotated.style.transform = `rotate(${cue.rotate ?? 0}deg)`;
+        const enter = document.createElement('div');
+        const exit = document.createElement('div');
+        enter.className = 'enter'; exit.className = 'exit';
+        if (track.style === 'shadow') {
+          exit.style.textShadow = `0 ${cap * 0.04}px ${cap * 0.14}px rgba(0,0,0,0.65)`;
+        } else if (track.style === 'stroke') {
+          exit.style.webkitTextStroke = `${cap * 0.035}px rgba(0,0,0,0.85)`;
+          exit.style.paintOrder = 'stroke fill';
+        }
+        root.append(rotated); rotated.append(enter); enter.append(exit);
+        const { tokens, tail } = wordsFor(cue, caption);
+        let subtitle = false;
+        const words = tokens.map(word => {
+          exit.append(document.createTextNode(word.gap));
+          const span = document.createElement('span');
+          span.className = 'word';
+          if (lowerThird) {
+            subtitle ||= word.gap.includes('\n');
+            span.style.fontWeight = subtitle ? '600' : '800';
+            span.style.fontSize = subtitle ? '.76em' : '1em';
+            span.style.color = subtitle ? cue.color : cue.accent || cue.color;
+            if (subtitle) span.style.opacity = '.85';
+          }
+          span.textContent = word.text; // Track content can never execute as markup.
+          if (word.accent && cue.accent) span.style.color = cue.accent;
+          // An accent word pops 18% while spoken. Its resting spacing is the same as a plain word's: no reserved
+          // margin. While it pops, its neighbours on the line slide apart by the growth (see seek), so nothing overlaps.
+          exit.append(span);
+          if (caption) {
+            span.style.transformOrigin = 'center';
+            if (caption.animation === 'box-highlight') {
+              span.style.borderRadius = `${cap * .12}px`;
+              span.style.padding = `0 ${cap * .12}px`;
+            }
+          }
+          return { element: span, s: word.s, e: word.e ?? cue.e, accent: word.accent, text: word.text };
+
+        });
+        exit.append(document.createTextNode(tail));
+        let maskRoot = null;
+        if ((options.live || mattes.length) && cue.layer === 'behind') {
+          maskRoot = document.createElement('div');
+          Object.assign(maskRoot.style, { position: 'absolute', inset: '0', maskSize: '100% 100%', webkitMaskSize: '100% 100%' });
+          maskRoot.append(root); stage.append(maskRoot);
+        } else stage.append(root);
+        cues.push({ cue, root, maskRoot, words, cap, caption, outlined, style: track.style ?? 'flat', draw: options.layer === 'all' || options.layer === cue.layer,
+          enterElement: enter, exitElement: exit, initialFont: parseFloat(root.style.fontSize),
+          opening: recipe ? { recipe, role, family: fontFor(cue), s: cue.s, e: cue.e } : null });
+      }
+      // One measured placement for every on-screen text element, in both live
+      // and export. Speech reserves its band first; graphics fit around it.
+      const safe = track.captionSource?.safeArea || { left: .06, right: .94, top: .08, bottom: .8 };
+      const area = { left: safe.left * options.width, right: safe.right * options.width,
+        top: safe.top * options.height, bottom: safe.bottom * options.height };
+      const occupied = [];
+      const intersects = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+      const overlap = (a, b) => Math.max(0, Math.min(a.right,b.right)-Math.max(a.left,b.left)) * Math.max(0, Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top));
+      // Openings first: the engine stacks each one's phrases in spoken order, fits them, and reserves the space.
+      openingGroups = [];
+      window.titleRenderer.openingNotes = [];
+      for (const entry of cues.filter(c => c.opening)) {
+        // One opening per kinetic line (kinetic-<line>-<phrase>); its phrases all end together.
+        const key = (/^kinetic-(\d+)-/.exec(entry.cue.id) || [])[1] ?? `end:${entry.cue.e}`;
+        let group = openingGroups.find(g => g.key === key);
+        if (!group) openingGroups.push(group = { key, recipe: entry.opening.recipe, lines: [], area, centreY: options.height / 2, edges: entry.cue.opening.edges || [] });
+        group.lines.push(Object.assign(entry.opening, { entry, group }));
+      }
+      for (const group of openingGroups) {
+        const r = group.recipe;
+        // Spoken order, whatever order the design arrived in.
+        group.lines.sort((a, b) => a.s - b.s || (a.entry.words[0]?.s ?? 0) - (b.entry.words[0]?.s ?? 0));
+        const maxW = Math.min(r.maxWidth * options.width, area.right - area.left), maxH = area.bottom - area.top;
+        const min = r.minSize * unit, over = l => (l.role === 'punch' ? r.punch : r.enter).over;
+        const measureLine = l => {
+          const root = l.entry.root, fontSize = parseFloat(root.style.fontSize), lineHeight = parseFloat(root.style.lineHeight) * fontSize;
+          root.style.transform = 'none';
+          const box = root.getBoundingClientRect();
+          measure.font = `italic ${l.entry.cue.weight} ${fontSize}px "${l.family}"`;
+          const ink = measure.measureText(l.entry.cue.text.replace(/\n/g, ' ')), font = measure.measureText('H');
+          // Ink, not line boxes: the glyphs' real extent, with the outline's half stroke when the style has one.
+          const stroke = l.entry.outlined ? fontSize * .1 : 0, rows = Math.max(1, Math.round(box.height / lineHeight));
+          const baseline = (lineHeight - (font.fontBoundingBoxAscent + font.fontBoundingBoxDescent)) / 2 + font.fontBoundingBoxAscent;
+          l.inkTop = baseline - ink.actualBoundingBoxAscent - stroke;
+          const inkBottom = (rows - 1) * lineHeight + baseline + ink.actualBoundingBoxDescent + stroke;
+          l.w = Math.max(box.width, rows === 1 ? ink.actualBoundingBoxLeft + ink.actualBoundingBoxRight : box.width) + stroke * 2 + fontSize * .04;
+          l.h = inkBottom - l.inkTop; l.size = fontSize;
+          // The caption edge's visible half (the Outline option's stroke, cap * .2, painted under the fill), when this opening can wear it.
+          l.pad = group.edges.length && !l.entry.outlined ? fontSize * l.entry.cap / l.entry.initialFont * .1 + 1 : 0;
+        };
+        const setSize = (l, size) => { l.entry.root.style.fontSize = `${size}px`; measureLine(l); };
+        for (const l of group.lines) {
+          measureLine(l);
+          // Ink and edge do not scale exactly with the font, so settle the fit in a few steps, never past the frame.
+          for (let k = 0; k < 4 && (l.w + 2 * l.pad) * over(l) > maxW && l.size > min; k++) setSize(l, Math.max(min, l.size * maxW / ((l.w + 2 * l.pad) * over(l)) * (k ? .995 : 1)));
+          if ((l.w + 2 * l.pad) * over(l) > maxW + .5) {
+            // At the minimum size and still too wide: wrap the phrase inside the frame, never shrink it further.
+            Object.assign(l.entry.root.style, { whiteSpace: 'pre-wrap', width: `${maxW / over(l) - l.size * .3}px` });
+            measureLine(l);
+            window.titleRenderer.openingNotes.push(`wrapped ${l.entry.cue.id}`);
+          }
+        }
+        group.gap = r.gap * unit;
+        for (let attempt = 0; attempt < 6; attempt++) {
+          const total = group.lines.reduce((n, l) => n + (l.h + 2 * l.pad) * over(l), 0) + group.gap * (group.lines.length - 1);
+          if (total <= maxH) break;
+          // Too tall for the safe area: every line scales down together, to the minimum, then below it to stay in frame.
+          const k = maxH / total * .98, floor = attempt < 5 ? min : 0;
+          group.gap *= k;
+          for (const l of group.lines) setSize(l, Math.max(floor, l.size * k));
+          if (!floor) window.titleRenderer.openingNotes.push(`below minimum ${group.key}`);
+        }
+        const half = Math.max(...group.lines.map(l => (l.w + 2 * l.pad) * over(l))) / 2;
+        group.cx = Math.max(area.left + half, Math.min(options.width / 2, area.right - half));
+        for (const l of group.lines) l.entry.root.style.transformOrigin = `50% ${l.inkTop + l.h / 2}px`;
+        const boxes = openingTimes(group).flatMap(t => openingFrame(group, t).map(openingBox));
+        group.box = { left: Math.min(...boxes.map(b => b.left)), right: Math.max(...boxes.map(b => b.right)),
+          top: Math.min(...boxes.map(b => b.top)), bottom: Math.max(...boxes.map(b => b.bottom)) };
+        occupied.push({ cue: { s: Math.min(...group.lines.map(l => l.s)), e: Math.max(...group.lines.map(l => l.e)) }, box: group.box });
+      }
+      const order = [...cues].filter(entry => !entry.opening).sort((a,b) => Number(b.cue.role === 'subtitle') - Number(a.cue.role === 'subtitle') ||
+        Number(b.cue.id.startsWith('layout-title:')) - Number(a.cue.id.startsWith('layout-title:')) || a.cue.s-b.cue.s);
+      for (const entry of order) {
+        const {cue, root, cap, caption} = entry;
+        const card = cue.id.startsWith('layout-title:');
+        if (card) {
+          root.style.width = `${(area.right-area.left)*.92}px`;
+          root.style.whiteSpace = 'pre-wrap';
+          entry.words.forEach(w => { w.element.style.maxWidth = '100%'; w.element.style.overflowWrap = 'anywhere'; w.element.style.whiteSpace = 'normal'; });
+        }
+        const conflicts = occupied.filter(p => p.cue.s < cue.e && p.cue.e > cue.s);
+        // Cards replace the picture, so a face in the original is no obstacle.
+        const cardSpans = cues.filter(p => p.cue.id.startsWith('layout-title:'));
+        const overCard = cardSpans.some(p => p.cue.s <= cue.s && p.cue.e >= cue.e);
+        const captionOnCard = cue.role === 'subtitle' && cardSpans.some(p => p.cue.s < cue.e && p.cue.e > cue.s);
+        const faces = card || overCard ? [] : (track.captionSource?.faces || []).filter(f => f.s < cue.e && f.e > cue.s).map(f => ({
+          left:f.box.left*options.width,right:f.box.right*options.width,top:f.box.top*options.height,bottom:f.box.bottom*options.height
+        }));
+        let placed = false;
+        for (let attempt=0; attempt<60 && !placed; attempt++) {
+          const fontSize = parseFloat(root.style.fontSize);
+          // Include animation overshoot, slides, stroke/background and italic ink.
+          const b = root.getBoundingClientRect();
+          const wordMotion = caption ? Math.max(0,...entry.words.filter(w=>caption.animation === 'pulse' || w.accent).map(w=>w.element.getBoundingClientRect().width*.09)) : 0;
+          const padding = Math.max(wordMotion, cue.enter === 'pop' ? b.width*.025 : 0, fontSize * (cue.enter === 'slide-left' || cue.enter === 'slide-up' ? .8 : .28)) + (cue.enter === 'roll' ? 7 : 2);
+          const angle = Math.abs((cue.rotate || 0)*Math.PI/180);
+          const width = Math.abs(b.width*Math.cos(angle))+Math.abs(b.height*Math.sin(angle))+padding*2;
+          const height = Math.abs(b.height*Math.cos(angle))+Math.abs(b.width*Math.sin(angle))+padding*2;
+          const low = area.top, high = area.bottom-height;
+          if (width <= area.right-area.left && high >= low && (!card || b.height <= fontSize*1.1*3+.5)) {
+            const preferredX = Math.max(area.left,Math.min(b.left-padding,area.right-width));
+            const preferredY = captionOnCard ? high : Math.max(low,Math.min(b.top-padding,high));
+            const xs = [...new Set([preferredX,area.left,area.right-width,(area.left+area.right-width)/2])];
+            const ys = [...new Set([preferredY, ...conflicts.flatMap(p=>[p.box.top-height-2,p.box.bottom+2]), ...Array.from({length:61},(_,i)=>low+(high-low)*i/60)])].filter(y=>y>=low&&y<=high);
+            const candidates = xs.flatMap(left=>ys.map(top=>({left,right:left+width,top,bottom:top+height})))
+              .filter(box=>!conflicts.some(p=>intersects(box,p.box)));
+            candidates.sort((a,b) => faces.reduce((n,f)=>n+overlap(a,f)-overlap(b,f),0) ||
+              (a.left-preferredX)**2+(a.top-preferredY)**2-(b.left-preferredX)**2-(b.top-preferredY)**2);
+            const box = candidates[0];
+            if (box) {
+              root.style.left = `${parseFloat(root.style.left)+box.left+width/2-(b.left+b.width/2)}px`;
+              root.style.top = `${parseFloat(root.style.top)+box.top+height/2-(b.top+b.height/2)}px`;
+              occupied.push({cue,box}); placed=true;
+            }
+          }
+          if (!placed) root.style.fontSize = `${fontSize*.9}px`;
+        }
+        if (!placed) throw new Error(`No safe area for title: ${cue.id}`);
+      }
+      for (const entry of cues) {
+        const {cue,root,initialFont,enterElement,exitElement} = entry;
+        entry.cap *= parseFloat(root.style.fontSize)/initialFont;
+        const entering = entrance(cue.enter, entry.cap*.7*(cue.id.startsWith('lower-third:') && cue.align !== 'right' ? -1 : 1));
+        const exiting = departure(cue.exit);
+        if (entering) animate(enterElement,entering,cue.s,ENTER_S);
+        if (exiting) animate(exitElement,exiting,cue.e-EXIT_S,EXIT_S);
+      }
+      // Live playback starts at the playhead and needs no capture fence: the player's next frame shows it.
+      const first = this.seek(options.live ? Math.max(0, options.at ?? 0) : 0);
+      if (!options.live) await first;
+    },
+    luminance(color) {
+      const canvas = document.createElement('canvas'); canvas.width = canvas.height = 1;
+      const ctx = canvas.getContext('2d'); ctx.fillStyle = color; ctx.fillRect(0, 0, 1, 1);
+      const rgb = ctx.getImageData(0, 0, 1, 1).data;
+      const linear = n => { n /= 255; return n <= 0.04045 ? n / 12.92 : ((n + 0.055) / 1.055) ** 2.4; };
+      return linear(rgb[0]) * 0.2126 + linear(rgb[1]) * 0.7152 + linear(rgb[2]) * 0.0722;
+    },
+    measureLayout() {
+      // Transform extrema for these presets occur at their keyframe ends.
+      // Include pop's 1.04 overshoot and both ends of every slide. Measure all
+      // words together, including those revealed later by type/timed words.
+      return cues.map(({ cue, root, words, cap, caption, outlined, style, opening }) => {
+        if (opening) {
+          // An opening's measured box: its ink at every moment of the build up, from the same pure layout seek draws.
+          const boxes = openingTimes(opening.group).flatMap(t => openingFrame(opening.group, t).filter(row => row.line === opening).map(openingBox));
+          return { id: cue.id, left: Math.min(...boxes.map(b => b.left)), right: Math.max(...boxes.map(b => b.right)),
+            top: Math.min(...boxes.map(b => b.top)), bottom: Math.max(...boxes.map(b => b.bottom)) };
+        }
+        const times = [...Array.from({ length: 33 }, (_, i) => cue.s + ENTER_S * i / 32), cue.s, cue.s + ENTER_S * 0.7, cue.s + ENTER_S * 0.75, cue.s + ENTER_S, cue.e - EXIT_S, cue.e];
+        const boxes = [];
+        root.style.visibility = 'visible';
+        words.forEach(w => { w.element.style.visibility = 'visible'; });
+        for (const time of times) {
+          animations.forEach(a => { a.currentTime = time * 1000; });
+          for (const { element } of words) {
+            const b = element.getBoundingClientRect();
+            // Native inline boxes exclude some italic ink. Bound the actual
+            // font's glyph overhang using Canvas metrics, with room for rotation.
+            const css = getComputedStyle(element);
+            measure.font = `${css.fontStyle} ${css.fontWeight} ${css.fontSize} ${css.fontFamily}`;
+            const ink = measure.measureText(element.textContent);
+            const overhang = Math.max(0, ink.actualBoundingBoxLeft, ink.actualBoundingBoxRight - ink.width) * 1.04;
+            const effect = (style === 'shadow' ? cap * 0.5 : style === 'stroke' ? cap * 0.04 : 0) + (cue.enter === 'roll' ? 5 : 0);
+            const pad = overhang + effect + (caption ? cap * (caption.animation === 'pulse' ? Math.max(.3, b.width * .09 / cap) : caption.background !== 'none' ? .5 : caption.outline ? .14 : .12) : outlined ? cap * .14 : 0);
+            boxes.push({ left: b.left - pad, right: b.right + pad, top: b.top - pad, bottom: b.bottom + pad });
+          }
+        }
+        return { id: cue.id, left: Math.min(...boxes.map(b => b.left)), right: Math.max(...boxes.map(b => b.right)),
+          top: Math.min(...boxes.map(b => b.top)), bottom: Math.max(...boxes.map(b => b.bottom)) };
+      });
+    },
+    async seek(timeS) {
+      if (!Number.isFinite(timeS) || timeS < 0) throw new Error('Invalid title timeline time');
+      const seekTicket = ++seekGeneration;
+      const ticket = generation;
+      const mask = mattes.length ? await seekMatte(timeS) : null;
+      if (ticket !== generation || seekTicket !== seekGeneration) return;
+      let appearing = false;
+      for (const overlay of overlays) {
+        const { item, img, aspect, width, height } = overlay;
+        const box = overlayLayout(item, timeS, width, height, aspect);
+        Object.assign(img.style, { left: `${box.left}px`, top: `${box.top}px`, width: `${box.width}px`, height: `${box.height}px`,
+          borderRadius: `${box.radius}px`, visibility: box.opacity > 0 ? 'visible' : 'hidden', opacity: String(box.opacity),
+          transform: `translateY(${box.dy}px) rotate(${box.rotate}deg) scale(${box.scale})` });
+        if (box.opacity > 0 && !overlay.shown) appearing = true;
+        overlay.shown = box.opacity > 0;
+      }
+      // VO7: one extra paint when an image first shows, so its layer is in the frame the capture reads.
+      if (appearing) {
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+        if (ticket !== generation || seekTicket !== seekGeneration) return;
+      }
+      const drawing = graphics.map(gfx => drawGraphic(gfx, timeS, mask));
+      for (const animation of animations) {
+        animation.pause();
+        animation.currentTime = timeS * 1000;
+      }
+      await Promise.all(drawing);
+      if (ticket !== generation || seekTicket !== seekGeneration) return;
+      const openingRows = new Map(openingGroups.flatMap(group => openingFrame(group, timeS).map(row => [row.line, row])));
+      for (const { cue, root, maskRoot, words, caption, draw, opening, cap, outlined } of cues) {
+        if (opening) {
+          // An opening style: placed, popped and dimmed from the pure layout, the same frame live and in export.
+          const row = draw ? openingRows.get(opening) : null;
+          root.style.visibility = row ? 'visible' : 'hidden';
+          // Words inherit, so the whole phrase goes together at the handover (a visible child would outlive a hidden root).
+          for (const word of words) word.element.style.visibility = 'inherit';
+          if (!row) continue;
+          Object.assign(root.style, { left: `${row.cx}px`, top: `${row.cy - opening.inkTop - opening.h / 2}px`,
+            transform: `translate(-50%, 0) scale(${row.scale.toFixed(4)})`, opacity: row.opacity.toFixed(3) });
+          // The same solid black edge as the Outline option, only where main measured the footage too bright or busy.
+          if (!outlined) Object.assign(root.style, row.edge ? { webkitTextStroke: `${(cap * .2).toFixed(2)}px #000`, paintOrder: 'stroke fill', strokeLinejoin: 'round' } : { webkitTextStroke: '', paintOrder: '' });
+          for (const word of words) {
+            word.element.style.color = word.accent && cue.accent ? cue.accent : cue.color;
+            word.element.style.opacity = (1 - row.dim * (1 - (word.accent ? opening.recipe.dim.accent : opening.recipe.dim.primary))).toFixed(3);
+          }
+          continue;
+        }
+        const active = draw && timeS >= cue.s && timeS < cue.e;
+        root.style.visibility = active && (!maskRoot || mask) ? 'visible' : 'hidden';
+        if (maskRoot) { maskRoot.style.maskImage = mask ? `url("${mask}")` : 'none'; maskRoot.style.webkitMaskImage = maskRoot.style.maskImage; }
+        // Word e is the end of speech, not the end of its displayed lifetime.
+        for (const [index, word] of words.entries()) {
+          const reveal = !caption || caption.animation === 'typewriter';
+          word.element.style.visibility = active && (!reveal || timeS >= word.s) ? 'visible' : 'hidden';
+          const speaking = timeS >= word.s && timeS < word.e;
+          if (!caption) {
+            if (cue.id.startsWith('kinetic-')) word.element.style.color = speaking || word.accent ? cue.accent || cue.color : cue.color;
+            continue;
+          }
+          word.element.style.color = speaking || word.accent ? caption.accent : caption.primary;
+          if (caption.animation === 'box-highlight') {
+            word.element.style.background = speaking ? caption.accent : 'transparent';
+            if (speaking) word.element.style.color = '#101014';
+          }
+          {
+            const progress = Math.max(0, Math.min(1, (timeS - word.s) / Math.max(.01, word.e - word.s)));
+            const scale = word.accent && speaking ? 1 + .18 * Math.sin(progress * Math.PI) : 1;
+            // Push the line's other words out by half the popped growth each side; transform only, so no reflow.
+            const popping = words.find(other => other.accent && timeS >= other.s && timeS < other.e && other.element.offsetTop === word.element.offsetTop);
+            let shift = 0;
+            if (popping && popping !== word) {
+              const p = Math.max(0, Math.min(1, (timeS - popping.s) / Math.max(.01, popping.e - popping.s)));
+              const grow = popping.element.offsetWidth * .18 * Math.sin(p * Math.PI) / 2;
+              shift = words.indexOf(popping) < index ? grow : -grow;
+            }
+            word.element.style.transform = shift ? `translateX(${shift.toFixed(2)}px) scale(${scale})` : `scale(${scale})`;
+          }
+          if (caption.animation === 'typewriter' && caption.preset !== 'punch') {
+            const progress = Math.max(0, Math.min(1, (timeS - word.s) / Math.max(.01, word.e - word.s)));
+            const visible = Math.ceil(progress * word.text.length) / word.text.length;
+            word.element.style.clipPath = `inset(0 ${(1 - visible) * 100}% 0 0)`;
+          }
+        }
+      }
+      // Flush the style change, then cross a paint boundary before capturePage.
+      // RAF is only a compositor fence; timeline time never comes from its clock.
+      void stage.offsetHeight;
+      return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    }
+  };
+</script>
+</body>
+</html>

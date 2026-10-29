@@ -16,11 +16,14 @@ Cut the reel:
 
 Only use ids you were given. Never invent a take, a timestamp or a line.
 
+Photos are marked `photo` with their capture time `takenAt`. A photo is a short beat, about 1.5 to 3 seconds, best for what video lacks or to open or close a moment. Never several in a row unless it reads as a deliberate photo run; never under someone talking unless it shows what they are talking about. Choose by the pictures and the judge's verdicts, taking one strong photo from a burst. Give `photoSpans` with each chosen photo's id and source seconds s/e within its listed span, so your chosen beat length carries through to the edit.
+
 Reply with JSON only:
 {
   "title": string,
   "voice": [{ "id": string }],
   "broll": [{ "id": string, "over": string }],
+  "photoSpans": [{ "id": string, "s": number, "e": number }],
   "music": { "file": string, "startS": number } | null,
   "why": string,
   "warnings": [string]

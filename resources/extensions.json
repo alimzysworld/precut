@@ -1,0 +1,140 @@
+[
+  {
+    "id": "elevenlabs",
+    "name": "ElevenLabs sounds",
+    "kind": "connect",
+    "what": "Sounds are made on your ElevenLabs account.",
+    "downloads": [],
+    "setup": []
+  },
+  {
+    "id": "sound-separation",
+    "name": "Sound separation",
+    "kind": "install",
+    "what": "Split music into four parts and clean background noise from speech. Stays on this Mac. Requires macOS 26.",
+    "sizeBytes": 287420484,
+    "version": "htdemucs-mlx-1.6.1-df-0.5.6-v1",
+    "downloads": [
+      {
+        "file": "demucs_mlx-1.6.1-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/b7/06/599999b6d9d11c7990adfc6f63c61553a6ecfa05d50849447a041aab16a4/demucs_mlx-1.6.1-py3-none-any.whl",
+        "officialHost": "files.pythonhosted.org",
+        "sha256": "a24635d9a1a1e712180738420fa84d69f8cd35a8125f6f7de2f639558cf737c1",
+        "size": 102975,
+        "unpack": "none"
+      },
+      {
+        "file": "mlx-0.32.4-cp312-cp312-macosx_26_0_arm64.whl",
+        "url": "https://files.pythonhosted.org/packages/af/44/90bbdc3cdd120e1181f7c4f617ff996530159f2ea3ba3c08b83b08314d21/mlx-0.32.4-cp312-cp312-macosx_26_0_arm64.whl",
+        "officialHost": "files.pythonhosted.org",
+        "sha256": "7928869076db6267ab3ebdb253b2c80be1e738b3032c783170bd1d59d460c578",
+        "size": 667622,
+        "unpack": "none"
+      },
+      {
+        "file": "mlx_metal-0.32.4-py3-none-macosx_26_0_arm64.whl",
+        "url": "https://files.pythonhosted.org/packages/2a/d6/4340ed6e184f71693d7f531c9ae55d677451351245760d71f8dd714dcbe5/mlx_metal-0.32.4-py3-none-macosx_26_0_arm64.whl",
+        "officialHost": "files.pythonhosted.org",
+        "sha256": "514df92d41a286895d2564b4b18f4da45096bd7a4a0c47e1042f345ad5a7f936",
+        "size": 78106861,
+        "unpack": "none"
+      },
+      {
+        "file": "mlx_audio_io-1.3.24-cp312-cp312-macosx_14_0_arm64.whl",
+        "url": "https://files.pythonhosted.org/packages/14/ba/6b1f7790f403b97e6b3f52d1875b8e8fa0ac9abe2ae08cc67fd21d755b11/mlx_audio_io-1.3.24-cp312-cp312-macosx_14_0_arm64.whl",
+        "officialHost": "files.pythonhosted.org",
+        "sha256": "8009f6d70b94edc9679017a182025897eeb70eb81dd8e46bb89826cd9eba94c1",
+        "size": 344796,
+        "unpack": "none"
+      },
+      {
+        "file": "mlx_spectro-0.9.10-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/06/ae/a0b79deb09b39d8726989b5293dabf7d43c3d65468dbec7f5636ed4b6612/mlx_spectro-0.9.10-py3-none-any.whl",
+        "officialHost": "files.pythonhosted.org",
+        "sha256": "4c15f0a652a6dbd8012c619245bcccd4995ecfca1e8f8fbcc2b03f2ba68f507c",
+        "size": 85196,
+        "unpack": "none"
+      },
+      {
+        "file": "numpy-2.5.4-cp312-cp312-macosx_11_0_arm64.whl",
+        "url": "https://files.pythonhosted.org/packages/ff/a9/bac826765e971d8e16e2064e9ac7525fd69b40ac17c905033a7f5442023f/numpy-2.5.4-cp312-cp312-macosx_11_0_arm64.whl",
+        "officialHost": "files.pythonhosted.org",
+        "sha256": "b11e8fda06a7d69f15ebf542660b74466c2e51094800c1fb794f47ad4faeef17",
+        "size": 12015718,
+        "unpack": "none"
+      },
+      {
+        "file": "packaging-26.3-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/63/34/ba1c580383c9eada3711951fef0795c80b829a078d72188184bcab9dd527/packaging-26.3-py3-none-any.whl",
+        "officialHost": "files.pythonhosted.org",
+        "sha256": "d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c",
+        "size": 129956,
+        "unpack": "none"
+      },
+      {
+        "file": "tqdm-4.70.1-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/a7/03/921a3d3c75785aca9ebfbfcabfbc3a1be12e2ab5265deb026d55a5a3f83e/tqdm-4.70.1-py3-none-any.whl",
+        "officialHost": "files.pythonhosted.org",
+        "sha256": "c293e525e6fef9c20e8728fd4612df02a0aa31bb5fe91ecd93e123b1b7bffa73",
+        "size": 80199,
+        "unpack": "none"
+      },
+      {
+        "file": "htdemucs.safetensors",
+        "url": "https://huggingface.co/ssmall256/demucs-mlx/resolve/35ecb1a906ec420b1a28069db575ad070d35860e/htdemucs.safetensors",
+        "officialHost": "huggingface.co",
+        "redirectHosts": [
+          "us.aws.cdn.hf.co"
+        ],
+        "sha256": "339d267a7a6983a11eedbdc00413c602a65e9b9103f695fb5c2b2a481cd9d297",
+        "size": 168005865,
+        "unpack": "none"
+      },
+      {
+        "file": "htdemucs_config.json",
+        "url": "https://huggingface.co/ssmall256/demucs-mlx/resolve/35ecb1a906ec420b1a28069db575ad070d35860e/htdemucs_config.json",
+        "officialHost": "huggingface.co",
+        "redirectHosts": [
+          "cas-bridge.xethub.hf.co"
+        ],
+        "sha256": "23657b19db14771aecf366ceedbf846c1386836c10043c97f4569acf05526b78",
+        "size": 4215,
+        "unpack": "none"
+      },
+      {
+        "file": "deep-filter",
+        "url": "https://github.com/Rikorose/DeepFilterNet/releases/download/v0.5.6/deep-filter-0.5.6-aarch64-apple-darwin",
+        "officialHost": "github.com",
+        "redirectHosts": [
+          "release-assets.githubusercontent.com"
+        ],
+        "sha256": "4601e7f4e4c03e59a4c5b5000216ef3add3e808799cfccd95e14e83ea4611081",
+        "size": 27877081,
+        "unpack": "none"
+      }
+    ],
+    "setup": [
+      {
+        "command": "@python",
+        "args": [
+          "-I",
+          "-c",
+          "import pathlib,platform,sys,venv,shutil\nif sys.version_info[:2] != (3,12) or platform.machine() != 'arm64' or int(platform.mac_ver()[0].split('.')[0]) < 26:\n raise SystemExit('Sound separation needs Apple silicon, macOS 26 and the precut Python 3.12 runtime.')\nbase=pathlib.Path.cwd()\nvenv.create(base/'venv',with_pip=True)\n(base/'models').mkdir()\nfor name in ['htdemucs.safetensors','htdemucs_config.json']:\n shutil.copyfile(base/'downloads'/name,base/'models'/name)\nshutil.copyfile(base/'downloads/deep-filter',base/'deep-filter')\n(base/'deep-filter').chmod(0o755)\n(base/\"NOTICES.txt\").write_text('MIT License\\n\\nCopyright (c) Meta Platforms, Inc. and affiliates.\\n\\nPermission is hereby granted, free of charge, to any person obtaining a copy\\nof this software and associated documentation files (the \"Software\"), to deal\\nin the Software without restriction, including without limitation the rights\\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\\ncopies of the Software, and to permit persons to whom the Software is\\nfurnished to do so, subject to the following conditions:\\n\\nThe above copyright notice and this permission notice shall be included in all\\ncopies or substantial portions of the Software.\\n\\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\\nSOFTWARE.\\n\\nMIT License\\n\\nCopyright (c) Meta Platforms, Inc. and affiliates.\\nCopyright (c) 2026 ssmall256\\n\\nPermission is hereby granted, free of charge, to any person obtaining a copy\\nof this software and associated documentation files (the \"Software\"), to deal\\nin the Software without restriction, including without limitation the rights\\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\\ncopies of the Software, and to permit persons to whom the Software is\\nfurnished to do so, subject to the following conditions:\\n\\nThe above copyright notice and this permission notice shall be included in all\\ncopies or substantial portions of the Software.\\n\\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\\nSOFTWARE.\\n\\n\\nDeepFilterNet MIT option\\nThe MIT License (MIT)\\nCopyright (c) 2021 Hendrik Schr\u00f6ter\\n\\nPermission is hereby granted, free of charge, to any person obtaining a copy of\\nthis software and associated documentation files (the \"Software\"), to deal in\\nthe Software without restriction, including without limitation the rights to\\nuse, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of\\nthe Software, and to permit persons to whom the Software is furnished to do so,\\nsubject to the following conditions:\\n\\nThe above copyright notice and this permission notice shall be included in all\\ncopies or substantial portions of the Software.\\n\\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS\\nFOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR\\nCOPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER\\nIN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN\\nCONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\\n',encoding=\"utf8\")\n"
+        ]
+      },
+      {
+        "command": "./venv/bin/python",
+        "args": [
+          "-I",
+          "-m",
+          "pip",
+          "install",
+          "--no-index",
+          "--only-binary=:all:",
+          "--find-links=downloads",
+          "demucs-mlx==1.6.1"
+        ]
+      }
+    ]
+  }
+]

@@ -1,0 +1,42 @@
+.source-preview { position: absolute; inset: 0; z-index: 25; display: flex; flex-direction: column; min-width: 0; padding: 10px 12px; gap: 8px; background: var(--ground); color: var(--ink); }
+.source-preview header { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.source-tag { border-radius: 7px; padding: 4px 8px; background: var(--selection-fill); color: var(--accent); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.source-preview button { border: 0; border-radius: 6px; padding: 6px; cursor: pointer; flex-shrink: 0; }
+.source-preview button:focus-visible { outline: none; background-color: var(--selection-fill); }
+.source-picture { flex: 1; min-height: 0; position: relative; overflow: hidden; background: var(--primary-ink); }
+.source-picture :is(video,img) { position: absolute; width: 100%; height: 100%; object-fit: contain; }
+.source-controls { flex-shrink: 0; display: flex; flex-direction: column; gap: 7px; font-size: 11px; }
+.source-transport { display: flex; align-items: center; gap: 8px; }
+.source-transport [data-source-length] { margin-left: auto; }
+.source-transport .st-button-primary { padding: 5px 10px; color: var(--media-ink); }
+.source-preview button:disabled { opacity: .4; cursor: default; }
+.source-bar { position: relative; height: 22px; margin-inline: 6px; border-radius: 5px; background: var(--surface); cursor: grab; touch-action: none; }
+.source-bar > span { position: absolute; top: 0; height: 100%; pointer-events: none; border-radius: 3px; }
+.source-usable { background: var(--selection-fill); }
+.source-shaky { background: color-mix(in srgb, var(--warn) 30%, transparent); }
+.source-marked { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+.source-bar .source-clock { width: 2px; background: var(--ink); }
+.source-bar [role=slider] { position: absolute; top: -3px; bottom: -3px; width: 12px; padding: 0; transform: translateX(-50%); background: var(--accent); cursor: ew-resize; touch-action: none; }
+.source-bar [role=slider]:focus-visible { background: var(--ink); }
+.source-readout { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); }
+.source-lengths { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.source-lengths button { padding: 6px 8px; font-size: 11px; }
+.source-lengths button:not(.st-button-primary) { background: var(--surface); color: var(--muted); }
+.source-lengths button[aria-pressed=true], .source-custom { background: var(--selection-fill); color: var(--accent); }
+.source-custom { padding: 6px 8px; border-radius: 6px; }
+.source-lengths .st-button-primary { margin-left: auto; color: var(--media-ink); }
+.source-music { display: flex; flex-direction: column; gap: 4px; color: var(--muted); }
+.source-music-strip { position: relative; height: 18px; overflow: hidden; border-radius: 4px; background: var(--surface); }
+.source-music-window { position: absolute; height: 100%; background: var(--selection-fill); }
+.source-music-strip i { position: absolute; bottom: 0; width: 2px; height: 45%; background: var(--accent); }
+.source-music-strip i[data-bar] { height: 100%; width: 3px; }
+@media (prefers-reduced-motion: reduce) { .source-marked { transition: none !important; } }
+
+[data-player-container][data-source-open] .edits-player-options { display: none; }
+
+.source-picture { cursor: grab; }
+.source-drag-grip { display: flex; align-items: center; gap: 4px; position: absolute; z-index: 2; bottom: 10px; left: 10px; padding: 5px 8px; border-radius: 6px; background: var(--surface); color: var(--ink); font-size: 11px; opacity: 0; pointer-events: none; }
+.source-picture:hover .source-drag-grip { opacity: 1; }
+.source-destination { display: flex; min-width: 0; color: var(--muted); white-space: nowrap; }
+.source-destination > :first-child { overflow: hidden; text-overflow: ellipsis; }
+.source-destination > :last-child { flex-shrink: 0; }

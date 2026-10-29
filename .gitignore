@@ -1,11 +1,13 @@
 node_modules/
 out/
 dist/
-qa/S2/fixture/
+dist.noindex/
 .DS_Store
-tsconfig.*.tsbuildinfo
-qa/logs/
-qa/R2/music/
+*.tsbuildinfo
 __pycache__/
 *.pyc
-qa/**/userdata/
+# Fetched or built by scripts/fetch-tools.sh, never committed
+build/tools/*
+!build/tools/README.md
+# Downloaded by scripts/fetch-tools.sh from build/music/tracks.json, never committed
+build/music/*.mp3

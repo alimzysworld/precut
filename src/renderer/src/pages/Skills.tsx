@@ -1,5 +1,6 @@
+import { Row, SectionHeader, InlineError, Tile, NumberField } from "../components/ui";
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { CaretDown, Check, FolderOpen, Plus, Trash, X } from "@phosphor-icons/react";
+import { ChevronDown as CaretDown, Check, Library as FolderOpen, Plus, Delete as Trash, Close as X } from "../components/icons";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import type { Skill, SkillFormat } from "../../../shared/schema";
 import { getApi } from "../data";
@@ -174,23 +175,23 @@ export default function Skills() {
   function changeFormat(patch: Partial<SkillFormat>) { edit({ format: { ...format, ...patch } }); }
   return (
     <div>
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <h2 className="font-display text-[19px] font-semibold text-ink">Skills</h2>
+      <Row className="mb-4 flex-wrap">
+        <SectionHeader as="h2" className="font-display text-[19px] font-semibold text-ink">Skills</SectionHeader>
         <div className="flex gap-1">
           <Button variant="ghost" onClick={() => { void getApi().revealSkills().catch(() => setError("Could not open the skills folder.")); }}><FolderOpen size={15} /> Show in Finder</Button>
           <Button variant="primary" onClick={() => void newSkill()} disabled={busy || loading}><Plus size={15} /> New skill</Button>
         </div>
-      </div>
-      {error ? <div role="alert" className="mb-4 flex items-center gap-3 text-[13px] text-danger">{error}<Button variant="ghost" onClick={() => { const draft = selected && dirty.current.get(selected.id); if (draft) void save(draft).catch(() => {}); else void refresh(); }}>Retry</Button></div> : null}
+      </Row>
+      {error ? <InlineError as="div" className="mb-4 flex items-center gap-3 text-[13px] text-danger">{error}<Button variant="ghost" onClick={() => { const draft = selected && dirty.current.get(selected.id); if (draft) void save(draft).catch(() => {}); else void refresh(); }}>Retry</Button></InlineError> : null}
       {loading ? <Skeleton kind="list" count={2} /> : (
         <div className="grid items-start gap-5 md:grid-cols-[160px_minmax(0,1fr)]">
           <div className="flex flex-col gap-1" aria-label="Skills list">
             {skills.map((skill) => (
-              <button key={skill.id} onClick={() => { setSelectedId(skill.id); setConfirmId(null); }} aria-pressed={selectedId === skill.id}
+              <Tile key={skill.id} onClick={() => { setSelectedId(skill.id); setConfirmId(null); }} aria-pressed={selectedId === skill.id}
                 className={`w-full rounded-xl px-3 py-3 text-left outline-none ${FOCUS} ${selectedId === skill.id ? "bg-ink/[0.07]" : "hover:bg-ink/[0.04]"}`}>
                 <span className="block break-words text-[13px] font-medium text-ink">{skill.name || "Untitled skill"}</span>
                 {skill.global ? <span className="mt-1 block"><Pill>always on</Pill></span> : null}
-              </button>
+              </Tile>
             ))}
           </div>
           {selected ? (
@@ -199,18 +200,18 @@ export default function Skills() {
                 <label className="block text-[12px] font-medium text-muted" htmlFor="skill-name">Name<input id="skill-name" className={`${inputClass} mt-1`} value={selected.name} disabled={busy} onChange={(event) => edit({ name: event.target.value })} /></label>
                 <label className="block text-[12px] font-medium text-muted" htmlFor="skill-description">When to use it<input id="skill-description" className={`${inputClass} mt-1`} value={selected.description} disabled={busy} onChange={(event) => edit({ description: event.target.value })} /></label>
               </div>
-              <div className="my-4 flex flex-wrap items-end gap-2" role="group" aria-label="Skill format">
+              <div className="my-4 grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)] items-end gap-3" role="group" aria-label="Skill format">
                 <div className="min-w-0 text-[11px] text-muted">Aspect
                   <FormatSelect label="Aspect" value={format.aspect} disabled={busy} options={Object.keys(SIZES).map((value) => ({ value, label: value }))}
                     onChange={(value) => { const aspect = value as SkillFormat["aspect"]; changeFormat({ aspect, ...SIZES[aspect] }); }} />
                 </div>
-                <label className="text-[11px] text-muted">Resolution
+                <label className="min-w-0 text-[11px] text-muted">Resolution
                   <span className="mt-1 flex items-center gap-1">
-                    <input aria-label="Resolution width" type="number" min={1} max={16384} step={1} value={format.width} disabled={busy} onChange={(event) => { if (event.target.validity.valid && event.target.value) changeFormat({ width: Number(event.target.value) }); }} className={`${inputClass} !w-[72px] !px-2 !py-2`} />
-                    <span>×</span><input aria-label="Resolution height" type="number" min={1} max={16384} step={1} value={format.height} disabled={busy} onChange={(event) => { if (event.target.validity.valid && event.target.value) changeFormat({ height: Number(event.target.value) }); }} className={`${inputClass} !w-[72px] !px-2 !py-2`} />
+                    <NumberField aria-label="Resolution width" min={1} max={16384} step={1} value={format.width} disabled={busy} onChange={(event) => { if (event.target.validity.valid && event.target.value) changeFormat({ width: Number(event.target.value) }); }} className={`${inputClass} !w-full min-w-0 !px-2 !py-2`} />
+                    <span>×</span><NumberField aria-label="Resolution height" min={1} max={16384} step={1} value={format.height} disabled={busy} onChange={(event) => { if (event.target.validity.valid && event.target.value) changeFormat({ height: Number(event.target.value) }); }} className={`${inputClass} !w-full min-w-0 !px-2 !py-2`} />
                   </span>
                 </label>
-                <div className="text-[11px] text-muted">Frame rate
+                <div className="col-span-2 min-w-0 text-[11px] text-muted">Frame rate
                   <FormatSelect label="Frame rate" value={format.fps?.toString() ?? "match"} disabled={busy} options={[{ value: "match", label: "Match footage" }, ...[24, 25, 30, 50, 60].map((fps) => ({ value: String(fps), label: String(fps) }))]}
                     onChange={(value) => changeFormat({ fps: value === "match" ? null : Number(value) })} />
                 </div>
@@ -220,12 +221,12 @@ export default function Skills() {
                   <RichEditor key={selected.id} body={selected.body} disabled={busy} onChange={(body) => edit({ body })} />
                 </Suspense>
               </div>
-              <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+              <Row className="mt-3 flex-wrap gap-2">
                 <span role="status" aria-live="polite" className="flex items-center gap-1 text-[12px] text-muted">
-                  {selectedStatus === "saved" ? <><Check size={13} /> saved</> : selectedStatus === "error" ? "could not save" : selectedStatus === "saving" ? "saving" : selectedStatus === "waiting" ? "unsaved" : "Markdown on disk"}
+                  {selectedStatus === "saved" ? <><Check size={13} /> Saved</> : selectedStatus === "error" ? "Could not save" : selectedStatus === "saving" ? "Saving…" : selectedStatus === "waiting" ? "Unsaved" : "Markdown on disk"}
                 </span>
                 {!selected.global && <Button variant="ghost" disabled={busy} onClick={() => setConfirmId(selected.id)}><Trash size={14} /> Delete skill</Button>}
-              </div>
+              </Row>
               {confirmId === selected.id && !selected.global && <div role="group" aria-label="Confirm delete" className="mt-3 flex flex-wrap items-center gap-2 rounded-xl bg-ink/[0.04] p-3">
                 <p className="w-full text-[13px] text-ink">Move {selected.name} to the Trash?</p>
                 <Button onClick={() => setConfirmId(null)} disabled={busy}>Keep skill</Button>
@@ -332,8 +333,8 @@ function FormatSelect({ label, value, options, disabled, onChange }: { label: st
     <button ref={trigger} type="button" aria-label={label} aria-haspopup="listbox" aria-expanded={open} disabled={disabled} onClick={() => setOpen(!open)} className={`st-glass-field !border-0 flex items-center gap-2 rounded-xl px-2 py-2 text-[13px] text-ink ${FOCUS}`}>
       {options.find((option) => option.value === value)?.label ?? value}<CaretDown size={12} />
     </button>
-    {open && <div role="listbox" aria-label={label} className="st-glass-pop absolute top-full left-0 z-20 mt-1 min-w-full rounded-xl p-1">
-      {options.map((option) => <button key={option.value} type="button" role="option" aria-selected={option.value === value} onClick={() => { onChange(option.value); setOpen(false); trigger.current?.focus(); }} className={`block w-full whitespace-nowrap rounded-lg px-3 py-2 text-left text-[13px] text-ink hover:bg-ink/[0.06] ${option.value === value ? "bg-ink/[0.07]" : ""} ${FOCUS}`}>{option.label}</button>)}
+    {open && <div role="listbox" aria-label={label} className="st-glass-pop absolute top-full left-0 z-20 mt-1 min-w-full max-w-full rounded-xl p-1">
+      {options.map((option) => <button key={option.value} type="button" role="option" aria-selected={option.value === value} onClick={() => { onChange(option.value); setOpen(false); trigger.current?.focus(); }} className={`block w-full break-words rounded-lg px-3 py-2 text-left text-[13px] text-ink hover:bg-ink/[0.06] ${option.value === value ? "bg-ink/[0.07]" : ""} ${FOCUS}`}>{option.label}</button>)}
     </div>}
   </div>;
 }

@@ -1,0 +1,73 @@
+.vo-panel { display:flex; flex:1; flex-direction:column; gap:14px; min-height:0; padding:6px 14px 14px; color:var(--ink); }
+.vo-intro { margin:0; font-size:14px; line-height:20px; color:var(--muted); }
+.vo-mic { display:flex; align-items:center; gap:8px; flex-shrink:0; padding:10px 12px; border-radius:14px; background:var(--surface-hover); }
+.vo-mic select { min-width:0; flex:1; font-size:13px; background:transparent; color:inherit; border:0; }
+.vo-mic meter { width:44px; height:12px; accent-color:var(--accent); }
+/* Idle: the microphone is an icon button. The device picker lies over it, unseen, so a click or Space opens the
+   same native list; focus and hover tint the fill. The level shows small beside the icon. */
+.vo-actions > .vo-mic.vo-mic-compact { position:relative; flex:0 0 auto; gap:4px; min-height:34px; padding:0 7px; border-radius:999px; color:var(--ink); }
+.vo-mic.vo-mic-compact:hover, .vo-mic.vo-mic-compact:focus-within { background:var(--selection-fill); }
+.vo-mic-compact select { position:absolute; inset:0; width:100%; height:100%; margin:0; padding:0; border:0; opacity:0; appearance:none; cursor:pointer; }
+.vo-mic-compact select:disabled { cursor:default; }
+.vo-mic-compact:has(select:disabled) { opacity:.5; }
+.vo-mic-compact meter { width:14px; height:4px; border-radius:999px; overflow:hidden; }
+.vo-mic-compact meter::-webkit-meter-bar { height:4px; border:0; border-radius:999px; background:color-mix(in srgb, var(--ink) 22%, transparent); }
+.vo-mic-compact meter::-webkit-meter-optimum-value, .vo-mic-compact meter::-webkit-meter-suboptimum-value, .vo-mic-compact meter::-webkit-meter-even-less-good-value { border-radius:999px; background:var(--accent); }
+.vo-mic-compact > svg:last-child { margin-left:-2px; color:var(--muted); }
+.vo-hidden-label { position:absolute; width:1px; height:1px; margin:-1px; padding:0; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; border:0; }
+.vo-scroll { flex:1; min-height:0; overflow:auto; display:flex; flex-direction:column; gap:14px; }
+.vo-lines { flex-shrink:0; list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:8px; }
+.vo-lines [data-vo-line] { padding:10px 12px; border-radius:14px; background:var(--surface-hover); }
+.vo-lines [data-current="true"], .vo-lines [data-vo-line]:focus-visible { background:var(--selection-fill); }
+.vo-line-meta { display:flex; justify-content:space-between; gap:6px; font-size:11px; color:var(--muted); }
+.vo-lines textarea { display:block; width:100%; resize:none; min-height:27px; overflow:hidden; padding:4px 0 0; border:0; border-radius:4px; background:transparent; color:inherit; font:inherit; font-size:15px; line-height:21px; }
+.vo-lines textarea:focus-visible { background:var(--selection-fill); }
+.vo-pause { margin:6px 4px 0; text-align:center; font-size:12px; line-height:17px; color:var(--muted); }
+.vo-line-take { display:flex; align-items:center; gap:8px; margin-top:6px; }
+.vo-panel button { border:0; border-radius:999px; padding:9px 12px; font-size:13px; font-weight:500; background:var(--surface-hover); color:var(--ink); }
+.vo-panel button:disabled { opacity:.5; }
+.vo-panel button:focus-visible, .vo-prompt-actions button:focus-visible { background:var(--selection-fill); color:var(--ink); }
+.vo-panel button.st-button-primary { background-image:var(--st-brand-gradient); color:var(--white, white); }
+.vo-actions { display:flex; flex-wrap:wrap; gap:8px; flex-shrink:0; }
+.vo-actions button { min-height:48px; white-space:nowrap; }
+/* A sign-in prompt takes its own row so it never squeezes Record into a blob. */
+.vo-actions > :not(button) { flex-basis:100%; }
+.vo-actions button { display:flex; align-items:center; justify-content:center; gap:8px; }
+.vo-actions button:first-child, .vo-actions button.st-button-primary { flex:1; }
+.vo-message { margin:0; font-size:13px; line-height:18px; color:var(--muted); }
+.vo-wave { height:20px; min-width:20px; flex:1; color:var(--accent); }
+.vo-record-dot { display:inline-block; width:10px; height:10px; border-radius:50%; background:var(--danger); flex-shrink:0; }
+/* The take plays the edit at full brightness. Only the lower third and the
+   recording row carry a soft fill, so the words stay readable on any shot. */
+.vo-teleprompter { position:absolute; inset:0; z-index:50; display:flex; flex-direction:column; align-items:center; justify-content:space-between; padding:16px 16px 18px; color:var(--media-ink); pointer-events:none; }
+.vo-teleprompter button { pointer-events:auto; }
+.vo-take-time { display:flex; align-items:center; gap:8px; margin:0; padding:7px 12px; border-radius:999px; font-size:13px; font-weight:500; font-variant-numeric:tabular-nums; background:color-mix(in srgb, var(--primary-ink) 62%, transparent); }
+.vo-take-clock { opacity:.8; }
+.vo-teleprompter .vo-record-dot { width:9px; height:9px; opacity:.45; }
+.vo-teleprompter .vo-record-dot[data-live] { opacity:1; }
+.vo-level { display:block; width:40px; height:5px; border-radius:999px; overflow:hidden; background:color-mix(in srgb, var(--media-ink) 22%, transparent); }
+.vo-level > span { display:block; height:100%; background:var(--media-ink); transform-origin:left center; transition:transform 80ms linear; }
+.vo-countdown { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); display:flex; align-items:center; justify-content:center; width:96px; height:96px; margin:0; border-radius:50%; font-family:Outfit,Inter,sans-serif; font-size:48px; font-weight:700; background:color-mix(in srgb, var(--primary-ink) 62%, transparent); }
+.vo-prompt-copy { display:flex; flex-direction:column; align-items:center; gap:4px; text-align:center; width:min(100%, 460px); padding:12px 16px 10px; border-radius:18px; background:color-mix(in srgb, var(--primary-ink) 62%, transparent); }
+.vo-current { font-family:Outfit,Inter,sans-serif; font-size:18px; line-height:1.3; font-weight:600; margin:0; }
+.vo-next { font-size:13px; line-height:18px; opacity:.6; margin:0; min-height:18px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+.vo-prompt-row { display:flex; align-items:center; justify-content:space-between; gap:10px; width:100%; margin-top:4px; }
+.vo-prompt-hint { font-size:11px; line-height:15px; opacity:.7; margin:0; text-align:left; }
+.vo-prompt-actions { display:flex; gap:6px; flex-shrink:0; }
+.vo-prompt-actions button { border:0; border-radius:999px; min-height:34px; padding:7px 14px; font-size:13px; font-weight:500; background:color-mix(in srgb,var(--media-ink) 18%,transparent); color:var(--media-ink); }
+.vo-prompt-actions button:first-child { background:var(--media-ink); color:var(--primary-ink); }
+.vo-takes { display:flex; flex-direction:column; gap:6px; flex-shrink:0; }
+.vo-takes h3 { margin:0; font-size:12px; font-weight:500; color:var(--muted); }
+.vo-take { display:flex; align-items:center; gap:8px; padding:6px 8px 6px 6px; border-radius:12px; background:var(--surface-hover); font-size:13px; }
+.vo-take > span { flex:1; min-width:0; font-variant-numeric:tabular-nums; }
+.vo-panel .vo-take button { padding:6px 10px; }
+.vo-panel .vo-take button[data-playing], .vo-panel .vo-line-take button[data-playing] { background:var(--selection-fill); }
+.vo-line-missing { font-size:12px; color:var(--muted); }
+.vo-line-missing span { flex:1; }
+.vo-panel :focus, .vo-teleprompter :focus, .vo-lines [data-vo-line]:focus { outline:none; box-shadow:none; }
+[data-player-container]:has([data-recording]) [data-player-options], [data-player-container]:has([data-recording]) .st-player-transport { visibility:hidden; }
+
+.vo-lines textarea:disabled { opacity:1; -webkit-text-fill-color:currentColor; }
+.edits-sheet[data-panel="script"] { flex-basis:380px; }
+.edits-sheet[data-panel="script"] > header h2 { font-family:Outfit,Inter,sans-serif; font-size:20px; }
+@media (width < 1280px) { .edits-sheet[data-panel="script"] { width:380px; } }

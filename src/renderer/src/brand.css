@@ -15,313 +15,230 @@
   --color-neutral: var(--neutral);
   --color-scrim: var(--scrim);
   --font-display: "Outfit", ui-sans-serif, system-ui, sans-serif;
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
-  --font-body: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Inter Variable", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "Inter Variable", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --text-display-xl: 44px; --text-display-xl--line-height: 48px;
+  --text-display: 28px; --text-display--line-height: 34px;
+  --text-title: 18px; --text-title--line-height: 24px;
+  --text-body: 15px; --text-body--line-height: 22px;
+  --text-small: 13px; --text-small--line-height: 18px;
+  --text-micro: 11px; --text-micro--line-height: 14px;
 }
 
-/* Semantic tokens: light (in :root), dark (explicit), dark (system).
-   Every token is written three times and the three blocks stay in step.
-   Dark is the app default: index.html sets data-theme="dark" before
-   first paint when no stored choice says otherwise. */
+/* Indie semantic palette. Opaque surfaces cover the page-only dot matrix. */
 :root {
-  color-scheme: light;
-  --ground: hsl(0 0% 99%);
-  --surface: hsl(0 0% 100%);
-  --ink: hsl(0 0% 0%);
-  --muted: hsl(220 8.9% 38%);
-  --hair: hsl(220 14% 93%);
-  --accent: hsl(209 75% 52%);
-  --accent-solid: hsl(209 75% 52%);
-  --good: hsl(142 76% 36%);
-  --danger: hsl(0 84.2% 60.2%);
-  --warn: hsl(38 92% 50%);
-  --good-soft: hsl(142 76% 97%);
-  --warn-soft: hsl(38 100% 97%);
-  --neutral: hsl(220 14% 96%);
-  --scrim: color-mix(in oklab, var(--ink) 28%, transparent);
-  --shimmer: color-mix(in oklab, var(--accent) 85%, white);
-  --think: var(--accent);
-  --tip: var(--ink);
-  --tip-ink: var(--surface);
-  --st-wash-base: var(--ground);
-  --st-glow-tl: transparent;
-  --st-glow-br: transparent;
-  --st-glow-tr: transparent;
-  --st-glow-bl: transparent;
-  --st-glass-solid: rgb(254, 254, 254);
-  --st-glass-strong-fill: rgba(255, 255, 255, 0.34);
-  --st-glass-strong-blur: blur(18px) saturate(190%) brightness(1.05);
-  --st-glass-strong-rim: rgba(255, 255, 255, 0.75);
-  --st-glass-strong-ring: rgba(255, 255, 255, 0.18);
-  --st-glass-strong-edge: rgba(255, 255, 255, 0.12);
-  --st-glass-strong-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.4), rgba(255, 255, 255, 0) 42%), radial-gradient(120% 60% at 50% 0%, rgba(255, 255, 255, 0.25), transparent 60%);
-  --st-glass-surface-fill: rgba(255, 255, 255, 0.62);
-  --st-glass-surface-blur: blur(14px) saturate(160%);
-  --st-glass-surface-rim: rgba(255, 255, 255, 0.6);
-  --st-glass-surface-ring: rgba(255, 255, 255, 0.14);
-  --st-glass-surface-edge: rgba(255, 255, 255, 0.08);
-  --st-glass-surface-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0) 40%);
-  --st-glass-surface-line: rgba(28, 28, 28, 0.07);
-  --st-glass-field-fill: var(--st-glass-surface-fill);
-  --st-glass-table-fill: rgba(255, 255, 255, 0.82);
-  --st-glass-pop-fill: rgba(255, 255, 255, 0.92);
-  --st-glass-pop-blur: blur(20px) saturate(160%);
-  --st-glass-active-fill: rgba(255, 255, 255, 0.55);
-  --st-glass-rail-active-fill: rgba(255, 255, 255, 0.72);
-  --st-glass-sheet-fill: rgba(255, 255, 255, 0.78);
-  --st-glass-sheet-blur: blur(28px) saturate(180%);
-  --st-glass-hover-fill: rgba(255, 255, 255, 0.78);
-  --st-glass-shade: rgba(20, 20, 40, 0.08);
-  --st-ask-fill: rgba(255, 255, 255, 0.55);
-  --st-ask-blur: blur(28px) saturate(180%);
+  --ground: #f1efea;
+  --surface: #fbfaf7;
+  --surface-hover: #f0eae0;
+  --ink: #28252b;
+  --muted: #685e5f;
+  --hair: #ded6cc;
+  --row-divider: #ded6cc;
+  --selection-fill: #e6edf9;
+  --accent-text: #1d4ed8;
+  --primary-ink: #15191f;
+  --good: var(--badge-lime-ink);
+  --warn: #815c0d;
+  --danger: #a52c4d;
+  --badge-lime-fill: #daedb3;
+  --badge-lime-ink: #35501a;
+  --badge-amber-fill: #f7e2a8;
+  --badge-amber-ink: #73500a;
+  --badge-pink-fill: #f6d4dd;
+  --badge-pink-ink: #902341;
+  --badge-violet-fill: #e6dcf5;
+  --badge-violet-ink: #66408c;
+  --badge-neutral-fill: #e9e2d9;
+  --badge-neutral-ink: #5f5659;
+  --dot: #d8d0c6;
+  --tip: #28252b;
+  --tip-ink: #faf7f1;
+  --scrim: #17161a80;
 }
-
 :root[data-theme="dark"] {
-  color-scheme: dark;
-  --ground: hsl(218 13% 9%);
-  --surface: hsl(215 15% 11%);
-  --ink: hsl(210 40% 98%);
-  --muted: hsl(215 20% 65%);
-  --hair: rgba(255, 255, 255, 0.09);
-  --accent: hsl(209 90% 68%);
-  --accent-solid: hsl(209 75% 52%);
-  --good: hsl(142 76% 45%);
-  --danger: hsl(0 84% 60%);
-  --warn: hsl(38 92% 50%);
-  --good-soft: hsl(142 76% 15%);
-  --warn-soft: hsl(38 100% 15%);
-  --neutral: hsl(225 14% 12%);
-  --scrim: rgba(0, 0, 0, 0.45);
-  --shimmer: color-mix(in oklab, var(--accent) 55%, white);
-  --think: var(--accent);
-  --tip: hsl(220 10% 96%);
-  --tip-ink: hsl(220 12% 9%);
-  --st-wash-base: linear-gradient(147deg, #12151a 0%, #101318 52%, #0c0e12 100%);
-  --st-glow-tl: rgba(2, 131, 250, 0.13);
-  --st-glow-br: rgba(2, 110, 230, 0.16);
-  --st-glow-tr: rgba(2, 131, 250, 0.09);
-  --st-glow-bl: rgba(90, 150, 240, 0.1);
-  --st-glass-solid: color-mix(in oklab, var(--surface) 92%, transparent);
-  --st-glass-strong-fill: rgba(40, 40, 48, 0.42);
-  --st-glass-strong-blur: blur(18px) saturate(190%) brightness(1.05);
-  --st-glass-strong-rim: rgba(255, 255, 255, 0.07);
-  --st-glass-strong-ring: rgba(255, 255, 255, 0.02);
-  --st-glass-strong-edge: transparent;
-  --st-glass-strong-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0) 38%), radial-gradient(120% 60% at 50% 0%, rgba(255, 255, 255, 0.05), transparent 60%);
-  --st-glass-surface-fill: rgba(30, 32, 42, 0.6);
-  --st-glass-surface-blur: blur(14px) saturate(160%);
-  --st-glass-surface-rim: rgba(255, 255, 255, 0.035);
-  --st-glass-surface-ring: transparent;
-  --st-glass-surface-edge: transparent;
-  --st-glass-surface-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.015), rgba(255, 255, 255, 0) 30%);
-  --st-glass-surface-line: rgba(255, 255, 255, 0.035);
-  --st-glass-field-fill: rgba(24, 26, 34, 0.7);
-  --st-glass-table-fill: rgba(24, 26, 34, 0.88);
-  --st-glass-pop-fill: rgba(28, 30, 40, 0.95);
-  --st-glass-pop-blur: blur(20px) saturate(160%);
-  --st-glass-active-fill: rgba(255, 255, 255, 0.14);
-  --st-glass-rail-active-fill: rgba(255, 255, 255, 0.16);
-  --st-glass-sheet-fill: rgba(30, 30, 38, 0.8);
-  --st-glass-sheet-blur: blur(28px) saturate(180%);
-  --st-glass-hover-fill: rgba(38, 40, 52, 0.72);
-  --st-glass-shade: rgba(0, 0, 0, 0.45);
-  --st-ask-fill: rgba(34, 38, 48, 0.62);
-  --st-ask-blur: blur(28px) saturate(180%);
+  --ground: #17161a;
+  --surface: #1f1e23;
+  --surface-hover: #2a282f;
+  --ink: #f5f0e8;
+  --muted: #b1a7a6;
+  --hair: #39343c;
+  --row-divider: #39343c;
+  --selection-fill: #38323d;
+  --accent-text: #79b8f2;
+  --primary-ink: #15191f;
+  --good: var(--badge-lime-ink);
+  --warn: #f1d48c;
+  --danger: #f2aec2;
+  --badge-lime-fill: #303d24;
+  --badge-lime-ink: #d0eba7;
+  --badge-amber-fill: #443820;
+  --badge-amber-ink: #f4d894;
+  --badge-pink-fill: #472932;
+  --badge-pink-ink: #f5b9c9;
+  --badge-violet-fill: #382d49;
+  --badge-violet-ink: #d7bcef;
+  --badge-neutral-fill: #353038;
+  --badge-neutral-ink: #d5cbd0;
+  --dot: #312e35;
+  --tip: #f5f0e8;
+  --tip-ink: #28252b;
+  --scrim: #100e13a6;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+  --ground: #17161a;
+  --surface: #1f1e23;
+  --surface-hover: #2a282f;
+  --ink: #f5f0e8;
+  --muted: #b1a7a6;
+  --hair: #39343c;
+  --row-divider: #39343c;
+  --selection-fill: #38323d;
+  --accent-text: #79b8f2;
+  --primary-ink: #15191f;
+  --good: var(--badge-lime-ink);
+  --warn: #f1d48c;
+  --danger: #f2aec2;
+  --badge-lime-fill: #303d24;
+  --badge-lime-ink: #d0eba7;
+  --badge-amber-fill: #443820;
+  --badge-amber-ink: #f4d894;
+  --badge-pink-fill: #472932;
+  --badge-pink-ink: #f5b9c9;
+  --badge-violet-fill: #382d49;
+  --badge-violet-ink: #d7bcef;
+  --badge-neutral-fill: #353038;
+  --badge-neutral-ink: #d5cbd0;
+  --dot: #312e35;
+  --tip: #f5f0e8;
+  --tip-ink: #28252b;
+  --scrim: #100e13a6;
+}
 }
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    color-scheme: dark;
-    --ground: hsl(218 13% 9%);
-    --surface: hsl(215 15% 11%);
-    --ink: hsl(210 40% 98%);
-    --muted: hsl(215 20% 65%);
-    --hair: rgba(255, 255, 255, 0.09);
-    --accent: hsl(209 90% 68%);
-    --accent-solid: hsl(209 75% 52%);
-    --good: hsl(142 76% 45%);
-    --danger: hsl(0 84% 60%);
-    --warn: hsl(38 92% 50%);
-    --good-soft: hsl(142 76% 15%);
-    --warn-soft: hsl(38 100% 15%);
-    --neutral: hsl(225 14% 12%);
-    --scrim: rgba(0, 0, 0, 0.45);
-    --shimmer: color-mix(in oklab, var(--accent) 55%, white);
-    --think: var(--accent);
-    --tip: hsl(220 10% 96%);
-    --tip-ink: hsl(220 12% 9%);
-    --st-wash-base: linear-gradient(147deg, #12151a 0%, #101318 52%, #0c0e12 100%);
-    --st-glow-tl: rgba(2, 131, 250, 0.13);
-    --st-glow-br: rgba(2, 110, 230, 0.16);
-    --st-glow-tr: rgba(2, 131, 250, 0.09);
-    --st-glow-bl: rgba(90, 150, 240, 0.1);
-    --st-glass-solid: color-mix(in oklab, var(--surface) 92%, transparent);
-    --st-glass-strong-fill: rgba(40, 40, 48, 0.42);
-    --st-glass-strong-blur: blur(18px) saturate(190%) brightness(1.05);
-    --st-glass-strong-rim: rgba(255, 255, 255, 0.07);
-    --st-glass-strong-ring: rgba(255, 255, 255, 0.02);
-    --st-glass-strong-edge: transparent;
-    --st-glass-strong-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0) 38%), radial-gradient(120% 60% at 50% 0%, rgba(255, 255, 255, 0.05), transparent 60%);
-    --st-glass-surface-fill: rgba(30, 32, 42, 0.6);
-    --st-glass-surface-blur: blur(14px) saturate(160%);
-    --st-glass-surface-rim: rgba(255, 255, 255, 0.035);
-    --st-glass-surface-ring: transparent;
-    --st-glass-surface-edge: transparent;
-    --st-glass-surface-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.015), rgba(255, 255, 255, 0) 30%);
-    --st-glass-surface-line: rgba(255, 255, 255, 0.035);
-    --st-glass-field-fill: rgba(24, 26, 34, 0.7);
-    --st-glass-table-fill: rgba(24, 26, 34, 0.88);
-    --st-glass-pop-fill: rgba(28, 30, 40, 0.95);
-    --st-glass-pop-blur: blur(20px) saturate(160%);
-    --st-glass-active-fill: rgba(255, 255, 255, 0.14);
-    --st-glass-rail-active-fill: rgba(255, 255, 255, 0.16);
-    --st-glass-sheet-fill: rgba(30, 30, 38, 0.8);
-    --st-glass-sheet-blur: blur(28px) saturate(180%);
-    --st-glass-hover-fill: rgba(38, 40, 52, 0.72);
-    --st-glass-shade: rgba(0, 0, 0, 0.45);
-    --st-ask-fill: rgba(34, 38, 48, 0.62);
-    --st-ask-blur: blur(28px) saturate(180%);
-  }
-}
 
 :root {
-  --st-glass-depth: 0 6px 18px -10px var(--st-glass-shade), 0 1px 3px -1px var(--st-glass-shade);
-  --st-glass-surface-depth: 0 4px 14px -10px var(--st-glass-shade), 0 1px 2px -1px var(--st-glass-shade);
-  --st-glass-pop-depth: 0 12px 32px -14px var(--st-glass-shade), 0 1px 3px -1px var(--st-glass-shade);
-  --st-ask-depth: 0 1px 2px var(--st-glass-shade), 0 18px 44px -18px var(--st-glass-shade);
+  --accent: hsl(209 75% 52%);
+  --accent-solid: var(--selection-blue);
+  --primary-hover: #3993e6;
+  --control-thumb: #ffffff;
+  --print-paper: #ffffff;
+  --selection-blue: #2563eb;
+  --good-soft: var(--badge-lime-fill);
+  --warn-soft: var(--badge-amber-fill);
+  --neutral: var(--badge-neutral-fill);
+  --window-tint: var(--ground);
+  --shimmer: var(--accent-text);
+  --think: var(--accent-text);
+  --glass-blur: 0px;
+  --glass-modals-blur: var(--glass-blur);
+  --glass-sat: 1;
+  --chrome-tint: var(--surface);
+  --modal-tint: var(--surface);
+  --glass-chrome-tint: var(--chrome-tint);
+  --glass-cards-tint: var(--surface);
+  --glass-cards-edge: transparent;
+  --glass-modals-tint: var(--modal-tint);
+  --glass-menu-tint: var(--surface);
+  --glass-chrome-solid: var(--surface);
+  --glass-cards-solid: var(--surface);
+  --glass-modals-solid: var(--surface);
+  --glass-chrome-edge: transparent;
+  /* sidething's own gradient, light and dark versions, exactly as reference/sidething-brand/brand-gradient.css. */
+  --st-brand-gradient: linear-gradient(to bottom right, light-dark(rgb(59 130 246), rgb(37 99 235)), light-dark(rgb(37 99 235), rgb(29 78 216)), light-dark(rgb(29 78 216), rgb(30 64 175)));
+  --st-brand-hover: linear-gradient(to bottom right, light-dark(rgb(37 99 235), rgb(29 78 216)), light-dark(rgb(29 78 216), rgb(30 64 175)), light-dark(rgb(30 64 175), rgb(30 58 138)));
   --st-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
   --st-spring: linear(0, 0.009, 0.035 2.1%, 0.141 4.4%, 0.723 12.9%, 0.938 16.7%, 1.017, 1.077, 1.121, 1.149 24.3%, 1.159, 1.145, 1.129, 1.108 33.3%, 1.019 44.6%, 0.991, 0.977 51%, 0.974 53.8%, 0.975 57.1%, 0.997 69.8%, 1.003 76.9%, 1.004 83.8%, 1);
-  --rail-item: 50px;
-  --rail-item-r: 14px;
-  --rail-group-r: 22px;
+  --rail-item: 50px; --rail-item-r: 14px; --rail-group-r: 22px;
 }
-
 html { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
 body { font-family: var(--font-body); background: var(--ground); color: var(--ink); margin: 0; }
+html.st-vibrant body { background: var(--window-tint); }
 .tnum { font-variant-numeric: tabular-nums; }
-.st-edge { border: 1px solid var(--hair); }
-
-/* Light uses the plain sidething ground. Dark keeps its existing wash. */
-.st-wash {
-  background:
-    radial-gradient(56rem 40rem at 4% 0%, var(--st-glow-tl), transparent 62%),
-    radial-gradient(50rem 38rem at 99% 98%, var(--st-glow-br), transparent 62%),
-    radial-gradient(38rem 30rem at 86% 4%, var(--st-glow-tr), transparent 62%),
-    radial-gradient(34rem 28rem at 16% 96%, var(--st-glow-bl), transparent 62%),
-    var(--st-wash-base);
-  background-attachment: fixed;
+.font-mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.text-accent { color: var(--accent-text); }
+.st-edge { border: 0; }
+/* Dot matrix, used sparingly: only a couple of soft patches (top right, a little top left) that fade to
+   nothing through a mask, never an even grid behind everything. The element is `isolate`,
+   so the layer sits above the ground colour and below all content. */
+.st-dot-matrix { background-color: var(--ground); }
+.st-dot-matrix::before {
+  content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background-image: radial-gradient(circle, var(--dot) 0.65px, transparent 0.85px);
+  background-size: 18px 18px;
+  -webkit-mask-image: radial-gradient(ellipse 34% 30% at 86% 0%, #000 0%, transparent 100%), radial-gradient(ellipse 22% 20% at 10% 0%, rgba(0, 0, 0, .55) 0%, transparent 100%);
+  mask-image: radial-gradient(ellipse 34% 30% at 86% 0%, #000 0%, transparent 100%), radial-gradient(ellipse 22% 20% at 10% 0%, rgba(0, 0, 0, .55) 0%, transparent 100%);
 }
-
-/* Glass tiers. Blur is capped at 28px and never animated. */
-.st-glass, .st-glass-surface, .st-glass-field, .st-glass-table, .st-glass-pop {
-  -webkit-backdrop-filter: var(--st-glass-strong-blur);
-  backdrop-filter: var(--st-glass-strong-blur);
+.glass-surface, .st-glass-surface, .st-glass, .st-glass-field,
+.st-glass-table, .st-ask-card {
+  background-color: var(--glass-cards-tint);
+  backdrop-filter: none; -webkit-backdrop-filter: none; border: 0;
+}
+@layer components {
+  :where(.glass-surface, .st-glass-surface, .st-glass, .st-glass-table, .st-ask-card) { border-radius: 20px; }
 }
 .st-glass, .st-glass-surface { position: relative; }
-.st-glass {
-  background: var(--st-glass-strong-fill);
-  box-shadow: inset 0 1px 0 var(--st-glass-strong-rim), inset 0 0 0 1px var(--st-glass-strong-ring), inset 0 -1px 0 var(--st-glass-strong-edge), var(--st-glass-depth);
+.st-card:hover { background-color: var(--surface-hover); }
+.st-rows > * + * { position: relative; }
+.st-rows > * + *::before {
+  content: ""; position: absolute; top: 0; left: 16px; right: 0;
+  height: 0.5px; background: var(--row-divider); pointer-events: none;
 }
-.st-glass::before {
-  content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
-  background: var(--st-glass-strong-sheen);
+*, *::before, *::after { box-shadow: none !important; }
+:focus:not(:focus-visible) { outline: none !important; }
+:focus-visible { outline: none !important; }
+/* Design rule (17 Oct): never an outline, ring or stroke, not even for keyboard focus.
+   Keyboard focus shows as a soft fill; primary gradient buttons brighten instead. */
+:where(button, a, [role="tab"], [role="button"], [role="option"], [role="menuitem"], [tabindex]):focus-visible:not(.st-button-primary):not(input):not(textarea) { background-color: var(--selection-fill) !important; box-shadow: none !important; }
+.st-button-primary:focus-visible { filter: brightness(1.12); box-shadow: none !important; }
+.glass-floating, .st-floating-glass, .st-taskbar.st-glass,
+.st-pop, .st-glass-pop, .glass-modal, .st-sheet {
+  background-color: var(--glass-chrome-tint);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat)); border: 0;
 }
-.st-glass-surface {
-  background: var(--st-glass-surface-fill);
-  -webkit-backdrop-filter: var(--st-glass-surface-blur);
-  backdrop-filter: var(--st-glass-surface-blur);
-  border: 0;
-  box-shadow: inset 0 1px 0 var(--st-glass-surface-rim), inset 0 -1px 0 var(--st-glass-surface-edge), var(--st-glass-surface-depth);
+.glass-modal, .st-sheet { background-color: var(--glass-modals-tint); }
+/* A menu opened inside a dialog sits one step lighter, or it reads as the dialog itself (EXP1). */
+.glass-modal .st-pop, .st-sheet .st-pop { background-color: var(--surface-hover); }
+.st-pop, .st-glass-pop, select.glass-floating,
+.glass-floating[role="menu"], .glass-floating[role="listbox"],
+.st-floating-glass[role="menu"], .st-floating-glass[role="listbox"] { background-color: var(--glass-menu-tint); }
+.st-glass-active, button[aria-pressed="true"].text-ground,
+[role="tab"][aria-selected="true"], [role="option"][aria-selected="true"],
+nav[aria-label="Settings sections"] [aria-current="page"] {
+  background-color: var(--selection-fill); color: var(--ink); border: 0;
 }
-.st-glass-surface::before {
-  content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
-  background: var(--st-glass-surface-sheen);
+:is(button[aria-pressed="true"].text-ground, [role="tab"][aria-selected="true"],
+nav[aria-label="Settings sections"] [aria-current="page"]) > span.absolute.inset-0 {
+  background-color: var(--selection-fill); background-image: none;
 }
-.st-glass-surface > *, .st-glass > * { position: relative; }
-
-/* Chat reading surfaces: sidething index.css's .glass-surface card material.
-   Real tint and frost, without the st-glass-surface painted sheen. The house
-   rule omits its outline edge. Kept separate so other builders' cards retain
-   their material. color-scheme supplies the explicit and system themes. */
-.glass-surface {
-  --chat-glass-saturation: 1.9;
-  background-color: light-dark(rgba(255, 255, 255, 0.55), rgba(26, 31, 41, 0.62));
-  -webkit-backdrop-filter: blur(18px) saturate(var(--chat-glass-saturation));
-  backdrop-filter: blur(18px) saturate(var(--chat-glass-saturation));
-  border: 0;
-  box-shadow: 0 1px 2px light-dark(rgba(15, 23, 42, 0.05), rgba(0, 0, 0, 0.12)), 0 8px 20px -12px light-dark(rgba(15, 23, 42, 0.06), rgba(0, 0, 0, 0.22));
-}
-:root[data-theme="dark"] .glass-surface { --chat-glass-saturation: 1.3; }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .glass-surface { --chat-glass-saturation: 1.3; }
-}
-@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  .glass-surface { background-color: light-dark(rgb(254, 254, 254), rgb(24, 28, 35)); }
-}
-@media (prefers-reduced-transparency: reduce) {
-  .glass-surface {
-    background-color: light-dark(rgb(254, 254, 254), rgb(24, 28, 35));
-    -webkit-backdrop-filter: none;
-    backdrop-filter: none;
-  }
-}
-.st-glass-field {
-  background: var(--st-glass-field-fill);
-  -webkit-backdrop-filter: var(--st-glass-surface-blur);
-  backdrop-filter: var(--st-glass-surface-blur);
-  border: 1px solid var(--st-glass-surface-line);
-  box-shadow: inset 0 1px 0 var(--st-glass-surface-rim);
-}
-.st-glass-table {
-  background: var(--st-glass-table-fill);
-  -webkit-backdrop-filter: var(--st-glass-surface-blur);
-  backdrop-filter: var(--st-glass-surface-blur);
-  border: 1px solid var(--st-glass-surface-line);
-  box-shadow: inset 0 1px 0 var(--st-glass-surface-rim), var(--st-glass-surface-depth);
-}
-.st-glass-pop {
-  background: var(--st-glass-pop-fill);
-  -webkit-backdrop-filter: var(--st-glass-pop-blur);
-  backdrop-filter: var(--st-glass-pop-blur);
-  border: 1px solid var(--st-glass-surface-line);
-  box-shadow: inset 0 1px 0 var(--st-glass-strong-rim), var(--st-glass-pop-depth);
-}
-.st-glass-active {
-  background: var(--st-glass-active-fill);
-  box-shadow: inset 0 1px 0 var(--st-glass-strong-rim), 0 1px 2px -1px var(--st-glass-shade);
-}
-.st-glass-active.st-rail { background: var(--st-glass-rail-active-fill); }
-.st-sheet {
-  background: var(--st-glass-sheet-fill);
-  -webkit-backdrop-filter: var(--st-glass-sheet-blur);
-  backdrop-filter: var(--st-glass-sheet-blur);
-  box-shadow: inset 0 1px 0 var(--st-glass-strong-rim), 0 -10px 40px -10px var(--st-glass-shade);
-}
-.st-glass-hover { transition: background-color 150ms ease; }
-.st-glass-hover:hover { background: var(--st-glass-hover-fill); }
-.st-pop {
-  background: var(--surface);
-  box-shadow: inset 0 1px 0 var(--st-glass-strong-rim), inset 0 0 0 1px var(--st-glass-surface-line), var(--st-glass-pop-depth);
-}
-.st-ask-card {
-  background: var(--st-ask-fill);
-  -webkit-backdrop-filter: var(--st-ask-blur);
-  backdrop-filter: var(--st-ask-blur);
-  border: 0;
-  box-shadow: inset 0 1px 0 var(--st-glass-strong-rim), var(--st-ask-depth);
-}
+:is(button[aria-pressed="true"].text-ground, [role="tab"][aria-selected="true"],
+nav[aria-label="Settings sections"] [aria-current="page"]):has(> span.absolute.inset-0) { background-color: transparent; }
+/* Navigation keeps N10's structure and geometry. Only semantic colours change. */
+.st-taskbar [aria-label="Done"] { background-color: var(--badge-lime-fill); color: var(--badge-lime-ink); }
 .st-scrim { background: var(--scrim); }
-
-@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  .st-glass, .st-glass-surface, .st-glass-field, .st-glass-table, .st-glass-pop, .st-sheet, .st-ask-card {
-    background: var(--st-glass-solid);
-    -webkit-backdrop-filter: none; backdrop-filter: none;
-  }
+/* Primary buttons use the app's own sidething gradient (same as the active nav pill), white labels. */
+.st-button-primary { background-image: var(--st-brand-gradient); color: #ffffff; }
+.st-button-primary:hover { background-image: var(--st-brand-hover); }
+.st-button-secondary, .st-chip, .st-icon-button, .st-search { background: var(--selection-fill); color: var(--ink); }
+.st-button-secondary:hover, .st-chip:hover, .st-icon-button:hover { background: var(--surface-hover); }
+.st-chip[aria-pressed="true"] { background: var(--selection-fill); color: var(--ink); }
+.st-segmented { background: var(--selection-fill); }
+.st-segmented button[aria-pressed="true"] { background: var(--surface); color: var(--ink); }
+.st-search:focus-within { background: var(--surface-hover); }
+.st-search input::placeholder { color: var(--muted); opacity: 1; }
+.st-tooltip { background: var(--tip); color: var(--tip-ink); }
+.st-menu-item:hover, .st-menu-item:focus-visible { background: var(--selection-fill); }
+.st-brand-gradient { background-image: var(--st-brand-gradient); }
+.st-brand-gradient:hover { background-image: var(--st-brand-hover); }
+@supports not ((backdrop-filter: blur(28px)) or (-webkit-backdrop-filter: blur(28px))) {
+  .glass-floating, .st-floating-glass, .st-taskbar.st-glass { background-color: var(--glass-chrome-solid); }
+  .glass-modal, .st-sheet { background-color: var(--glass-modals-solid); }
 }
 @media (prefers-reduced-transparency: reduce) {
-  .st-glass, .st-glass-surface, .st-glass-field, .st-glass-table, .st-glass-pop, .st-sheet, .st-ask-card {
-    background: var(--st-glass-solid);
-    -webkit-backdrop-filter: none; backdrop-filter: none;
+  .glass-floating, .st-floating-glass, .st-taskbar.st-glass, .glass-modal, .st-sheet {
+    background-color: var(--surface); backdrop-filter: none; -webkit-backdrop-filter: none;
   }
 }
 
@@ -347,30 +264,6 @@ body { font-family: var(--font-body); background: var(--ground); color: var(--in
 .st-skel-in { animation: st-skel-in 1ms linear 150ms backwards; }
 .st-skel-pulse { animation: st-skel-pulse 2.2s ease-in-out infinite; border-radius: 8px; }
 
-/* Brand gradient: one ramp for every blue surface (primary buttons, the
-   active rail tile). Dark shifts the whole ramp one step down, hover one
-   more, exactly as in reference/sidething-brand/brand-gradient.css. */
-.st-brand-gradient {
-  background-image: linear-gradient(to bottom right, rgb(59 130 246), rgb(37 99 235), rgb(29 78 216));
-}
-.st-brand-gradient:hover {
-  background-image: linear-gradient(to bottom right, rgb(37 99 235), rgb(29 78 216), rgb(30 64 175));
-}
-:root[data-theme="dark"] .st-brand-gradient {
-  background-image: linear-gradient(to bottom right, rgb(37 99 235), rgb(29 78 216), rgb(30 64 175));
-}
-:root[data-theme="dark"] .st-brand-gradient:hover {
-  background-image: linear-gradient(to bottom right, rgb(29 78 216), rgb(30 64 175), rgb(30 58 138));
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .st-brand-gradient {
-    background-image: linear-gradient(to bottom right, rgb(37 99 235), rgb(29 78 216), rgb(30 64 175));
-  }
-  :root:not([data-theme="light"]) .st-brand-gradient:hover {
-    background-image: linear-gradient(to bottom right, rgb(29 78 216), rgb(30 64 175), rgb(30 58 138));
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
   .st-pop-in { animation: st-scrim-in 120ms ease backwards; }
   .st-think > span { animation: none; opacity: 0.7; }
@@ -380,3 +273,86 @@ body { font-family: var(--font-body); background: var(--ground); color: var(--in
   *, *::before, *::after { transition-duration: 0.01ms !important; }
 }
 
+
+/* D10 shared editorial and media utilities. Palette follows the D0 tokens. */
+.st-wordmark { margin-bottom: 20px; font: 600 30px/1 var(--font-display); letter-spacing: -.05em; }
+.st-page-title { font: 700 clamp(44px, 3.75vw, 56px)/1.05 var(--font-display); letter-spacing: -.045em; }
+.st-page-subtitle { margin-top: 7px; font-size: 20px; line-height: 1.4; color: var(--muted); }
+.st-footage-heading > div { margin-bottom: 0; }
+.st-footage-heading h1 button { font-size: 14px; font-weight: 500; line-height: 1.4; }
+.st-footage-heading p { font-size: 20px; line-height: 1.4; }
+.st-filter-pill { border-radius: 999px; padding: 9px 19px; background: var(--surface); color: var(--muted); font-size: 13px; font-weight: 500; }
+.st-filter-pill[aria-pressed="true"] { background: var(--ink); color: var(--ground); }
+.st-thumbnail-badge { padding: 5px 10px; font-size: 12px; font-weight: 650; }
+.st-media-chip { background: var(--primary-ink); color: var(--media-ink); }
+[data-player-options] select, [data-player-options] button { background: var(--surface); color: var(--ink); }
+[data-player-options] label { margin-right: auto; }
+[data-player-container] [data-cut-player] { overflow: visible; }
+[data-player-container] [aria-label="Player controls"] {
+  left: calc(12px - var(--player-gutter, 0px));
+  right: calc(12px - var(--player-gutter, 0px));
+  bottom: calc(12px - var(--player-bottom, 0px));
+}
+:root {
+  --media-ink: var(--badge-neutral-fill);
+  --timeline-caption-fill: light-dark(#c9c0f6, #494064);
+  --timeline-caption-ink: light-dark(#2a2257, #ece5ff);
+  --timeline-overlay-fill: light-dark(#f5cf6e, #715623);
+  --timeline-overlay-ink: light-dark(#4a3208, #fff0c7);
+  --timeline-film-frame: light-dark(#f8f6f0, #e5dfd6);
+  --timeline-duration-fill: light-dark(rgb(27 26 24 / .72), rgb(16 15 18 / .8));
+  --timeline-duration-ink: #fff;
+  --timeline-playhead-ink: light-dark(#fff, #151e30);
+  --timeline-audio-fill: light-dark(#cfe0fb, #253f61);
+  --timeline-music-ink: light-dark(#133a2a, #c9f2dc);
+  --timeline-music-fill: light-dark(#8fdcb8, #264f3b);
+}
+:root[data-theme="dark"] { --media-ink: var(--ink); }
+.st-player-transport { background: color-mix(in oklab, var(--primary-ink) 82%, transparent); color: var(--media-ink); }
+.st-player-transport span, .st-player-control { color: var(--media-ink); }
+.st-player-control:hover { background: color-mix(in oklab, var(--media-ink) 15%, transparent); }
+.st-lane-audio { background: var(--timeline-audio-fill); color: var(--accent); }
+.st-lane-music { background: var(--timeline-music-fill); color: var(--timeline-music-ink); }
+/* All editor chrome shares Inter, including tools rendered by other slices. */
+.st-editor-type { --font-mono: var(--font-body); font-family: var(--font-body); }
+.st-editor-type .font-mono { font-family: var(--font-body); font-variant-numeric: tabular-nums; }
+.st-editor-type kbd { font-family: inherit; }
+.st-editor-type .font-display:not(h1):not(h2):not(.st-wordmark) { font-family: var(--font-body); }
+
+
+.st-thumbnail-badge { filter: none; }
+[data-theme="dark"] .st-thumbnail-badge {
+  --badge-amber-fill: var(--thumbnail-amber-fill); --badge-amber-ink: var(--thumbnail-amber-ink);
+  --badge-pink-fill: var(--thumbnail-pink-fill); --badge-pink-ink: var(--thumbnail-pink-ink);
+  --badge-violet-fill: var(--thumbnail-violet-fill); --badge-violet-ink: var(--thumbnail-violet-ink);
+}
+:root[data-theme="dark"] {
+  --thumbnail-amber-fill: var(--badge-amber-ink); --thumbnail-amber-ink: var(--badge-amber-fill);
+  --thumbnail-pink-fill: var(--badge-pink-ink); --thumbnail-pink-ink: var(--badge-pink-fill);
+  --thumbnail-violet-fill: var(--badge-violet-ink); --thumbnail-violet-ink: var(--badge-violet-fill);
+}
+
+/* Compact numeric sliders share one track and handle, without motion. */
+.st-slider::-webkit-slider-thumb { appearance: none; width: 7px; height: 12px; border: 0; border-radius: 2px; background: var(--ink); }
+.st-slider::-moz-range-thumb { width: 7px; height: 12px; border: 0; border-radius: 2px; background: var(--ink); }
+[data-timeline] [data-lane] button:hover { filter: brightness(1.13); background-color: color-mix(in srgb, var(--accent) 14%, var(--surface)); }
+[data-timeline]:has([data-lane="video"] button:hover) [data-lane-label="Video"],
+[data-timeline]:has([data-lane="captions"] button:hover) [data-lane-label="Captions"],
+[data-timeline]:has([data-lane="voice"] button:hover) [data-lane-label="Audio"],
+[data-timeline]:has([data-lane="music"] button:hover) [data-lane-label="Music"],
+[data-timeline]:has([data-lane="overlays"] button:hover) [data-lane-label="B-roll"],
+[data-timeline]:has([data-lane="sound-effects"] button:hover) [data-lane-label="Sound effects"] { background: var(--selection-fill); color: var(--ink); }
+
+/* P3: a single shell gutter for library pages, with tighter edit panes. */
+.st-page-content { --page-gutter: 24px; padding-inline: var(--page-gutter); }
+@media (max-width: 1279px) { .st-page-content { --page-gutter: 16px; } }
+.st-page-content[data-edits] { --page-gutter: 12px; }
+
+/* H6: each edit is a small print; only the selected cover tips. */
+.st-edit-print {
+  display: flex; align-items: center; justify-content: center;
+  width: 38px; height: 48px; box-sizing: border-box; flex-shrink: 0;
+  border: 3px solid var(--print-paper); border-bottom-width: 9px;
+  border-radius: 2px; background: var(--ground); overflow: hidden;
+}
+.st-edit-print[data-selected="true"] { transform: rotate(-3deg); }

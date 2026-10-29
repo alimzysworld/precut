@@ -1,0 +1,8 @@
+.lightroom-slider { display: grid; grid-template-columns: 70px minmax(0, 1fr) 42px; align-items: center; gap: 8px; min-height: 22px; }
+.lightroom-slider-values { display: contents; }
+.lightroom-slider-values label { grid-column: 1; grid-row: 1; font-size: 11px; color: var(--muted); }
+.lightroom-slider-values button, .lightroom-slider-values input { grid-column: 3; grid-row: 1; width: 100%; font-size: 11px; }
+.lightroom-slider > input[type="range"] { grid-column: 2; grid-row: 1; }
+.lightroom-slider > [role="alert"] { grid-column: 1 / -1; }
+
+[data-search-highlight] { background-color: var(--selection-fill); border-radius: 6px; }

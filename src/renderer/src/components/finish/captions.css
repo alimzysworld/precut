@@ -1,0 +1,5 @@
+/* Selected caption card: a soft accent tint over the card, never a stroke or ring (a design rule). */
+.caption-style-card[aria-pressed="true"] .caption-style-ring {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  box-shadow: none !important;
+}

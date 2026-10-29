@@ -7,6 +7,7 @@ Recorder bounds are checked against ffprobe as well as the XML declaration.
 """
 import math
 from pathlib import Path
+import sys; sys.path.insert(0, str(Path(__file__).resolve().parent)); from setup import tool
 import re
 import subprocess
 import sys
@@ -61,9 +62,24 @@ def check(path):
             if not source.is_file():
                 errors.append(f"asset {aid} path does not exist: {source}")
                 continue
+            if asset.get("name", "").startswith(("Title front:", "Title behind:", "Person cut-out")):
+                try:
+                    result = subprocess.run([tool("ffprobe"), "-v", "error", "-select_streams", "v:0",
+                                             "-show_entries", "stream=codec_name,pix_fmt:format=duration",
+                                             "-of", "json", str(source)], capture_output=True, text=True,
+                                            check=True, timeout=30)
+                    import json
+                    probe = json.loads(result.stdout)
+                    stream = probe["streams"][0]
+                    if stream.get("codec_name") != "prores" or not stream.get("pix_fmt", "").startswith("yuva"):
+                        errors.append(f"layer {aid} is not ProRes with alpha")
+                    if durations[aid] > float(probe["format"]["duration"]) + .001:
+                        errors.append(f"layer {aid} duration exceeds physical file")
+                except (OSError, ValueError, KeyError, IndexError, subprocess.SubprocessError) as exc:
+                    errors.append(f"cannot verify alpha layer {aid}: {exc}")
             if asset.get("hasVideo") == "0" and asset.get("hasAudio") == "1":
                 try:
-                    result = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                    result = subprocess.run([tool("ffprobe"), "-v", "error", "-show_entries", "format=duration",
                                              "-of", "default=noprint_wrappers=1:nokey=1", str(source)],
                                             capture_output=True, text=True, check=True, timeout=30)
                     actual = float(result.stdout.strip())
@@ -91,7 +107,14 @@ def check(path):
             origin, length = parse_time(seq.get("tcStart")), parse_time(seq.get("duration"))
         else:
             origin, length = parse_time(resource.get("start")), durations[ref]
-        if dur <= 0 or start < origin - 1e-6 or start + dur > origin + length + 1e-6:
+        keys = clip.findall('timeMap/timept')
+        source_start = min((parse_time(k.get('value')) for k in keys), default=start)
+        source_end = max((parse_time(k.get('value')) for k in keys), default=start + dur)
+        if keys:
+            times = [parse_time(k.get('time')) for k in keys]
+            if len(keys) < 2 or any(b <= a for a, b in zip(times, times[1:])):
+                errors.append(f'{ref}: invalid retime curve')
+        if dur <= 0 or source_start < origin - 1e-6 or source_end > origin + length + 1e-6:
             label = "mic/recorder" if resource.get("hasVideo") == "0" else "source"
             errors.append(f"{label} {ref} range {start:.6f} + {dur:.6f} outside {origin:.6f}–{origin + length:.6f}")
         if clip.tag == "asset-clip" and resource.get("hasVideo") == "1" and clip.get("srcEnable", "all") != "video":
@@ -114,6 +137,15 @@ def check(path):
             prev_end = max(prev_end, off + dur)
         if abs(prev_end - parse_time(seq.get("duration"))) > 1e-6:
             errors.append(f"sequence duration differs from spine end {prev_end:.6f}s")
+    for caption in root.iter("caption"):
+        if parse_time(caption.get("duration")) <= 0 or parse_time(caption.get("offset")) < 0:
+            errors.append("caption has invalid timing")
+        if "?captionFormat=ITT." not in caption.get("role", "") or caption.find("text") is None:
+            errors.append("caption lacks ITT role or text")
+        definitions = {style.get("id") for style in caption.findall("text-style-def")}
+        for style in caption.findall("text/text-style"):
+            if style.get("ref") and style.get("ref") not in definitions:
+                errors.append("caption references missing text style")
     projects = root.findall("./library/event/project") + root.findall("./event/project")
     if not projects:
         errors.append("no project timeline")
@@ -123,8 +155,21 @@ def check(path):
             errors.append("project has no spine")
             continue
         occupied = {}
+        finishing_lanes = {}
+        transitions = {round(parse_time(c.get('offset')) + parse_time(c.get('duration')), 6): parse_time(c.get('duration')) for c in spine if c.tag == 'transition'}
         for main in spine:
-            if main.tag == "gap":
+            for layer in main:
+                name = layer.get("name", "")
+                if layer.tag == "asset-clip" and name.startswith(("Title front:", "Title behind:", "Person cut-out", "Clean voice:")):
+                    lane = int(layer.get("lane", "0"))
+                    off = parse_time(main.get("offset")) + parse_time(layer.get("offset")) - parse_time(main.get("start"))
+                    dur = parse_time(layer.get("duration"))
+                    finishing_lanes.setdefault(lane, []).append((off, off + dur))
+                    if (name.startswith("Clean voice:") and lane >= 0) or (not name.startswith("Clean voice:") and lane <= 0):
+                        errors.append(f"finishing clip {name} has wrong lane")
+                if name.startswith("Original voice:") and layer.get("enabled") != "0":
+                    errors.append("original voice must be disabled when clean voice is present")
+            if main.tag in {"gap", "transition"}:
                 continue
             if main.find("marker") is None:
                 errors.append(f"main take {main.get('name')} has no marker")
@@ -133,9 +178,14 @@ def check(path):
                 if alt.tag not in {"asset-clip", "ref-clip", "sync-clip"} or alt.get("enabled") != "0":
                     continue
                 lane = int(alt.get("lane", "0"))
+                if lane < 0 and alt.get("name", "").startswith("Original voice:"):
+                    if alt.get("srcEnable") != "audio":
+                        errors.append("original voice clip must be audio only")
+                    continue
                 if lane <= 0:
                     errors.append(f"disabled alternate {alt.get('name')} is not above main lane")
-                if abs(parse_time(alt.get("offset")) - parse_time(main.get("start"))) > 1e-6:
+                incoming = transitions.get(round(parse_time(main.get('offset')), 6), 0)
+                if abs(parse_time(alt.get("offset")) - (parse_time(main.get("start")) - incoming)) > 1e-6:
                     errors.append(f"disabled alternate {alt.get('name')} does not align with its main-lane line")
                 alt_line = re.match(r"^(\d+) ", alt.get("name", ""))
                 if not main_line or not alt_line or main_line[1] != alt_line[1]:
@@ -144,6 +194,12 @@ def check(path):
                 if occupied.get(lane, 0) > off + 1e-6:
                     errors.append(f"alternate lane {lane} overlaps a preceding alternate")
                 occupied[lane] = off + dur
+        for lane, spans in finishing_lanes.items():
+            previous = 0
+            for start, end in sorted(spans):
+                if start < previous - 1e-6:
+                    errors.append(f"finishing lane {lane} overlaps itself")
+                previous = end
         # Every disabled connected lane clip must have been checked above.
         checked = {id(a) for m in spine for a in m if a.get("enabled") == "0"}
         for alt in project.iter():

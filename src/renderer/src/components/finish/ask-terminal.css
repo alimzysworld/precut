@@ -1,0 +1,5 @@
+.st-ask-terminal { width: 100%; height: 100%; padding: 10px 4px 8px; background: var(--surface); }
+.st-ask-terminal .xterm { height: 100%; }
+.st-ask-terminal .xterm-viewport { scrollbar-width: thin; scrollbar-color: var(--muted) var(--surface); }
+.st-ask-terminal .xterm-screen { max-width: 100%; }
+.st-ask-terminal .xterm:focus-visible { outline: none; }

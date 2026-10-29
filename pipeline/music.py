@@ -3,7 +3,7 @@
 
 Usage: python -I pipeline/music.py FOLDER --cache USERDATA/music-cache.json
 The energy curve is one RMS dBFS value per second (mono, 22050 Hz).
-Integrated LUFS measures the original track's first audio stream in stereo,
+Integrated LUFS measures the original track's selected audio stream in stereo,
 matching the preview mix's channel layout.
 Build/drop are energy-curve estimates, not a claim about musical structure.
 """
@@ -12,11 +12,13 @@ import json
 import math
 import os
 from pathlib import Path
+import sys; sys.path.insert(0, str(Path(__file__).resolve().parent)); from setup import tool
 import subprocess
 import sys
 import tempfile
+from source_audio import audio_input
 
-EXTENSIONS = {'.mp3', '.m4a', '.wav', '.aiff', '.aif', '.flac'}
+EXTENSIONS = {'.mp3', '.m4a', '.aac', '.wav', '.aiff', '.aif', '.flac', '.ogg', '.opus', '.mp4'}
 VERSION = 3
 
 
@@ -24,14 +26,14 @@ def analyse(file):
     import librosa
     import numpy as np
     sr = 22050
-    decoded = subprocess.run(['ffmpeg', '-v', 'error', '-i', str(file), '-vn',
+    decoded = subprocess.run([tool('ffmpeg'), '-v', 'error', *audio_input(file), '-vn',
                               '-ac', '1', '-ar', str(sr), '-f', 'f32le', '-'],
                              check=True, capture_output=True)
     y = np.frombuffer(decoded.stdout, dtype='<f4').copy()
     if not len(y):
         raise ValueError('empty audio')
-    measured = subprocess.run(['ffmpeg', '-hide_banner', '-nostats', '-i', str(file),
-                               '-map', '0:a:0', '-vn', '-af',
+    measured = subprocess.run([tool('ffmpeg'), '-hide_banner', '-nostats', *audio_input(file),
+                               '-vn', '-af',
                                'aresample=48000,aformat=channel_layouts=stereo,'
                                'loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json',
                                '-f', 'null', '-'], check=True, capture_output=True, text=True)
@@ -77,11 +79,13 @@ def analyse(file):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('folder', type=Path)
+    parser.add_argument('folder', type=Path, nargs='?')
+    parser.add_argument('--files', type=Path, nargs='*', default=[])
     parser.add_argument('--cache', type=Path, default=Path.home() / 'Library/Application Support/precut/music-cache.json')
     args = parser.parse_args()
-    folder, cache_file = args.folder.resolve(strict=True), args.cache.resolve()
-    if cache_file == folder or folder in cache_file.parents:
+    folder = args.folder.resolve() if args.folder else None
+    cache_file = args.cache.resolve()
+    if folder and (cache_file == folder or folder in cache_file.parents):
         raise ValueError('Music cache must be outside the music folder')
     try:
         cache = json.loads(cache_file.read_text())
@@ -90,7 +94,9 @@ def main():
     except (OSError, ValueError, AttributeError):
         cache = {'version': VERSION, 'entries': {}}
     tracks, errors = [], []
-    for file in sorted(folder.rglob('*')):
+    files = set(folder.rglob('*')) if folder and folder.is_dir() else set()
+    files.update(file.resolve() for file in args.files)
+    for file in sorted(files):
         if not file.is_file() or file.suffix.lower() not in EXTENSIONS:
             continue
         file = file.resolve()

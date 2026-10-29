@@ -3,9 +3,12 @@ import { BrowserWindow } from "electron";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { Clip, Shoot, ShootSteps, SidekickMessage, Stage, StepId } from "../shared/schema";
+import { mergeLeftOutSync } from "./left-out-state";
+import { displayedClip } from "../shared/media";
 
 // Project the person's tags without replacing the measured or judged data on disk.
 export function effectiveClip(clip: Clip): Clip {
+  clip = displayedClip(clip);
   const { byHand } = clip;
   if (!byHand) return clip;
   const judgement = byHand.kind === undefined ? clip.judgement : {
@@ -23,7 +26,7 @@ export function effectiveClip(clip: Clip): Clip {
   return { ...clip, judgement, shake };
 }
 export function effectiveShoot(shoot: Shoot): Shoot {
-  return { ...shoot, clips: shoot.clips.map(effectiveClip) };
+  return { ...shoot, clips: mergeLeftOutSync(shoot).clips.map(effectiveClip) };
 }
 
 const progress = new Map<string, { judging: boolean; stages: Map<string, Stage>; note?: string }>();
@@ -50,11 +53,15 @@ export function trackProgress(e: { root: string; clipId: string; stage: Stage; p
 // Leading plus trailing notification: no more than one per second per shoot,
 // while still delivering the final change in a burst.
 const notifications = new Map<string, { at: number; timer?: ReturnType<typeof setTimeout> }>();
-export function stepsChanged(root: string): void {
+let resumeRequests: (root: string) => void = () => {};
+export function setRequestWake(fn: (root: string) => void): void { resumeRequests = fn; }
+export function stepsChanged(root: string, urgent = false): void {
   root = path.resolve(root);
+  resumeRequests(root);
   const state = notifications.get(root) ?? { at: 0 };
   notifications.set(root, state);
   const send = () => {
+    if (state.timer) clearTimeout(state.timer);
     state.at = Date.now();
     state.timer = undefined;
     for (const win of BrowserWindow.getAllWindows()) {
@@ -63,6 +70,8 @@ export function stepsChanged(root: string): void {
       }
     }
   };
+  // A failure never waits behind the once-a-second throttle.
+  if (urgent) { send(); return; }
   if (state.timer) return;
   const remaining = 1000 - (Date.now() - state.at);
   if (remaining <= 0) send();
@@ -77,7 +86,7 @@ export async function shootSteps(root: string): Promise<ShootSteps> {
   root = path.resolve(root);
   const base = path.join(root, ".sidething");
   const [shoot, thread, entries, lastCall] = await Promise.all([
-    json<Shoot | null>(path.join(base, "index.json"), null),
+    import("./jobs").then(jobs => jobs.statusIndex(root)),
     json<SidekickMessage[]>(path.join(base, "sidekick/thread.json"), []),
     fs.readdir(path.join(base, "sidekick/cuts")).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return []; throw error;
@@ -89,7 +98,7 @@ export async function shootSteps(root: string): Promise<ShootSteps> {
   const precuts = cuts || (await fs.readdir(path.join(root, "sidething precuts")).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return []; throw error;
   })).length > 0;
-  const latestIdeas = [...thread].reverse().find((m) => m.ideas !== undefined)?.ideas;
+  const latestIdeas = thread.flatMap(m => m.ideas ?? []);
   const clips = shoot?.clips ?? [];
   const state = progress.get(root);
   const tagged = clips.filter((c) => ["done", "error"].includes(c.stage)).length;
@@ -100,7 +109,8 @@ export async function shootSteps(root: string): Promise<ShootSteps> {
       ? { status: "working", note: "judging" } : tagged < clips.length
       ? { status: "working", note: `tagging ${tagged} of ${clips.length}` }
       : { status: "done" },
-    ideas: precuts || latestIdeas?.some((i) => i.cutId) ? { status: "done" }
+    // ONB2/REL1: an edit made by hand is not ideas done. Ideas tick only when there are ideas.
+    ideas: latestIdeas.length && (precuts || latestIdeas.some((i) => i.cutId)) ? { status: "done" }
       : latestIdeas?.length ? { status: "waiting", note: "pick what to cut" } : { status: "todo" },
     precut: { status: precuts ? "done" : "todo" },
   };

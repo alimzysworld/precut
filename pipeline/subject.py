@@ -2,7 +2,7 @@
 """Measure subjects with Apple Vision: python -I pipeline/subject.py <shoot> [--force].
 
 The only shoot writes are atomic index replacements inside .sidething/. The
-Swift executable and its module cache live in the app's Application Support bin.
+Swift executable is bundled at build time; runtime compilation is never needed.
 Missing detections are not invented; decode/Vision failures are not cached.
 """
 import argparse
@@ -15,40 +15,21 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+import sys; sys.path.insert(0, str(Path(__file__).resolve().parent)); from setup import tool
 
-BIN = Path.home() / "Library" / "Application Support" / "precut" / "bin"
-SOURCE = Path(__file__).with_suffix(".swift")
 RATE = 2
+CACHE_VERSION = 2  # Face pose, with contract pitch sign (negative = down).
 
 
 def emit(clip_id="", stage="subject", pct=0, **extra):
     print(json.dumps({"clipId": clip_id, "stage": stage, "pct": pct, **extra}), flush=True)
 
 
-def tool():
-    """Build once per source change, without using Swift's default cache folder."""
-    digest = hashlib.sha256(SOURCE.read_bytes()).hexdigest()
-    BIN.mkdir(parents=True, exist_ok=True)
-    binary = BIN / "subject"
-    stamp = BIN / "subject.sha256"
-    if not (binary.is_file() and os.access(binary, os.X_OK)
-            and stamp.is_file() and stamp.read_text().strip() == digest):
-        emit(message="compiling on-device subject detector")
-        fd, temporary = tempfile.mkstemp(prefix="subject-", dir=BIN)
-        os.close(fd)
-        try:
-            result = subprocess.run(["swiftc", "-O", "-module-cache-path",
-                                     str(BIN / "module-cache"), str(SOURCE),
-                                     "-o", temporary], stdout=sys.stderr, stderr=sys.stderr)
-            if result.returncode:
-                raise RuntimeError(f"swiftc failed (exit {result.returncode}); see stderr")
-            os.replace(temporary, binary)
-            stamp.write_text(digest + "\n")
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
-    # Changes to the runner's coordinate validation/cache policy also invalidate tracks.
-    version = hashlib.sha256(SOURCE.read_bytes() + Path(__file__).read_bytes()).hexdigest()
+def subject_tool():
+    binary = Path(tool("subject"))
+    if not binary.is_file():
+        raise RuntimeError("The bundled subject detector is missing. Reinstall precut.")
+    version = hashlib.sha256(binary.read_bytes() + Path(__file__).read_bytes()).hexdigest()
     return binary, version
 
 
@@ -83,7 +64,7 @@ def signature(original, source, version):
     def stat_key(path):
         stat = path.stat()
         return {"size": stat.st_size, "mtimeNs": stat.st_mtime_ns}
-    return {"file": str(original), **stat_key(original), "tool": version,
+    return {"file": str(original), **stat_key(original), "tool": version, "version": CACHE_VERSION,
             "rate": RATE, "input": str(source), "inputStat": stat_key(source)}
 
 
@@ -110,7 +91,16 @@ def measure(binary, source, clip_id):
                     raise RuntimeError(f"invalid subject {name} from subject tool")
             if row["w"] <= 0 or row["h"] <= 0:
                 raise RuntimeError("empty subject box from subject tool")
-            samples.append({name: row[name] for name in ("t", "x", "y", "w", "h", "kind")})
+            sample = {name: row[name] for name in ("t", "x", "y", "w", "h", "kind")}
+            if row["kind"] == "face":
+                for name in ("yaw", "pitch"):
+                    if name not in row:
+                        continue
+                    value = row[name]
+                    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                        raise RuntimeError(f"invalid face {name} from subject tool")
+                    sample[name] = value
+            samples.append(sample)
             if int(t * RATE) % 60 == 0:
                 emit(clip_id, message=f"measuring at {t:g}s")
         if proc.wait():
@@ -162,11 +152,12 @@ def main():
     try:
         path = index_path(root)
         index = json.loads(path.read_bytes())
-        binary, version = tool()
+        binary, version = subject_tool()
     except (OSError, ValueError, RuntimeError) as error:
         emit(stage="error", pct=100, error=str(error))
         return 1
-    clips = index["clips"]
+    from media_changes import source_wanted
+    clips = [c for c in index["clips"] if source_wanted(root, c)]
     cache = index.get("_cache", {}).get("subject", {})
     failed, cached, measured = 0, 0, 0
     for n, clip in enumerate(clips):
@@ -179,7 +170,13 @@ def main():
                 emit(clip_id, pct=100, cached=True)
                 continue
             emit(clip_id, message=f"framing {n + 1} of {len(clips)}", input=str(source))
-            subject = measure(binary, source, clip_id)
+            try:
+                subject = measure(binary, source, clip_id)
+            except RuntimeError:
+                if source == original:
+                    raise
+                # PF1b: a preview the decoder can't read; the original may still read.
+                subject = measure(binary, original, clip_id)
             save_result(root, clip, subject, key, version)
             measured += 1
             emit(clip_id, pct=100, samples=len(subject["samples"]) if subject else 0)
@@ -187,7 +184,9 @@ def main():
             failed += 1
             emit(clip_id, stage="error", pct=100, error=str(error))
     emit(pct=100, measured=measured, cached=cached, failed=failed)
-    return 1 if failed else 0
+    # PF1b: one clip that can't be read is left without framing; the others keep theirs.
+    # The step fails only when no clip could be framed at all.
+    return 1 if failed and not (measured or cached) else 0
 
 
 if __name__ == "__main__":

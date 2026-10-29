@@ -22,8 +22,10 @@ import sys
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
+import sys; sys.path.insert(0, str(Path(__file__).resolve().parent)); from setup import tool
 
 import numpy as np
+from source_audio import audio_stream
 
 sys.dont_write_bytecode = True
 
@@ -45,8 +47,12 @@ def find_file(root, name):
     direct = root / name
     if direct.is_file():
         return direct
-    matches = [p for p in root.rglob(Path(name).name)
-               if ".sidething" not in p.parts and p.is_file()]
+    # A missing qualified path must never silently become the other camera.
+    if Path(name).name != name:
+        return None
+    from process import discover
+    clips, audio = discover(root)
+    matches = [p for p in clips + audio if p.name == name]
     return matches[0] if len(matches) == 1 else None
 
 
@@ -100,7 +106,10 @@ def clock_delta(seconds):
 def decode(path):
     if not path:
         return np.zeros(0, dtype=np.float32)
-    result = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-vn",
+    stream = audio_stream(path)
+    if stream is None:
+        return np.zeros(0, dtype=np.float32)
+    result = subprocess.run([tool("ffmpeg"), "-v", "error", "-i", str(path), "-map", f"0:{stream['index']}", "-vn",
                              "-ac", "1", "-ar", str(SR), "-f", "f32le", "-"],
                             capture_output=True)
     if result.returncode:
@@ -200,7 +209,7 @@ def choose(candidates):
 
 def media_signature(root, index):
     def stamp(path):
-        if not path:
+        if not path or not path.is_file():
             return None
         stat = path.stat()
         return [stat.st_size, stat.st_mtime_ns]
@@ -215,18 +224,18 @@ def media_signature(root, index):
 
 
 def save_index(path, index):
-    index["updatedAt"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(index, indent=1, allow_nan=False))
-    tmp.replace(path)
+    from process import save_index as save_processing_index
+    save_processing_index(path.parent, index)
 
 
 def refresh_transcripts(root, index, index_path):
     spec = importlib.util.spec_from_file_location("sound_process", Path(__file__).with_name("process.py"))
     processing = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(processing)
-    failures = processing.refresh_sound_transcripts(root, index, lambda: save_index(index_path, index))
-    return 1 if failures else 0
+    # The sound refresh returns the failed clip ids; the voiceover refresh returns a count.
+    failed_sound = processing.refresh_sound_transcripts(root, index, lambda: save_index(index_path, index))
+    failed_voiceovers = processing.refresh_voiceover_transcripts(root, index, lambda: save_index(index_path, index))
+    return 1 if failed_sound or failed_voiceovers else 0
 
 
 def main():
@@ -253,9 +262,12 @@ def main():
             emit(**cache["drift"], cached=True)
         return refresh_transcripts(root, index, index_path)
 
-    clips = [c for c in index.get("clips", []) if not args.clip or c["id"] == args.clip or c["id"].endswith(args.clip)]
+    from media_changes import source_wanted
+    clips = [c for c in index.get("clips", []) if not c.get("photo") and source_wanted(root, c)
+             and (not args.clip or c["id"] == args.clip or c["id"].endswith(args.clip))]
     entries = [{"file": args.audio_file}] if args.audio_file else [
-        a for a in index.get("audio", []) if not args.audio or a["file"] == args.audio]
+        a for a in index.get("audio", []) if (not args.audio or a["file"] == args.audio)
+        and not a["file"].startswith(("sidething precuts/recordings/", ".sidething/recordings/"))]
     paths = {c["id"]: find_file(root, c["file"]) for c in clips}
     clocks = {c["id"]: camera_clock(c, paths[c["id"]]) for c in clips}
     waves = {}

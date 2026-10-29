@@ -1,9 +1,16 @@
 appId: com.sidething.precut
 productName: precut
 directories:
-  output: dist
+  output: dist.noindex  # .noindex keeps Spotlight from listing the unpacked build next to the installed app
   buildResources: build
 asar: true
+asarUnpack:
+  - node_modules/node-pty/**
+  # External ffmpeg processes cannot read the setup sample inside app.asar.
+  - out/main/chunks/daylight-*.jpg
+  - out/main/chunks/warm-*.jpg
+  - out/main/chunks/night-*.jpg
+  - out/main/chunks/skyline-*.jpg
 files:
   - out/main/**
   - out/preload/**
@@ -13,24 +20,95 @@ files:
   - "!**/{fixtures,qa,briefs,docs,reference}/**"
   - "!**/{__pycache__,.pytest_cache}/**"
   - "!**/*.pyc"
+  # REL2: node-pty runs from its darwin-arm64 build only; its sources, Windows and Intel prebuilds never load here.
+  - "!node_modules/node-pty/{deps,third_party,src,scripts}/**"
+  - "!node_modules/node-pty/prebuilds/{win32-*,darwin-x64}/**"
+  - "!node_modules/node-pty/build/{obj.target,node-addon-api}/**"
 extraResources:
+  - from: src/shared/screen-rules.ts
+    to: pipeline/screen-rules.ts
+  - from: resources/resolve-apply.py
+    to: resources/resolve-apply.py
+  - from: resources/extensions.json
+    to: extensions.json
+  # macOS 26 (Tahoe) icon: Assets.car compiled from build/precut.icon with Xcode's actool
+  # (scripts/build-icon.sh). Without it Tahoe puts the icon in a grey frame.
+  - from: build/icon-car/Assets.car
+    to: Assets.car
+  - from: build/tools
+    to: tools
+    filter:
+      - "**/*"
+      # SIGN2: ExifTool's own test suite carries foreign Mach-O samples (ppc, x86_64) that can't be signed
+      # or notarised. precut never runs them.
+      - "!exiftool/t/**"
+  - from: build/precut
+    to: precut
   - from: pipeline
     to: pipeline
     filter:
       - "**/*.py"
       - "**/*.swift"
+      - "requirements.txt"
+      - "models/**"
       - "!**/__pycache__/**"
+  # J2: bundled CC0 sound library (resources/sfx/manifest.json); dev reads it from the repo.
+  - from: resources/sfx
+    to: sfx
+  # ONB2: the starter tracks (CC BY 4.0, credits in build/music/LICENSES.md and Settings, About). Packaged builds read
+  # them from Resources/music (music.ts); dev reads build/music from the repo.
+  - from: build/music
+    to: music
   - from: prompts
     to: prompts
     filter:
       - "**/*.md"
+  # REL2: every licence the bundle owes travels in Resources/licenses (Settings, About, Licences reads them).
+  # Electron's own two come from the pinned electron package, so they always match the runtime that ships.
+  - from: resources/licenses
+    to: licenses
+    filter:
+      - "**/*"
+      - "!electron-LICENSE.txt"          # the public tree carries copies of these two; the build takes the electron package's own
+      - "!LICENSES.chromium.html"
+  - from: node_modules/electron/dist/LICENSE
+    to: licenses/electron-LICENSE.txt
+  - from: node_modules/electron/dist/LICENSES.chromium.html
+    to: licenses/LICENSES.chromium.html
+# Local dev builds: ad-hoc signed as com.sidething.precut (SIGN1). Skipped when a Developer ID identity is set.
+afterPack: scripts/sign-adhoc.cjs
+# SIGN2: electron-updater reads GitHub releases on alimzysworld/precut (public, no token). Builds never publish
+# (every script passes --publish never); this only writes Resources/app-update.yml and latest-mac.yml.
+publish:
+  provider: github
+  owner: alimzysworld
+  repo: precut
+  releaseType: release
 mac:
   target:
     - target: dmg
       arch:
         - arm64
+    # Squirrel.Mac updates from the zip; latest-mac.yml names it.
+    - target: zip
+      arch:
+        - arm64
+  # null = local dev build (ad-hoc, scripts/sign-adhoc.cjs). Releases go through scripts/release-mac.sh, which sets
+  # -c.mac.identity="sidething LTD (54D78KXPT9)" (Developer ID Application) and notarises with the keychain
+  # profile "precut". Keeping the default null means no dev build ever reaches for the Developer ID key.
   identity: null
+  # SIGN2: used whenever an identity is set. Why each entitlement is there: build/entitlements.mac.plist.
+  # REL2: the Swift helpers need macOS 13 and the mlx wheels need 14, so the app asks for 14 (Sonoma).
+  minimumSystemVersion: "14.0"
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
   icon: build/icon.icns
+  extendInfo:
+    CFBundleIconName: precut
+    NSMicrophoneUsageDescription: Record your voiceover in precut.
+    NSSpeechRecognitionUsageDescription: Follow your voice on the teleprompter using on-device speech recognition.
+    NSAppleEventsUsageDescription: Open Terminal so you can sign in to your engine.
 artifactName: precut.${ext}
 dmg:
   sign: false

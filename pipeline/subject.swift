@@ -15,8 +15,10 @@ func rank(_ box: CGRect) -> CGFloat {
     return box.width * box.height / (1 + dx * dx + dy * dy)
 }
 
-func mainSubject(_ image: CGImage) throws -> (CGRect, String)? {
+func mainSubject(_ image: CGImage) throws -> (CGRect, String, Double?, Double?)? {
     let faces = VNDetectFaceRectanglesRequest()
+    // Revision 3 reports pitch as well as yaw.
+    faces.revision = VNDetectFaceRectanglesRequestRevision3
     let people = VNDetectHumanRectanglesRequest()
     // Upper bodies also work for a seated speaker whose legs are out of frame.
     people.upperBodyOnly = true
@@ -25,17 +27,14 @@ func mainSubject(_ image: CGImage) throws -> (CGRect, String)? {
     let face = faces.results?.max { rank($0.boundingBox) < rank($1.boundingBox) }
     let bodies = people.results ?? []
     if let face = face {
-        let box = face.boundingBox
-        let centre = CGPoint(x: box.midX, y: box.midY)
-        // Widen only to this face's person, never to a different bystander.
-        if let body = bodies.filter({ $0.boundingBox.contains(centre) })
-            .max(by: { rank($0.boundingBox) < rank($1.boundingBox) }) {
-            return (body.boundingBox.union(box), "body")
-        }
-        return (box, "face")
+        // Keep this a face sample even when a body is also visible, so its
+        // pose survives. Body rectangles remain the fallback without a face.
+        // Vision's positive pitch nods down; the shared contract uses negative.
+        return (face.boundingBox, "face", face.yaw?.doubleValue,
+                face.pitch.map { -$0.doubleValue })
     }
     if let body = bodies.max(by: { rank($0.boundingBox) < rank($1.boundingBox) }) {
-        return (body.boundingBox, "body")
+        return (body.boundingBox, "body", nil, nil)
     }
     let attention = VNGenerateAttentionBasedSaliencyImageRequest()
     try handler.perform([attention])
@@ -43,7 +42,7 @@ func mainSubject(_ image: CGImage) throws -> (CGRect, String)? {
         .max(by: { $0.confidence == $1.confidence
             ? rank($0.boundingBox) < rank($1.boundingBox)
             : $0.confidence < $1.confidence }) {
-        return (salient.boundingBox, "salient")
+        return (salient.boundingBox, "salient", nil, nil)
     }
     return nil
 }
@@ -67,20 +66,32 @@ func run() throws {
     generator.maximumSize = CGSize(width: 1280, height: 1280)
     generator.requestedTimeToleranceBefore = .zero
     generator.requestedTimeToleranceAfter = .zero
-    var n = 0
+    // PF1b: a frame the decoder can't read at one time (AVFoundation -11821) is retried at
+    // the nearest readable frame within half a sample, then skipped. The clip keeps its
+    // other samples; only a clip with no readable frame at all fails.
+    let nearby = AVAssetImageGenerator(asset: asset)
+    nearby.appliesPreferredTrackTransform = true
+    nearby.maximumSize = generator.maximumSize
+    nearby.requestedTimeToleranceBefore = CMTime(seconds: 0.5 / rate, preferredTimescale: 60000)
+    nearby.requestedTimeToleranceAfter = CMTime(seconds: 0.5 / rate, preferredTimescale: 60000)
+    var n = 0, read = 0, lastError = ""
     while Double(n) / rate < duration {
         let t = Double(n) / rate
         try autoreleasepool {
-            let image: CGImage
-            do {
-                image = try generator.copyCGImage(at: CMTime(seconds: t, preferredTimescale: 60000),
-                                                 actualTime: nil)
-            } catch {
-                throw SubjectError(message: "frame at \(t)s: \(error as NSError)")
+            let at = CMTime(seconds: t, preferredTimescale: 60000)
+            guard let image = (try? generator.copyCGImage(at: at, actualTime: nil)) ?? {
+                do { return try nearby.copyCGImage(at: at, actualTime: nil) }
+                catch { lastError = "frame at \(t)s: \(error as NSError)"; return nil }
+            }() else {
+                let skipped = try JSONSerialization.data(withJSONObject: ["t": t, "subject": NSNull(), "skipped": true], options: [.sortedKeys])
+                FileHandle.standardOutput.write(skipped)
+                FileHandle.standardOutput.write(Data([10]))
+                return
             }
+            read += 1
             var row: [String: Any] = ["t": t]
             do {
-                if let (rawBox, kind) = try mainSubject(image) {
+                if let (rawBox, kind, yaw, pitch) = try mainSubject(image) {
                     let box = rawBox.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
                     guard !box.isNull, box.width > 0, box.height > 0 else {
                         throw SubjectError(message: "Vision returned an invalid box")
@@ -90,6 +101,8 @@ func run() throws {
                     row.merge(["x": Double(box.midX), "y": Double(1 - box.midY),
                                "w": Double(box.width), "h": Double(box.height),
                                "kind": kind]) { _, new in new }
+                    if let yaw = yaw, yaw.isFinite { row["yaw"] = yaw }
+                    if let pitch = pitch, pitch.isFinite { row["pitch"] = pitch }
                 } else {
                     row["subject"] = NSNull()
                 }
@@ -102,6 +115,7 @@ func run() throws {
         }
         n += 1
     }
+    if read == 0 { throw SubjectError(message: lastError.isEmpty ? "no frame could be read" : lastError) }
 }
 
 do {

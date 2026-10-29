@@ -1,0 +1,62 @@
+/* SCRIPT1: the Script panel. A document, not a column of buttons: the text flows, selection is the editor's own
+   soft fill, cut words stay struck and faded. No outlines, rings or strokes anywhere; focus and selection are fills. */
+.script-panel { display:flex; flex:1; flex-direction:column; min-height:0; gap:8px; color:var(--ink); }
+.script-panel :focus, .script-panel :focus-visible { outline:none; box-shadow:none; }
+.script-panel .vo-panel { flex:0 0 auto; padding:2px 0 0; gap:8px; }
+.script-panel .vo-panel:has(.take-viewer), .script-panel .vo-panel:has([data-take-viewer]) { flex:1; }
+.script-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:6px; flex-shrink:0; }
+.script-toggle { display:inline-flex; align-items:center; gap:8px; border:0; border-radius:10px; padding:6px 8px; background:transparent; color:var(--muted); font-size:13px; cursor:pointer; }
+.script-toggle:hover, .script-toggle:focus-visible { background:var(--surface-hover); color:var(--ink); }
+.script-switch { position:relative; width:30px; height:18px; border-radius:999px; background:color-mix(in srgb, var(--ink) 18%, transparent); transition:background .15s; }
+.script-switch::after { content:""; position:absolute; top:2px; left:2px; width:14px; height:14px; border-radius:50%; background:var(--surface); transition:transform .15s; }
+.script-toggle[aria-checked="true"] .script-switch { background-image:var(--st-brand-gradient); background-color:var(--accent); }
+.script-toggle[aria-checked="true"] .script-switch::after { transform:translateX(12px); background:#fff; }
+.script-chip { display:inline-flex; align-items:center; gap:5px; border:0; border-radius:999px; padding:5px 11px; background:var(--surface-hover); color:var(--ink); font-size:12.5px; font-weight:500; cursor:pointer; }
+.script-chip:hover, .script-chip:focus-visible { background:var(--selection-fill); }
+.script-chip:disabled { opacity:.45; cursor:not-allowed; }
+.script-restore { flex-shrink:0; }
+.script-tools { display:inline-flex; flex-wrap:wrap; align-items:center; gap:6px; }
+.script-doc { flex:1; min-height:0; overflow:auto; overscroll-behavior:contain; padding:2px 2px 16px; cursor:text; caret-color:var(--accent); outline:none; }
+.script-doc::selection, .script-doc ::selection { background:var(--selection-fill); color:inherit; }
+.script-para { border-radius:12px; padding:8px 10px; margin-bottom:8px; }
+.script-voice { background:color-mix(in srgb, var(--accent) 8%, transparent); }
+.script-who { display:flex; align-items:center; gap:6px; min-height:24px; margin-bottom:2px; font-size:11.5px; font-weight:500; color:var(--muted); user-select:none; cursor:default; }
+.script-voice .script-who { color:var(--accent-text, var(--accent)); }
+.script-who .script-tools { margin-left:auto; }
+.script-who .script-chip { padding:3px 9px; font-size:12px; }
+.script-line { margin:0; font-size:15.5px; line-height:1.75; white-space:normal; word-wrap:break-word; }
+.script-line .w { border-radius:4px; padding:1px 0; }
+.script-cut { text-decoration:line-through; text-decoration-color:color-mix(in srgb, var(--ink) 55%, transparent); color:var(--muted); opacity:.62; }
+.script-hidden { color:var(--muted); font-style:italic; opacity:.7; }
+.script-added { text-decoration:underline; text-decoration-style:dotted; text-decoration-color:color-mix(in srgb, var(--accent) 55%, transparent); text-underline-offset:3px; }
+.script-now { background:var(--selection-fill); color:var(--ink); }
+.script-typing { background:color-mix(in srgb, var(--accent) 16%, transparent); border-radius:4px; }
+.script-tomb .script-who span:first-child { text-decoration:none; }
+.script-dot { display:inline-block; width:7px; height:7px; margin:0 4px; border-radius:50%; vertical-align:middle; background:color-mix(in srgb, var(--ink) 38%, transparent); cursor:pointer; user-select:none; }
+.script-dot:hover, .script-dot:focus-visible { background:var(--accent); }
+.script-dot-on { background:var(--accent); width:9px; height:9px; }
+.script-note { margin:4px 0 0; font-size:12.5px; color:var(--warn); user-select:none; }
+.script-muted { color:var(--muted); }
+.script-broll { display:flex; align-items:center; gap:8px; margin:0 0 8px; padding:2px 10px; font-size:12.5px; color:var(--muted); user-select:none; cursor:default; }
+.script-broll::before { content:""; flex:none; width:16px; height:11px; border-radius:3px; background:color-mix(in srgb, var(--ink) 22%, transparent); }
+.script-draft textarea { display:block; width:100%; resize:none; min-height:27px; overflow:hidden; padding:2px 4px; border:0; border-radius:6px; background:transparent; color:inherit; font:inherit; font-size:15.5px; line-height:1.6; }
+.script-draft textarea:focus-visible { background:var(--selection-fill); }
+.script-draft .script-tools { margin-top:6px; }
+.script-status { margin:0; flex-shrink:0; font-size:12px; color:var(--muted); min-height:17px; }
+/* The footer: status, Restore and a small Show cuts switch on one line; the status wraps before anything overflows. */
+.script-footer { display:flex; align-items:center; gap:6px; flex-shrink:0; min-height:30px; }
+.script-footer .script-status { flex:1 1 0; min-width:0; }
+.script-footer .script-toggle { flex-shrink:0; gap:6px; padding:4px 6px; font-size:12px; white-space:nowrap; }
+.script-footer .script-switch { width:24px; height:14px; }
+.script-footer .script-switch::after { top:2px; left:2px; width:10px; height:10px; }
+.script-footer .script-toggle[aria-checked="true"] .script-switch::after { transform:translateX(10px); }
+.script-error { margin:0; font-size:12px; color:var(--danger); }
+.script-offer { font-size:12.5px; color:var(--muted); }
+.script-range .script-doc { max-height:40vh; }
+/* Recording sits on one compact row at the top (microphone, Record, Add a recording, Takes) so the document keeps
+   the room; while recording the full microphone row and its level take its place. */
+.script-panel .vo-mic { padding:6px 10px; border-radius:12px; }
+.script-panel .vo-actions { gap:4px; align-items:center; }
+.script-panel .vo-actions button { min-height:34px; padding:6px 9px; font-size:12.5px; gap:6px; }
+.script-panel .vo-actions button:first-child, .script-panel .vo-actions button.st-button-primary { flex:0 1 auto; }
+.script-panel .vo-actions .vo-record-dot { width:8px; height:8px; }

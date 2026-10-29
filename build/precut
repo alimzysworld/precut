@@ -1,0 +1,24 @@
+#!/bin/sh
+# Resolve this script's own symlink, including installs into ~/.local/bin.
+set -eu
+# Headless: no web content runs here, and Chromium's own sandbox cannot start inside Ask's
+# sandbox-exec profile (its helpers crash), so the CLI and MCP server run without it.
+shim=$0
+while [ -L "$shim" ]; do
+  shim_dir=$(CDPATH='' cd -P -- "$(dirname -- "$shim")" && pwd)
+  link=$(readlink "$shim")
+  case "$link" in /*) shim=$link ;; *) shim=$shim_dir/$link ;; esac
+done
+shim_dir=$(CDPATH='' cd -P -- "$(dirname -- "$shim")" && pwd)
+if [ -x "$shim_dir/../MacOS/precut" ]; then
+  unset ELECTRON_RUN_AS_NODE
+  exec "$shim_dir/../MacOS/precut" --no-sandbox --disable-gpu --cli "" "$@"
+fi
+# Development checkout: use its own Electron, never npx or a network install.
+repo=$(CDPATH='' cd -P -- "$shim_dir/.." && pwd)
+if [ -x "$repo/node_modules/.bin/electron" ] && [ -f "$repo/out/main/index.js" ]; then
+  unset ELECTRON_RUN_AS_NODE
+  exec "$repo/node_modules/.bin/electron" "$repo" --no-sandbox --disable-gpu --cli "" "$@"
+fi
+printf '%s\n' 'precut: app binary not found. Reinstall the command from the app, or run npm run build in the checkout.' >&2
+exit 1

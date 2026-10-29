@@ -1,137 +1,206 @@
-import { useEffect, useMemo, useState } from "react";
-import { CaretDown, Check, CircleNotch, FilmStrip, GearSix, Lightbulb, Scissors, WarningCircle, type Icon } from "@phosphor-icons/react";
-import { motion } from "framer-motion";
-import type { ShootSteps, StepId } from "../../../shared/schema";
+import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { ChevronDown as CaretDown, ChevronRight as CaretRight, Check, Film as FilmStrip, Gear as GearSix, Library as House, Ask as Lightbulb, Play, Plus, Video as VideoCamera } from "./icons";
+import { AnimatePresence, motion } from "framer-motion";
+import type { ShootSteps, ShootSummary, StepId, ResourceState } from "../../../shared/schema";
 import { getApi } from "../data";
-import { spring } from "../motion";
-import { go, type PageId } from "../nav";
+import { instant, instantFade, pop, spring } from "../motion";
+import { go, openShoot, type PageId } from "../nav";
 import { openSettings } from "./SettingsSheet";
-import { useMotionPresets } from "./ui";
-import logoTile from "../assets/sidething-logo-tile@2x.png";
+import { MotionSurfaces, useMotionPresets } from "./ui";
+import { pickAndAddShoot, useShootStill } from "../pages/Shoots";
+import { useShortcuts } from "../hooks/useShortcuts";
+import { StatusLine, type shootStatusLine } from "./StatusLine";
+import { UpdateLine } from "./UpdateLine";
 
-const STEPS: { page: PageId; id: StepId; label: string; icon: Icon }[] = [
+function Dock({ children, className, label }: { children: ReactNode; className: string; label?: string }) {
+  const props = { className, style: { WebkitAppRegion: "no-drag" } as CSSProperties };
+  return label ? <nav {...props} aria-label={label}>{children}</nav> : <div {...props}>{children}</div>;
+}
+function DockTile(props: React.ButtonHTMLAttributes<HTMLButtonElement>) { return <button {...props} />; }
+
+const STEPS = [
+  { page: "clips", id: "clips", label: "Footage", icon: VideoCamera },
   { page: "ideas", id: "ideas", label: "Ideas", icon: Lightbulb },
-  { page: "clips", id: "clips", label: "Clips", icon: FilmStrip },
-  { page: "precuts", id: "precut", label: "Precut", icon: Scissors },
-];
+  { page: "precuts", id: "precut", label: "Edits", icon: Play },
+] satisfies { page: PageId; id: StepId; label: string; icon: typeof Lightbulb }[];
 
-// FLOATING_GLASS from the chat header's shared material, scoped to this bar.
-// Keep its hairline as an inset glass edge rather than an outline border.
-const FLOATING_GLASS = `
-  .st-taskbar.st-glass {
-    position: fixed;
-    --st-glass-strong-fill: rgba(255, 255, 255, 0.86);
-    --st-glass-strong-blur: blur(20px) saturate(150%);
-    --st-glass-strong-rim: transparent;
-    --st-glass-strong-ring: rgba(0, 0, 0, 0.08);
-    --st-glass-strong-edge: transparent;
-    --st-glass-strong-sheen: none;
-    --st-glass-depth: 0 4px 14px rgba(15, 23, 42, 0.07);
-  }
-  [data-theme="dark"] .st-taskbar.st-glass {
-    --st-glass-strong-fill: rgba(44, 51, 66, 0.86);
-    --st-glass-strong-ring: rgba(255, 255, 255, 0.12);
-    --st-glass-depth: 0 4px 14px rgba(0, 0, 0, 0.18);
-  }
-`;
+export function useShootSteps(root?: string) {
+  const [value, setValue] = useState<{ root: string; steps: ShootSteps }>();
+  useEffect(() => {
+    if (!root) return;
+    const api = getApi();
+    let alive = true;
+    let request = 0;
+    const refresh = () => {
+      const id = ++request;
+      void api.shootSteps(root).then(steps => {
+        if (alive && id === request) setValue({ root, steps });
+      }).catch(() => { /* Keep the last known states; never invent completion. */ });
+    };
+    const off = api.onStepsChanged(changed => { if (changed === root) refresh(); });
+    const timer = window.setInterval(refresh, 2000);
+    refresh();
+    return () => { alive = false; off(); window.clearInterval(timer); };
+  }, [root]);
+  return value && value.root === root ? value.steps : undefined;
+}
 
-export function StepBar({ page, root, shootName, thumbnail }: {
+function ShootThumbnail({ root, src: thumb, online = true }: { root: string; src?: string; online?: boolean }) {
+  const { src, onError } = useShootStill(root, thumb, online);
+  return <span className="flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-md bg-ink/[0.06] text-muted">
+    {src ? <img src={src} onError={onError} alt="" width={24} height={24} className="size-6 object-cover" /> : <FilmStrip size={16} aria-hidden="true" />}
+  </span>;
+}
+
+export function StepBar({ page, root, shootName, thumbnail, statusLine, calm, resourceState, onFullSpeed, onProcessing, onRetry, unread }: {
   page: PageId;
   root?: string;
   shootName?: string;
   thumbnail?: string;
+  statusLine?: ReturnType<typeof shootStatusLine>;
+  calm?: string | null;  // PERF1: "Taking it easy" line for the status popover
+  resourceState?: ResourceState;
+  onFullSpeed?: (taskId: string) => Promise<boolean>;
+  onProcessing?: () => void;
+  onRetry?: (stage: import("../../../shared/schema").ProcessingStageId | import("../../../shared/schema").OptionalCheckId) => Promise<void>;
+  unread?: Partial<Record<"ideas" | "precuts", boolean>>;
 }) {
+  useShortcuts("global", STEPS.map((step, index) => ({
+    id: `page-${step.page}`, keys: [`Cmd+${index + 1}`], label: `Go to ${step.label.toLowerCase()}`, scope: "global",
+    handler: () => {
+      if (root) { go(step.page); return; }
+      void getApi().listShoots().then(shoots => {
+        const shoot = shoots.filter(shoot => shoot.online).sort((a, b) => (b.lastActivityAt ?? "").localeCompare(a.lastActivityAt ?? ""))[0];
+        if (shoot) go(step.page, { shoot: shoot.root });
+      }).catch(() => {});
+    },
+  })));
   const api = useMemo(() => getApi(), []);
+  const steps = useShootSteps(root);
   const { reduced } = useMotionPresets();
-  const [shoot, setShoot] = useState<{ root: string; steps?: ShootSteps; error?: string }>();
+  
+  const [open, setOpen] = useState(false);
+  const [recent, setRecent] = useState<ShootSummary[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string>();
+  const [adding, setAdding] = useState(false);
+  const switcher = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
 
+  useEffect(() => { setOpen(false); setError(undefined); }, [page, root]);
   useEffect(() => {
-    if (!root) return;
+    if (!open) return;
     let alive = true;
-    let request = 0;
-    let lastRefresh = 0;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const refresh = async () => {
-      lastRefresh = Date.now();
-      const current = ++request;
-      try {
-        const steps = await api.shootSteps(root);
-        if (alive && request === current) setShoot((prev) => ({ ...(prev?.root === root ? prev : {}), root, steps, error: undefined }));
-      } catch {
-        if (alive && request === current) setShoot((prev) => ({ ...(prev?.root === root ? prev : {}), root, error: "Could not load step status" }));
-      }
+    setLoading(true); setError(undefined);
+    void api.listShoots().then((saved) => {
+      if (alive) setRecent(saved.sort((a, b) => (b.lastActivityAt ?? "").localeCompare(a.lastActivityAt ?? "")));
+    }).catch(() => { if (alive) setError("Could not load shoots. Close and reopen to try again."); })
+      .finally(() => { if (alive) setLoading(false); });
+    const onPointer = (event: PointerEvent) => {
+      if (!switcher.current?.contains(event.target as Node)) setOpen(false);
     };
-    void refresh();
-    const offSteps = api.onStepsChanged((changedRoot) => { if (changedRoot === root) void refresh(); });
-    const offProgress = api.onProgress((event) => {
-      if (event.root !== root || timer) return;
-      const remaining = 1000 - (Date.now() - lastRefresh);
-      if (remaining <= 0) void refresh();
-      else timer = setTimeout(() => { timer = undefined; void refresh(); }, remaining);
-    });
-    return () => { alive = false; clearTimeout(timer); offSteps(); offProgress(); };
-  }, [api, root]);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { event.preventDefault(); setOpen(false); trigger.current?.focus(); }
+    };
+    window.addEventListener("pointerdown", onPointer);
+    window.addEventListener("keydown", onKey);
+    return () => { alive = false; window.removeEventListener("pointerdown", onPointer); window.removeEventListener("keydown", onKey); };
+  }, [api, open, root]);
+  useEffect(() => {
+    if (open && !loading) (menu.current?.querySelector<HTMLButtonElement>('[aria-checked="true"]:not(:disabled)') ?? menu.current?.querySelector<HTMLButtonElement>('button:not(:disabled)'))?.focus();
+  }, [open, loading]);
 
-  const currentShoot = shoot?.root === root ? shoot : undefined;
-  const working = Object.values(currentShoot?.steps ?? {}).find((step) => step.status === "working");
-  const control = "outline-none transition-colors duration-150 hover:bg-ink/[0.06] focus-visible:bg-ink/[0.08]";
-  const tooltip = "st-pop pointer-events-none absolute bottom-[calc(100%_+_12px)] left-1/2 z-[100] max-w-[320px] w-max -translate-x-1/2 rounded-xl px-3 py-2 text-[12px] font-medium text-ink opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100";
-  const spinner = <motion.span className="flex shrink-0" animate={reduced ? undefined : { rotate: 360 }}
-    transition={{ duration: 1, ease: "linear", repeat: Infinity }} aria-hidden="true"><CircleNotch size={13} /></motion.span>;
+  function selectShoot(nextRoot: string) {
+    setOpen(false); trigger.current?.focus();
+    if (nextRoot === root) return;
+    openShoot(nextRoot);
+  }
+  async function addShoot() {
+    if (adding) return;
+    setAdding(true); setError(undefined);
+    try {
+      const added = await pickAndAddShoot();
+      if (added) { setOpen(false); openShoot(added.root); }
+    } catch (error) { setError(error instanceof Error ? error.message : "Could not add the shoot. Try again."); }
+    finally { setAdding(false); }
+  }
 
-  return <footer aria-label="App navigation" className="st-taskbar st-glass bottom-[10px] left-3 right-3 z-[60] grid h-12 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 rounded-[16px] px-2">
-    <style>{FLOATING_GLASS}</style>
-    <div className="col-start-1 row-start-1 flex min-w-0 items-center gap-2">
-      <button type="button" aria-label="sidething home" onClick={() => go("shoots", { shoot: undefined })}
-        className={`size-[26px] shrink-0 rounded-[7px] ${control}`}>
-        <img src={logoTile} alt="" width={26} height={26} className="size-[26px] rounded-[7px] object-contain" />
-      </button>
-      <button type="button" aria-label={root ? `${shootName ?? "Shoot"}, back to Shoots` : "Shoots"}
-        aria-current={page === "shoots" ? "page" : undefined}
-        onClick={() => go("shoots", { shoot: undefined })}
-        className={`flex h-[34px] min-w-0 items-center gap-2 rounded-[10px] px-2 text-[13px] text-ink ${control}`}>
-        {root && <span className="flex size-[26px] shrink-0 items-center justify-center overflow-hidden rounded-[7px] bg-ink/[0.06] text-muted">
-          {thumbnail ? <img key={thumbnail} src={thumbnail} alt="" width={26} height={26} className="size-[26px] object-cover" /> : <FilmStrip size={18} aria-hidden="true" />}
-        </span>}
-        <span className="max-w-[220px] truncate">{root ? shootName ?? "Shoot" : "Shoots"}</span>
-        {root && <CaretDown size={12} className="shrink-0 text-muted" aria-hidden="true" />}
-      </button>
+  const control = "st-bar-control outline-none hover:bg-ink/[0.06] focus-visible:bg-ink/[0.08]";
+
+  return <><MotionSurfaces /><header aria-label="App navigation" className="st-taskbar fixed top-0 inset-x-0 z-[60] grid h-[60px] grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 px-4"
+    style={{ WebkitAppRegion: "drag" } as CSSProperties}>
+    <div ref={switcher} className="relative col-start-1 row-start-1 ml-[72px] h-9 min-w-0 max-w-[calc(100%_-_72px)] justify-self-start"
+      style={{ WebkitAppRegion: "no-drag" } as CSSProperties}
+      onBlur={(event) => { if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget as Node)) setOpen(false); }}>
+      {root && <button ref={trigger} type="button" aria-label={root ? `Switch shoot: ${shootName ?? "Shoot"}` : "Shoots"}
+        aria-current={page === "shoots" ? "page" : undefined} aria-haspopup={root ? "menu" : undefined}
+        aria-expanded={root ? open : undefined} aria-controls={root && open ? "shoot-switcher-menu" : undefined}
+        onClick={() => root ? setOpen((value) => !value) : go("shoots")}
+        onKeyDown={(event) => { if (root && (event.key === "ArrowUp" || event.key === "ArrowDown")) { event.preventDefault(); setOpen(true); } }}
+        className={`glass-floating flex h-full max-w-full items-center gap-2 rounded-full px-3 text-small font-medium text-ink ${control}`}>
+        {root && <ShootThumbnail root={root} src={thumbnail} />}
+        <span className="max-w-[180px] truncate">{root ? shootName ?? "Shoot" : "Shoots"}</span>
+        {root && <CaretDown size={16} className="shrink-0 text-ink/70" aria-hidden="true" />}
+      </button>}
+      <AnimatePresence>{root && open && <motion.div ref={menu} id="shoot-switcher-menu" role="menu" aria-label="Shoot switcher"
+        variants={reduced ? instantFade : pop} initial="initial" animate="animate" exit="exit"
+        onKeyDown={(event) => {
+          if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+          event.preventDefault();
+          const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
+          const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+          const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : (index + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
+          buttons[next]?.focus();
+        }}
+        style={{ WebkitAppRegion: "no-drag" } as CSSProperties}
+        className="st-pop absolute top-[calc(100%_+_8px)] left-0 w-[300px] max-w-[calc(100vw-104px)] rounded-3xl p-1.5">
+        <div className="max-h-[min(360px,calc(100dvh-200px))] overflow-y-auto" role="group" aria-label="Recent shoots">
+          {loading ? <p role="status" className="px-3 py-3 text-micro text-muted">Loading shoots…</p> : recent.map((entry) => <button key={entry.root} type="button" role="menuitemradio" aria-checked={entry.root === root}
+            disabled={!entry.online} onClick={() => selectShoot(entry.root)}
+            className={`flex w-full items-center gap-2.5 rounded-full px-2.5 py-2 text-left disabled:opacity-45 ${control}`}>
+            <ShootThumbnail root={entry.root} online={entry.online} src={entry.root === root ? thumbnail ?? entry.thumb ?? undefined : entry.thumb ?? undefined} />
+            <span className="min-w-0 flex-1"><span className="block truncate text-small text-ink">{entry.name}</span>
+              <span className="block text-micro text-muted">{!entry.online ? "Drive not connected" : entry.clipCount === undefined ? "Clip count unavailable" : `${entry.clipCount} ${entry.clipCount === 1 ? "clip" : "clips"}`}</span></span>
+            {entry.root === root && <Check size={16} className="shrink-0 text-ink" aria-hidden="true" />}
+          </button>)}
+        </div>
+        {error && <p role="alert" className="px-3 py-2 text-micro text-danger">{error}</p>}
+        <div role="separator" className="my-1.5 h-px bg-hair" />
+        <button type="button" role="menuitem" onClick={() => { setOpen(false); go("shoots"); }} className={`flex w-full items-center gap-2.5 rounded-full px-2.5 py-2 text-small text-ink ${control}`}><House size={16} aria-hidden="true" />All shoots</button>
+        <button type="button" role="menuitem" disabled={adding} onClick={() => void addShoot()} className={`flex w-full items-center gap-2.5 rounded-full px-2.5 py-2 text-small text-ink disabled:opacity-45 ${control}`}><Plus size={16} aria-hidden="true" />{adding ? "Adding shoot…" : "Add shoot"}</button>
+      </motion.div>}</AnimatePresence>
     </div>
-    {root && <nav aria-label="Workflow" className="col-start-2 row-start-1 flex items-center gap-2">
-      {STEPS.map((step) => {
+    {root && <Dock label="Workflow" className="glass-floating col-start-2 row-start-1 flex h-9 items-center gap-1 rounded-full p-1">
+      {STEPS.map((step, index) => {
+        const state = steps?.[step.id];
         const active = page === step.page;
-        const state = currentShoot?.steps?.[step.id];
-        const StepIcon = step.icon;
-        const note = state?.note ?? currentShoot?.error;
-        return <div key={step.id} className="group relative">
-          <button type="button" aria-current={active ? "step" : undefined}
-            aria-label={`${step.label}${state ? `, ${state.status}` : ""}`}
-            aria-describedby={note ? `step-note-${step.id}` : undefined}
-            onClick={() => go(step.page)}
-            className={`relative flex h-[34px] items-center gap-2 rounded-full px-[13px] text-[13px] font-medium outline-none transition-colors duration-150 ${active ? "text-white focus-visible:brightness-110" : "text-muted hover:text-ink focus-visible:bg-ink/[0.06] focus-visible:text-ink"}`}>
-            {active && <motion.span layoutId={reduced ? undefined : "workflow-active"} initial={false} transition={spring.pill}
-              className="st-brand-gradient absolute inset-0 rounded-full" aria-hidden="true" />}
-            <StepIcon size={18} weight="fill" className="relative z-10 shrink-0" aria-hidden="true" />
-            <span className="relative z-10">{step.label}</span>
-            {state && state.status !== "todo" && <span className="relative z-10 flex size-3.5 shrink-0 items-center justify-center" aria-hidden="true">
-              {state.status === "done" && <Check size={12} weight="bold" />}
-              {state.status === "working" && spinner}
-              {state.status === "waiting" && <span className={`size-1.5 rounded-full ${active ? "bg-white" : "bg-accent"}`} />}
-              {state.status === "stopped" && <WarningCircle size={14} weight="fill" className={active ? "text-white" : "text-warn"} />}
-            </span>}
-          </button>
-          {note && <span id={`step-note-${step.id}`} role="tooltip" className={tooltip}>{note}</span>}
-        </div>;
+        const Icon = step.icon;
+        return <Fragment key={step.page}>
+          {index > 0 && <CaretRight size={12} className="shrink-0 text-muted/60" aria-hidden="true" />}
+          <DockTile type="button" aria-current={active ? "page" : undefined}
+          aria-label={step.label} data-step={step.id} data-state={state?.status} title={[`${step.label} (Cmd+${index + 1})`, state?.note].filter(Boolean).join(" · ")} onClick={() => go(step.page)}
+          className={`st-bar-control relative flex h-7 items-center rounded-full px-2 sm:px-3 text-small font-medium outline-none ${active ? "text-white focus-visible:brightness-110" : "text-ink/70 hover:bg-ink/[0.06] hover:text-ink focus-visible:bg-ink/[0.06] focus-visible:text-ink"}`}>
+          {active && <motion.span layoutId={reduced ? undefined : "workflow-active"} initial={false} transition={reduced ? instant : spring.pill}
+            className="st-brand-gradient absolute inset-0 rounded-full" aria-hidden="true" />}
+          <span className="relative z-10 flex items-center gap-1.5">
+            {state?.status === "done" ? <span aria-label="Done" className="flex size-4 shrink-0 items-center justify-center rounded-full bg-[var(--badge-lime-fill)] text-[var(--badge-lime-ink)]"><Check size={11} aria-hidden="true" /></span>
+              : <Icon size={16} aria-hidden="true" />}
+            {step.label}
+            {(step.page === "ideas" || step.page === "precuts") && unread?.[step.page] && <span aria-label={`New ${step.label.toLowerCase()} ready`} className="size-1.5 rounded-full bg-current" />}
+          </span>
+        </DockTile></Fragment>;
       })}
-    </nav>}
-    <div className="col-start-3 row-start-1 flex min-w-0 items-center justify-end gap-3">
-      {working && <div role="status" className="flex min-w-0 items-center gap-1.5 text-[12px] text-muted">
-        {spinner}<span className="truncate">{working.note ?? "Working"}</span>
-      </div>}
-      <button type="button" aria-label="Settings" aria-haspopup="dialog" onClick={() => openSettings("general")}
-        className={`flex size-[34px] shrink-0 items-center justify-center rounded-[10px] text-muted hover:text-ink focus-visible:text-ink ${control}`}>
-        <GearSix size={18} weight="fill" aria-hidden="true" />
-      </button>
-    </div>
-  </footer>;
+    </Dock>}
+    <Dock className="col-start-3 row-start-1 flex h-9 min-w-0 max-w-full items-center justify-self-end gap-2">
+      {!statusLine && <UpdateLine />}
+      <StatusLine status={statusLine ?? null} calm={calm} resourceState={resourceState} onFullSpeed={onFullSpeed} onOpen={onProcessing} onRetry={onRetry} />
+      {page === "precuts" && <div id="edits-topbar-version" className="shrink-0" />}
+      {page === "precuts" && <div id="edits-topbar-export" className="shrink-0 [&>button]:h-9 [&>button]:rounded-full" />}
+      <DockTile type="button" aria-label="Settings" aria-haspopup="dialog" onClick={() => openSettings("general")}
+        className={`flex size-9 shrink-0 items-center justify-center rounded-full bg-surface text-muted hover:text-ink focus-visible:text-ink ${control}`}>
+        <GearSix size={16} aria-hidden="true" />
+      </DockTile>
+    </Dock>
+  </header></>;
 }

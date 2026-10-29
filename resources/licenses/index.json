@@ -1,0 +1,21 @@
+[
+  { "file": "THIRD-PARTY-NOTICES.md", "name": "Third-party notices", "covers": "Everything precut ships or downloads, its version, source and licence" },
+  { "file": "AGPL-3.0.txt", "name": "GNU Affero General Public License 3.0", "covers": "precut itself and its own helpers" },
+  { "file": "electron-LICENSE.txt", "name": "Electron (MIT)", "covers": "The app runtime" },
+  { "file": "LICENSES.chromium.html", "name": "Chromium and its components", "covers": "Inside Electron, many licences" },
+  { "file": "npm-packages.txt", "name": "JavaScript packages", "covers": "Every package in the app, each with its own licence file" },
+  { "file": "GPL-2.0.txt", "name": "GNU General Public License 2.0", "covers": "ffmpeg and ffprobe, x264, vid.stab" },
+  { "file": "GPL-3.0.txt", "name": "GNU General Public License 3.0", "covers": "ffmpeg and ffprobe (GPL 2 or later)" },
+  { "file": "LGPL-2.1.txt", "name": "GNU Lesser General Public License 2.1", "covers": "Libraries inside downloaded Python packages" },
+  { "file": "OFL-1.1.txt", "name": "SIL Open Font License 1.1", "covers": "Inter, Outfit, Montserrat, Poppins, Bebas Neue, Archivo Black, Caveat" },
+  { "file": "uv-LICENSE-MIT.txt", "name": "uv (MIT)", "covers": "uv, the Python installer" },
+  { "file": "uv-LICENSE-APACHE.txt", "name": "uv (Apache 2.0)", "covers": "uv, the Python installer" },
+  { "file": "Artistic-1.0-Perl.txt", "name": "Artistic License (Perl)", "covers": "ExifTool" },
+  { "file": "GPL-1.0.txt", "name": "GNU General Public License 1.0", "covers": "ExifTool (or later version)" },
+  { "file": "RNNoise-LICENSE.txt", "name": "RNNoise (BSD 3-Clause)", "covers": "The voice clean-up model" },
+  { "file": "Kenney-impact-LICENSE.txt", "name": "Kenney Impact Sounds (CC0)", "covers": "Sound effects" },
+  { "file": "Kenney-interface-LICENSE.txt", "name": "Kenney Interface Sounds (CC0)", "covers": "Sound effects" },
+  { "file": "CC0-1.0.txt", "name": "Creative Commons Zero 1.0", "covers": "Sample frames and sound effects" },
+  { "file": "Apache-2.0.txt", "name": "Apache License 2.0", "covers": "Downloaded Python packages and some JavaScript packages" },
+  { "file": "MPL-2.0.txt", "name": "Mozilla Public License 2.0", "covers": "The BlockNote editor and some downloaded packages" }
+]

@@ -11,5 +11,5 @@
     "noEmit": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["electron.vite.config.ts", "src/main/**/*", "src/preload/**/*", "src/shared/**/*"]
+  "include": ["electron.vite.config.ts", "src/main/**/*", "src/preload/**/*", "src/shared/**/*", "src/renderer/src/components/replaceModel.ts", "src/renderer/src/components/finish/basicsMath.ts", "src/renderer/src/components/finish/grainMath.ts", "src/renderer/src/components/finish/detailMath.ts"]
 }

@@ -1,0 +1,43 @@
+.edits-stage-row { position: relative; display: flex; flex: 1; min-width: 0; min-height: 0; gap: 8px; }
+.edits-sheet { display: flex; flex: 0 0 340px; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; border-radius: 16px; background: var(--surface); }
+.edits-sheet[hidden] { display: none; }
+.edits-rail { width: 68px; flex: 0 0 68px; display: flex; flex-direction: column; min-height: 0; padding-top: 4px; container: edits-rail / size; }
+.edits-rail-scroll { min-height: 0; flex: 1; overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; }
+.edits-rail-button { display: flex; width: 62px; min-height: 48px; flex-direction: column; align-items: center; justify-content: center; gap: 3px; padding: 6px 0; border: 0; border-radius: 10px; color: var(--muted); font-size: 11px; line-height: 14px; }
+.edits-rail-button:hover { background: var(--surface-hover); }
+.edits-rail-icon { display: flex; width: 40px; height: 26px; align-items: center; justify-content: center; border-radius: 13px; }
+.edits-rail-button[aria-pressed="true"] { color: var(--ink); }
+.edits-rail-button[aria-pressed="true"] .edits-rail-icon { background: var(--selection-fill); color: var(--accent); }
+.edits-rail-search { flex-shrink: 0; padding-top: 2px; background: var(--ground); }
+.edits-player { container-type: size; }
+.edits-player-options { position: absolute; z-index: 30; left: 50%; top: max(0px, calc((100cqh - 100cqw / var(--edit-aspect)) / 2)); width: min(100%, calc(100cqh * var(--edit-aspect))); transform: translateX(-50%); padding: 6px; pointer-events: none; }
+.edits-player-options button, .edits-player-options select { pointer-events: auto; color: var(--media-ink); background: var(--primary-ink); }
+.edits-player-options button { padding: 6px; }
+.edits-player .st-player-transport { gap: 4px; padding: 6px; }
+.edits-player .st-player-transport > button[aria-label="Full screen"], .edits-player .st-player-transport > button[aria-label="Exit full screen"] { display: none; }
+.edits-timeline-region { display: flex; flex-direction: column; min-height: 0; flex-shrink: 0; max-height: 46%; }
+@media (width < 1280px) {
+  .edits-sheet { position: absolute; top: 0; right: 76px; bottom: 0; z-index: 40; width: 340px; max-width: calc(100% - 76px); }
+}
+@media (height < 760px) {
+  .edits-rail-label { display: none; }
+  .edits-rail-button { min-height: 34px; padding: 4px 0; }
+}
+/* RAIL1: all nine items and their labels fit whatever height the player leaves (1280 x 800 leaves about 390 px).
+   Shorter rails tighten the spacing first, then drop to icons with their tooltips; never scroll, never hide an item. */
+@container edits-rail (max-height: 500px) {
+  .edits-rail-button { min-height: 0; gap: 1px; padding: 3px 0; }
+  .edits-rail-icon { height: 22px; }
+  .edits-rail-label { font-size: 10.5px; line-height: 12px; }
+}
+@container edits-rail (max-height: 372px) {
+  .edits-rail-button { padding: 2px 0; }
+  .edits-rail-icon { height: 20px; }
+}
+@container edits-rail (max-height: 336px) {
+  .edits-rail-label { display: none; }
+  .edits-rail-icon { height: 26px; }
+}
+@container edits-rail (max-height: 288px) {
+  .edits-rail-icon { height: 22px; }
+}

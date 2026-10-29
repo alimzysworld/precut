@@ -1,0 +1,54 @@
+[
+  {
+    "file": "monkeys-spinning-monkeys.mp3",
+    "title": "Monkeys Spinning Monkeys",
+    "artist": "Kevin MacLeod",
+    "licence": "CC BY 4.0",
+    "licenceUrl": "https://creativecommons.org/licenses/by/4.0/",
+    "source": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1400011",
+    "credit": "\"Monkeys Spinning Monkeys\" Kevin MacLeod (incompetech.com), Licensed under Creative Commons: By Attribution 4.0 License, http://creativecommons.org/licenses/by/4.0/",
+    "mood": "upbeat",
+    "durationS": 125.1,
+    "url": "https://incompetech.com/music/royalty-free/mp3-royaltyfree/Monkeys%20Spinning%20Monkeys.mp3",
+    "sha256": "a5bb345c23849ad0786aa0bc5157a9f2d4039660fe00282e55754d475f36dc14"
+  },
+  {
+    "file": "easy-lemon.mp3",
+    "title": "Easy Lemon",
+    "artist": "Kevin MacLeod",
+    "licence": "CC BY 4.0",
+    "licenceUrl": "https://creativecommons.org/licenses/by/4.0/",
+    "source": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1200076",
+    "credit": "\"Easy Lemon\" Kevin MacLeod (incompetech.com), Licensed under Creative Commons: By Attribution 4.0 License, http://creativecommons.org/licenses/by/4.0/",
+    "mood": "chill",
+    "durationS": 126.4,
+    "url": "https://incompetech.com/music/royalty-free/mp3-royaltyfree/Easy%20Lemon.mp3",
+    "sha256": "2486b8ecfe4575f9ab31613a2c03c2ee45e6e5280301d05b4dd7237c9e1c2531"
+  },
+  {
+    "file": "carefree.mp3",
+    "title": "Carefree",
+    "artist": "Kevin MacLeod",
+    "licence": "CC BY 4.0",
+    "licenceUrl": "https://creativecommons.org/licenses/by/4.0/",
+    "source": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1400037",
+    "credit": "\"Carefree\" Kevin MacLeod (incompetech.com), Licensed under Creative Commons: By Attribution 4.0 License, http://creativecommons.org/licenses/by/4.0/",
+    "mood": "playful",
+    "durationS": 205.1,
+    "url": "https://incompetech.com/music/royalty-free/mp3-royaltyfree/Carefree.mp3",
+    "sha256": "8433b770a630d9b1594fd484442c677907ece899a4d149954cd2e74fd733e311"
+  },
+  {
+    "file": "with-these-hands.mp3",
+    "title": "With These Hands",
+    "artist": "Scott Buckley",
+    "licence": "CC BY 4.0",
+    "licenceUrl": "https://creativecommons.org/licenses/by/4.0/",
+    "source": "https://www.scottbuckley.com.au/library/with-these-hands/",
+    "credit": "'With These Hands' by Scott Buckley - released under CC-BY 4.0. www.scottbuckley.com.au",
+    "mood": "cinematic",
+    "durationS": 305.7,
+    "url": "https://www.scottbuckley.com.au/library/wp-content/uploads/2026/06/WithTheseHands.mp3",
+    "sha256": "e450028d152becd5c68dec24899f05a71ac1c13d6934dfebf71dbbae5472db9b"
+  }
+]

@@ -1,0 +1,13 @@
+/* Bounded columns let the same panel controls reflow inside Settings. */
+[data-settings-sheet] { min-width: 0; }
+.settings-content { container-type: inline-size; }
+.settings-section { min-width: 0; }
+.settings-row { min-height: 44px; flex-wrap: wrap; }
+.settings-row > :last-child { max-width: 100%; }
+.settings-compact-panel { width: 100%; max-width: 316px; min-width: 0; }
+.settings-section input, .settings-section select, .settings-section textarea { max-width: 100%; }
+.settings-section .st-segmented { max-width: 100%; }
+@container (max-width: 420px) {
+  .settings-row { align-items: flex-start; flex-direction: column; }
+  .settings-row > .st-segmented { width: 100%; }
+}
