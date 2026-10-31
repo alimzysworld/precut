@@ -14,7 +14,7 @@ export type LookPreferences = Omit<Preferences, "look"> & { look: LookPreference
 
 const file = () => path.join(app.getPath("userData"), "settings.json");
 
-function read(): { engine?: Engine | "none"; models?: Partial<Record<Engine, string | null>>; editor?: EditorId; musicFolder?: string | null; starterMusic?: boolean; autopilot?: Autopilot; preferences?: unknown } {
+function read(): { engine?: Engine | "none"; models?: Partial<Record<Engine, string | null>>; editor?: EditorId; musicFolder?: string | null; starterMusic?: boolean; autopilot?: Autopilot; preferences?: unknown; applePlayerChosen?: boolean } {
   try {
     const value = JSON.parse(fs.readFileSync(file(), "utf8"));
     return isObject(value) ? value : {};
@@ -82,6 +82,10 @@ export async function setEditor(editor: EditorId): Promise<void> {
   write({ editor });
 }
 
+/** AV5: the Apple player's default for anyone who never used its switch (see currentPreferences). AV6 (30 Oct): on,
+ * after acceptance (qa/AV6/results: lip sync 8 of 8 within 7 ms of the export, no freezes or dropped pictures on his
+ * edit and the five-join edit, parity 18 of 18, level within 0.2 dB). */
+export const APPLE_PLAYER_DEFAULT = true;
 const DEFAULT_PREFERENCES: LookPreferences = {
   vocabulary: [],
   clipSoundNewEdits: {on:false,db:-20},
@@ -93,7 +97,8 @@ const DEFAULT_PREFERENCES: LookPreferences = {
   autoCorrectNewEdits: true,
   look: { preset: "clean", words: null, intensity: .7, detail: true },
   timeline: { snapping: true, closeGaps: true, audioScrub: true },
-  playback: { applePlayer: false },
+  // AV5/AV6: on for everyone who never chose (APPLE_PLAYER_DEFAULT, on since AV6's acceptance); a choice is kept.
+  playback: { applePlayer: APPLE_PLAYER_DEFAULT },
 };
 const SHAPES = ["9:16", "16:9", "1:1", "4:5"] as const;
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -201,7 +206,13 @@ function currentPreferences(): LookPreferences {
   // Preserve the person's former editor choice when consolidating defaults.
   const defaults = settings.editor && editors.includes(settings.editor)
     ? { ...DEFAULT_PREFERENCES, output: { ...DEFAULT_PREFERENCES.output, targets: [settings.editor] } } : DEFAULT_PREFERENCES;
-  return mergePreferences(defaults, settings.preferences);
+  const merged = mergePreferences(defaults, settings.preferences);
+  // AV5: every save writes the whole preferences, so a stored "applePlayer: false" was usually the old default carried
+  // along by some other change, not a choice. Only a value the person set (the Settings switch or MCP, which mark
+  // applePlayerChosen) is kept; otherwise the default applies. A stored true stays true either way.
+  const playback = isObject(settings.preferences) && isObject(settings.preferences.playback) ? settings.preferences.playback : null;
+  if (settings.applePlayerChosen !== true && playback?.applePlayer !== true) merged.playback = { ...merged.playback, applePlayer: APPLE_PLAYER_DEFAULT };
+  return merged;
 }
 export async function getPreferences(): Promise<LookPreferences> { return currentPreferences(); }
 export async function setPreferences(patch: Partial<Preferences>): Promise<Preferences> {
@@ -209,7 +220,9 @@ export async function setPreferences(patch: Partial<Preferences>): Promise<Prefe
   // other's fields, as well as engine, editor, autopilot and music settings.
   const previous = currentPreferences();
   const preferences = mergePreferences(previous, patch, true);
-  write({ preferences });
+  // AV5: a patch that sets the Apple player is the person's choice; it is kept from now on (see currentPreferences).
+  const chosen = isObject(patch) && isObject((patch as Record<string, unknown>).playback) && typeof ((patch as Record<string, unknown>).playback as Record<string, unknown>).applePlayer === "boolean";
+  write(chosen ? { preferences, applePlayerChosen: true } : { preferences });
   if (JSON.stringify(previous.vocabulary) !== JSON.stringify(preferences.vocabulary) && fs.existsSync(path.join(app.getPath("userData"), "shoots.json"))) {
     void import("./vocabulary").then(m => m.scheduleVocabulary(null)).catch(error => console.error("[vocabulary]", error));
   }

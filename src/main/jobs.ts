@@ -11,6 +11,7 @@ import { createInterface } from "node:readline";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { checkoutFile } from "./bundle-paths";
 import { createHash, randomUUID } from "node:crypto";
 import type { Clip, Shoot, Stage, ShootSummary, ProcessingStage, ProcessingStageId, OptionalCheck, OptionalCheckId } from "../shared/schema";
 import { judgeShoot } from "./judge";
@@ -64,7 +65,7 @@ export function venvPython(): string {
 export function pipelineFile(name: string): string {
   const candidates = [
     path.join(app.getAppPath(), "pipeline", name),
-    path.join(__dirname, "..", "..", "pipeline", name),
+    checkoutFile(path.join("pipeline", name)),
     path.join(process.cwd(), "pipeline", name),
   ];
   if (process.resourcesPath) {

@@ -40,7 +40,7 @@ export function UpdateLine() {
 const settingsLine = (s: UpdateStatus | null): string => {
   if (!s || s.state === "off") return "Updates come with the installed app.";
   if (s.state === "checking") return "Checking…";
-  if (s.state === "downloading") return `Downloading ${s.next}${s.pct ? ` · ${formatPercent(s.pct)}` : ""}`;
+  if (s.state === "downloading") return s.preparing ? `Getting ${s.next} ready to install…` : `Downloading ${s.next}${s.pct ? ` · ${formatPercent(s.pct)}` : ""}`;
   if (s.state === "ready") return `precut ${s.next} is ready. It installs when you quit.`;
   if (s.state === "failed") return s.message ?? "Couldn't check for updates. Try again.";
   if (s.state === "current") return `precut ${s.version} is the latest.`;

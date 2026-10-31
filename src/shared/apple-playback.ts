@@ -99,6 +99,9 @@ export function applePlayerDecision(timeline: DraftTimeline, input: AppleEligibi
     if (rates.some(r => r < -0.001)) return chrome(APPLE_REVERSE_REASON);
   }
   for (const piece of timeline.liveSound?.pieces ?? []) if (timeMapRate(piece.timeMap, 0).some(r => !Number.isFinite(r) || r < -0.001)) return chrome(APPLE_REVERSE_REASON);
+  // PRO3a: the Apple mix doesn't read the music's stillnesses and hit dips yet.
+  if (timeline.liveSound?.music?.shape?.length) return chrome("Apple player is off for this edit: music stillnesses and hit dips come in a later update");
+  if (pieces.some(p => p.exposure?.length)) return chrome("Apple player is off for this edit: exposure flashes on the picture come in a later update");  // PRO3b (punches settle through the framing keys it already plays)
   return { player: "apple", reason: APPLE_ON_REASON, appleEnabled: true };
 }
 

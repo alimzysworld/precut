@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src data:; img-src st-media: data:; media-src st-media: data:">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src data:; img-src st-media: data:; media-src st-media: data:; connect-src st-media:">
   <style>
     /*__TITLE_FONTS__*/
     html, body { margin: 0; overflow: hidden; background: transparent; }
@@ -139,6 +139,22 @@
   }
   let generation = 0;
   let seekGeneration = 0;
+  // CAP2: export capture's fence (render.ts captureTitleFrame). A seek given a token draws it, in the same task as the
+  // frame's content, as black and white blocks in a strip one pixel tall just below the stage (the capture window is one
+  // row taller). The compositor commits a task's changes together, so a capture showing the token shows that seek's
+  // frame; one showing an older token (or none) is a frame drawn before it, and main captures again.
+  const TOKEN_BITS = 16;
+  let tokenStrip = null;
+  function markCapture(token) {
+    if (!tokenStrip) {
+      tokenStrip = document.createElement('div');
+      Object.assign(tokenStrip.style, { position: 'absolute', left: '0', height: '1px', display: 'flex' });
+      for (let i = 0; i < TOKEN_BITS; i++) { const bit = document.createElement('div'); bit.style.flex = '1 1 0'; tokenStrip.append(bit); }
+      document.body.append(tokenStrip);
+    }
+    Object.assign(tokenStrip.style, { top: stage.style.height, width: stage.style.width });
+    [...tokenStrip.children].forEach((bit, i) => { bit.style.background = (token >>> i) & 1 ? '#fff' : '#000'; });
+  }
 
   function animate(element, frames, delay, duration) {
     const animation = element.animate(frames, {
@@ -238,6 +254,8 @@
     Object.defineProperty(performance, 'now', { value: () => now, configurable: false });
     Math.random = () => { seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
     // The renderer's clock replaces every real one; nothing can be scheduled.
+    // CAP3: the real frame clock and timer, kept for export capture's fence only (the graphic never sees them).
+    const nextFrame = window.requestAnimationFrame.bind(window), wait = window.setTimeout.bind(window);
     const none = () => 0;
     for (const name of ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'requestIdleCallback', 'cancelIdleCallback', 'cancelAnimationFrame']) window[name] = none;
     window.requestAnimationFrame = callback => { if (typeof callback === 'function') queued.push(callback); return queued.length; };
@@ -265,12 +283,17 @@
       if (!m || m.gfx !== 'seek') return;
       const error = seek(Number(m.t) || 0, Number(m.duration) || 0);
       await document.fonts.ready;
-      // Layout is already flushed; the title page's own frame fence paints this frame too.
+      // CAP3: this frame is its own process (a sandboxed frame), drawn apart from the title page, so the page's token
+      // cannot vouch for it. For a capture the frame answers once it has drawn this seek (two of its own frames, or
+      // 100 ms if it is not being drawn at all); live, the page's frame fence is enough.
+      if (m.settle) await new Promise(done => { let over = false; const end = () => { if (!over) { over = true; done(); } }; nextFrame(() => nextFrame(end)); wait(end, 100); });
       tell({ gfx: 'done', id: m.id, error }, '*');
     });
     document.addEventListener('DOMContentLoaded', async () => {
       const first = seek(0, 0);
       await document.fonts.ready;
+      // PRO4b: pictures decoded before the first frame is shown (a card's full-size picture takes a few frames to decode).
+      await Promise.all([...document.images].map(img => img.decode().catch(() => {})));
       tell({ gfx: 'ready', error: first }, '*');
     });
   }
@@ -283,9 +306,42 @@
       + `*,*::before,*::after{box-sizing:border-box;animation-play-state:paused!important}#gfx{position:absolute;inset:0;overflow:hidden}</style><style>${graphic.css}</style></head>`
       + `<body><div id="gfx">${graphic.html}</div>${open}(${graphicHeader.toString()})()${close}${graphic.js ? open + graphic.js + close : ''}</body></html>`;
   }
+  // PRO4b: a card made by add_card names its picture (graphics/sanitize.ts CARD_MEDIA) instead of carrying it. This page,
+  // not the graphic, fetches that one file from the shoot's cache (the URL main or the player built from the shoot and
+  // the name) and puts it into the card's one <img> as a data image, so the graphic's frame and its CSP stay exactly as
+  // they are: it loads nothing. A missing picture fails in plain words; the frame check alone draws an empty one.
+  const CARD_MEDIA = /^card-[a-f0-9]{32}\.webp$/, CARD_MEDIA_SRC = 'src="#card-media"';
+  const BLANK_IMAGE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+  const cardPictures = new Map();
+  async function cardPicture(item, g) {
+    if (g.template !== 'screen-card' || typeof g.media !== 'string' || !CARD_MEDIA.test(g.media) || g.html.split(CARD_MEDIA_SRC).length !== 2) throw new Error('A card names its picture wrongly.');
+    // Main's own title pages (export, stills) are handed the picture, read from the shoot's card cache.
+    if (typeof item.mediaData === 'string') {
+      if (!/^data:image\/webp;base64,[A-Za-z0-9+/=]+$/.test(item.mediaData)) throw new Error("The card's picture couldn't be read.");
+      return item.mediaData;
+    }
+    if (item.mediaBlank === true && !item.mediaUrl) return BLANK_IMAGE;
+    const url = item.mediaUrl;
+    if (typeof url !== 'string' || !url.startsWith('st-media://local/') || !url.endsWith('/overlays/' + encodeURIComponent(g.media))) throw new Error("The card's picture isn't in this shoot.");
+    if (!cardPictures.has(url)) {
+      const loading = (async () => {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error("The card's picture isn't in this shoot.");
+        const blob = await response.blob();
+        const data = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = () => reject(reader.error); reader.readAsDataURL(blob.type === 'image/webp' ? blob : new Blob([blob], { type: 'image/webp' })); });
+        if (typeof data !== 'string' || !/^data:image\/webp;base64,[A-Za-z0-9+/=]+$/.test(data)) throw new Error("The card's picture couldn't be read.");
+        return data;
+      })();
+      cardPictures.set(url, loading);
+      loading.catch(() => cardPictures.delete(url));
+      // A few pictures at most stay in memory; an edit shows one card at a time.
+      while (cardPictures.size > 6) cardPictures.delete(cardPictures.keys().next().value);
+    }
+    return cardPictures.get(url);
+  }
   function graphicHash(g, width, height) {
     let h = 2166136261;
-    for (const part of [g.html, g.css, g.js || '', g.frame, g.widthPx, g.heightPx, g.durationS, width, height]) {
+    for (const part of [g.html, g.css, g.js || '', g.frame, g.widthPx, g.heightPx, g.durationS, g.media || '', width, height]) {
       const text = String(part);
       for (let i = 0; i < text.length; i++) { h ^= text.charCodeAt(i); h = Math.imul(h, 16777619); }
       h ^= 124; h = Math.imul(h, 16777619);
@@ -295,6 +351,8 @@
   async function loadGraphic(item, width, height) {
     const g = item.graphic, full = g.frame === 'full';
     const designW = full ? width : g.widthPx, designH = full ? height : g.heightPx;
+    // PRO4b: the card's picture first, so its fetch never eats the frame's load budget.
+    const source = g.media ? { ...g, html: g.html.split(CARD_MEDIA_SRC).join(`src="${await cardPicture(item, g)}"`) } : g;
     const wrap = document.createElement('div'), frame = document.createElement('iframe');
     wrap.className = 'gfx'; wrap.dataset.graphic = item.id;
     Object.assign(wrap.style, { position: 'absolute', visibility: 'hidden', overflow: 'hidden', transformOrigin: 'center' });
@@ -309,13 +367,13 @@
       };
       window.addEventListener('message', listen);
     });
-    frame.srcdoc = graphicDocument(g, designW, designH);
+    frame.srcdoc = graphicDocument(source, designW, designH);
     wrap.append(frame); stage.append(wrap);
     const error = await ready;
     if (error) throw new Error(`The graphic's script failed: ${error}`);
     return { item, wrap, frame, full, designW, designH, aspect: designW / designH, waiting: new Map(), ticket: 0, at: null };
   }
-  function drawGraphic(gfx, timeS, mask) {
+  function drawGraphic(gfx, timeS, mask, settle) {
     const { item, wrap, frame } = gfx, g = item.graphic, active = timeS >= item.s && timeS < item.e;
     if (!active) { wrap.style.visibility = 'hidden'; return null; }
     const box = gfx.full ? { left: 0, top: 0, width: gfx.designW, height: gfx.designH, scale: 1, dy: 0, rotate: 0, radius: 0, opacity: 1 }
@@ -342,7 +400,7 @@
         if (m.error) reject(new Error(`The graphic's script failed: ${m.error}`)); else resolve();
       };
       window.addEventListener('message', listen);
-      frame.contentWindow.postMessage({ gfx: 'seek', id, t: local, duration: g.durationS }, '*');
+      frame.contentWindow.postMessage({ gfx: 'seek', id, t: local, duration: g.durationS, settle }, '*');
     });
   }
 
@@ -683,8 +741,9 @@
           top: Math.min(...boxes.map(b => b.top)), bottom: Math.max(...boxes.map(b => b.bottom)) };
       });
     },
-    async seek(timeS) {
+    async seek(timeS, token) {
       if (!Number.isFinite(timeS) || timeS < 0) throw new Error('Invalid title timeline time');
+      if (token !== undefined && !(Number.isInteger(token) && token >= 0 && token < 2 ** TOKEN_BITS)) throw new Error('Invalid capture token');
       const seekTicket = ++seekGeneration;
       const ticket = generation;
       const mask = mattes.length ? await seekMatte(timeS) : null;
@@ -704,7 +763,7 @@
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
         if (ticket !== generation || seekTicket !== seekGeneration) return;
       }
-      const drawing = graphics.map(gfx => drawGraphic(gfx, timeS, mask));
+      const drawing = graphics.map(gfx => drawGraphic(gfx, timeS, mask, token !== undefined));
       for (const animation of animations) {
         animation.pause();
         animation.currentTime = timeS * 1000;
@@ -767,10 +826,14 @@
           }
         }
       }
+      if (token !== undefined) markCapture(token);
       // Flush the style change, then cross a paint boundary before capturePage.
-      // RAF is only a compositor fence; timeline time never comes from its clock.
+      // RAF is only a compositor fence; timeline time never comes from its clock. It is not a guarantee that the
+      // frame is drawn (CAP2: under export load a capture after it read the previous seek), so export checks the token.
       void stage.offsetHeight;
-      return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      // CAP3: a capture seek answers how many graphics show: their frames are checked again by main (capture-frame.ts).
+      const shown = token === undefined ? undefined : graphics.filter(gfx => gfx.wrap.style.visibility === 'visible').length;
+      return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(shown))));
     }
   };
 </script>

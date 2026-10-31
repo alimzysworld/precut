@@ -58,6 +58,8 @@ export function MusicBlock({music,draft,duration,scale,snapping,busy,onChange,on
         <span ref={raw} data-music-source-wave className="absolute inset-y-0" style={{left:-music.startS*scale,width:(sourceDuration ?? duration)*scale,visibility:fitted?'hidden':'visible'}}><Waveform measured={sound?.sourcePeaks ?? (!fitted ? sound?.peaks : undefined)} label="Music waveform" /></span>
         {fitted && <span ref={arranged} className="absolute inset-y-0 left-0" style={{width:(sound?.waveformDurationS ?? duration)*scale}}><Waveform measured={sound?.peaks} label="Fitted music waveform" /></span>}
       </span>
+      {/* PRO3a: the music's stillnesses and hit dips (shared/music-shape.ts) as a soft shade over the wave, no strokes. */}
+      {sound?.shape?.map((m,i)=>{const until=m.kind==='still' ? m.endS : m.atS+(m.recoverS ?? .3);return <span key={i} aria-hidden="true" data-music-shape={m.kind} className="pointer-events-none absolute inset-y-0" style={{left:m.atS*scale,width:Math.max(2,(Math.min(until,end)-m.atS)*scale),background:m.kind==='still' ? 'color-mix(in srgb, var(--ground) 60%, transparent)' : 'linear-gradient(to right, color-mix(in srgb, var(--ground) 60%, transparent), transparent)'}} />;})}
       <span className="st-music-name absolute left-3 top-1 max-w-[85%] truncate rounded px-1 text-micro">{music.file.split(/[\\/]/).pop()}</span>
     </Tile>
     <span ref={previewBars} aria-hidden="true" className="st-music-marks pointer-events-none absolute inset-y-0" style={{left:-music.startS*scale,width:(sourceDuration ?? duration)*scale,visibility:'hidden'}}>{bars.map(at=><span key={at} className="st-music-tick absolute bottom-0" data-music-preview-bar data-music-tick="bar" style={{left:at*scale}} />)}</span>

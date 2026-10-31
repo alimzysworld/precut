@@ -14,6 +14,7 @@ import { mkdirInShoot } from "./shoot-dir";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { checkoutFile } from "./bundle-paths";
 import type { BasicAdjust, Clip, ClipMeta, Grade, LookPreset, PieceLook, Shoot } from "../shared/schema";
 import { MIXER_HUES, mixerTransform, normalizeMixer } from "./mixer";
 export { mixerTransform, normalizeMixer, validMixer } from "./mixer";
@@ -873,10 +874,7 @@ export async function gradeFilter(grade: CameraGrade, options: LutOptions = {}):
 }
 
 async function promptFile(): Promise<string> {
-  const candidates = [path.join(process.cwd(), "prompts", "grade.md")];
-  if (typeof __dirname !== "undefined") candidates.push(
-    path.join(__dirname, "..", "..", "prompts", "grade.md"),
-    path.join(__dirname, "..", "..", "..", "prompts", "grade.md"));
+  const candidates = [path.join(process.cwd(), "prompts", "grade.md"), checkoutFile("prompts/grade.md")];
   for (const file of candidates) {
     try { return await fs.readFile(file, "utf8"); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }

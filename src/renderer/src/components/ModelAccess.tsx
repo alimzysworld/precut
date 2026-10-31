@@ -195,7 +195,7 @@ export function NeedsAiCard({ feature = "generic", onReady, compact = false }: {
   const line = feature === "generic" ? null : `It ${what.line}.`;
   let body: ReactNode = null, action: ReactNode = null;
   if (state === "none") {
-    body = <>You started without AI. Pick the one you already pay for; it signs in with your plan, no API key.</>;
+    body = <>You started without Claude or Codex. Pick the one you already pay for; it signs in with your plan, no API key.</>;
     action = <div className="flex flex-wrap gap-2">{installed.map(id => <Button key={id} variant="secondary" data-engine={id} onClick={() => void choose(id)} className="!gap-2 !py-1.5 !pl-1.5 !pr-3.5"><EngineMark engine={id} size={24} />{ENGINE_INFO[id].label}</Button>)}</div>;
   } else if (state === "not-installed" && info) {
     body = <>{info.label} isn't on this Mac yet. {info.plan}.</>;

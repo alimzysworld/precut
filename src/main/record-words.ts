@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { checkoutFile } from "./bundle-paths";
 import { createHash, randomUUID } from "node:crypto";
 import { app, BrowserWindow } from "electron";
 
@@ -17,7 +18,7 @@ export function prepareRecordWords(): Promise<string | null> {
       const bundled = path.join(process.resourcesPath, "tools/record-words");
       await fs.access(bundled); return bundled;
     }
-    const source = path.resolve(__dirname, "../../pipeline/record-words.swift");
+    const source = checkoutFile("pipeline/record-words.swift");
     const plist = path.join(path.dirname(source), "record-words.plist");
     const digest = createHash("sha256").update(await fs.readFile(source)).update(await fs.readFile(plist)).digest("hex").slice(0, 16);
     const dir = path.join(app.getPath("userData"), "speech-helper"), binary = path.join(dir, `record-words-${digest}`);

@@ -1,5 +1,6 @@
 import { Worker } from 'node:worker_threads';
 import * as path from 'node:path';
+import { bundledFile } from './bundle-paths';
 import { availableParallelism } from 'node:os';
 import { existsSync } from 'node:fs';
 import type { GradeJob } from './grade-worker';
@@ -20,7 +21,7 @@ const inFlight = new Map<string, Promise<GradeTable>>();
 const cache = new Map<string, GradeTable>();
 function start(lane: Lane): Worker {
   if (lane.worker) return lane.worker;
-  const local = path.join(__dirname, 'grade-worker.js');
+  const local = bundledFile('grade-worker.js');
   const active = new Worker(process.env.PRECUT_GRADE_WORKER || (existsSync(local) ? local : path.resolve('out/main/grade-worker.js')));
   lane.worker = active;
   active.on('message', ({ id, error, ...result }) => {

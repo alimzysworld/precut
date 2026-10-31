@@ -71,10 +71,29 @@ export function lookScalar(r:number,g:number,b:number,ch:number,p:number[]):numb
   }
   return lookFilmFade(ch==0?x:ch==1?y:z,p[17]);
 }
+/** PRO3b: an exposure key on the graded picture (a flash). Gain k in scene-linear light, then a shoulder that starts at
+ * linear .5 and reaches white only at white: black stays black (no milky veil) and highlights keep their detail
+ * instead of clipping flat. k = 1 is exactly the picture; k < 1 darkens without a shoulder. */
+function exposureKey(v:number,k:number){
+  const x=lookLinear(lookBound(v))*k;
+  if(k<=1||x<=.5)return lookDisplay(x);
+  const a=(k-.5)/.5,u=(x-.5)/(k-.5);
+  return lookDisplay(.5+.5*u*a/(1+(a-1)*u));
+}
 const functions={lookBound,lookSmooth,lookLinear,lookDisplay,lookLuma,lookHue,lookTone,lookSplit,lookSkin,lookProtect,lookLab,lookLabInverse,lookShift,lookGamut,lookCast,lookFilmFade,lookScalar};
-export function lookGLSL(){
-  return Object.entries(functions).map(([name,fn])=>{
-    let source=fn.toString();for(const [canonical,actual]of Object.entries(functions))source=source.replace(new RegExp(`(?<![\\w$.])${actual.name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}(?![\\w$])`,'g'),canonical);
+export function lookGLSL(){return emitGLSL(functions,Object.keys(functions));}
+/** PRO3b: the exposure key's GLSL, for a shader that already has lookGLSL() (it calls lookLinear and lookDisplay). */
+export function exposureGLSL(){return emitGLSL({...functions,exposureKey},['exposureKey']);}
+/** PRO3b: the export's copy of the same key: exposureKey itself, sampled as a 1D .cube for ffmpeg lut1d. */
+export function exposureCube(k:number,size=4096){
+  const rows=[`LUT_1D_SIZE ${size}`];
+  for(let i=0;i<size;i++){const v=exposureKey(i/(size-1),k).toFixed(7);rows.push(`${v} ${v} ${v}`);}
+  return rows.join('\n')+'\n';
+}
+export {exposureKey};
+function emitGLSL(table:Record<string,(...args:never[])=>number>,names:string[]){
+  return names.map(name=>[name,table[name]] as const).map(([name,fn])=>{
+    let source=fn.toString();for(const [canonical,actual]of Object.entries(table))source=source.replace(new RegExp(`(?<![\\w$.])${actual.name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}(?![\\w$])`,'g'),canonical);
     source=source.replace(/\$/g,'_dollar');
     const parameters=source.slice(source.indexOf('(')+1,source.indexOf(')')).split(',').map((p,i)=>name==='lookScalar'&&i===4?`float ${p.trim()}[18]`:`float ${p.trim()}`).join(',');
     let body=source.slice(source.indexOf('{')).replace(/Math\.cbrt\((\w+)\)/g,'pow($1,1./3.)').replace(/\b(?:const|let|var)\b/g,'float').replace(/Math\.(pow|max|min|abs)/g,'$1');

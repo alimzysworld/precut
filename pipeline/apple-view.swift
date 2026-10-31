@@ -121,6 +121,78 @@ final class PlayStats {
     var swapShown: [[String: Any]] = []
 }
 
+/// AV5 QA (PRECUT_QA_BACKGROUND=1 only, and only while QA arms it): the exact pixels the presenter put into each
+/// drawable it presented, read back from that drawable in the same command buffer, after the Look, the layout and
+/// every picture of the moment were drawn into it. Nothing is drawn again: what is read is what the layer shows.
+/// Each read carries its own sequence number, the item time of its picture and the refresh it was due on, so QA can
+/// prove a grab belongs to the time it asked for (a window capture of the native view could hand back an older one).
+///   full:  the newest presented drawable, kept whole (8 MB at 1080 x 1920) for `grab`.
+///   probe: every presented drawable's 6 x 6 brightness grid over one rect, with its times (a cut's host time).
+final class QaReadback {
+    let lock = NSLock()
+    var full = false
+    var probe: (x: Double, y: Double, w: Double, h: Double)?
+    var seq = 0
+    private var pool: [MTLBuffer] = []
+    private var next = 0
+    struct Frame { let seq: Int; let item: Double; let due: Double; let look: Int; let fresh: Bool; let width: Int; let height: Int; let row: Int; let data: Data; let encodedHost: Double }
+    var latest: Frame?
+    /// When the system said each recent drawable reached the screen (0: it never did; absent: no word yet).
+    var presented: [Int: Double] = [:]
+    var probes: [[Double]] = []   // [seq, item, due host, fresh, presented host or -1, then a 6 x 6 luma grid]
+    var armed: Bool { lock.lock(); defer { lock.unlock() }; return full || probe != nil }
+
+    /// A buffer for the next read (four in turn: at most three drawables are in flight).
+    func buffer(_ device: MTLDevice, length: Int) -> MTLBuffer? {
+        lock.lock(); defer { lock.unlock() }
+        if pool.count < 4 || pool[next % pool.count].length < length {
+            guard let made = device.makeBuffer(length: length, options: .storageModeShared) else { return nil }
+            if pool.count < 4 { pool.append(made) } else { pool[next % pool.count] = made }
+            next += 1
+            return made
+        }
+        defer { next += 1 }
+        return pool[next % pool.count]
+    }
+    func nextSeq() -> Int { lock.lock(); defer { lock.unlock() }; seq += 1; return seq }
+
+    /// The GPU finished the drawable: keep what QA asked for.
+    func done(seq: Int, buffer: MTLBuffer, width: Int, height: Int, row: Int, item: Double, due: Double, look: Int, fresh: Bool) {
+        lock.lock(); let keepFull = full, rect = probe; lock.unlock()
+        let bytes = buffer.contents().assumingMemoryBound(to: UInt8.self)
+        // A 6 x 6 grid of mean Rec.709 luma (0 to 255) over the rect, each cell from 8 x 8 samples of the BGRA pixels:
+        // a cut shows as a jump between one picture's grid and the next.
+        var grid: [Double] = []
+        if let rect {
+            let x0 = Double(width) * rect.x, y0 = Double(height) * rect.y, w = Double(width) * rect.w, h = Double(height) * rect.h
+            for cy in 0..<6 { for cx in 0..<6 {
+                var sum = 0.0
+                for sy in 0..<8 { for sx in 0..<8 {
+                    let x = min(width - 1, Int(x0 + w * (Double(cx * 8 + sx) + 0.5) / 48)), y = min(height - 1, Int(y0 + h * (Double(cy * 8 + sy) + 0.5) / 48)), p = bytes + y * row + x * 4
+                    sum += 0.0722 * Double(p[0]) + 0.7152 * Double(p[1]) + 0.2126 * Double(p[2])
+                } }
+                grid.append((sum / 64 * 10).rounded() / 10)
+            } }
+        }
+        let data = keepFull ? Data(bytes: bytes, count: row * height) : nil
+        let host = CACurrentMediaTime()
+        lock.lock()
+        if let data { latest = Frame(seq: seq, item: item, due: due, look: look, fresh: fresh, width: width, height: height, row: row, data: data, encodedHost: host) }
+        if rect != nil {
+            probes.append([Double(seq), item, due, fresh ? 1 : 0, presented[seq] ?? -1] + grid)
+            if probes.count > 20000 { probes.removeFirst(10000) }
+        }
+        lock.unlock()
+    }
+    func wasPresented(seq: Int, host: Double) {
+        lock.lock()
+        presented[seq] = host
+        if presented.count > 400 { for key in presented.keys.sorted().prefix(200) { presented.removeValue(forKey: key) } }
+        if let i = probes.lastIndex(where: { Int($0[0]) == seq }) { probes[i][4] = host }
+        lock.unlock()
+    }
+}
+
 /// What a picture's Look depends on, as a string: its piece's tables and numbers and the edit's finish.
 func appleLookKey(_ snap: AppleLookState.Snapshot) -> String {
     let c = snap.colour
@@ -370,8 +442,16 @@ final class BusStream {
         playing = true
         feedLocked(token, queue: queue)
         // A node that has not rendered yet starts on its first cycle instead (a few milliseconds late at worst).
+        startedTimed = sawIO
         if sawIO { node.play(at: AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: audibleAt))) }
         else if node.engine?.isRunning == true { node.play() }
+    }
+    /// AV6 (QA): whether this play's start was timed, and where the node's sample 0 sits on the host clock against the
+    /// asked start (ms; 0 is exact), from the node's own render clock.
+    var startedTimed = false
+    var startOffsetMs: Double? {
+        guard playing, let rendered = node.lastRenderTime, rendered.isHostTimeValid, let player = node.playerTime(forNodeTime: rendered) else { return nil }
+        return ((hostSeconds(rendered.hostTime) - Double(player.sampleTime) / format.sampleRate) - startHost) * 1000
     }
     func stopLocked() {
         token += 1
@@ -448,11 +528,11 @@ final class SoundEngine {
         }
         NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
             // The output device changed (headphones, a display): the engine stopped. Start it again; the next play reschedules.
-            self?.queue.async { self?.stopLocked(); self?.startEngine() }
+            self?.queue.async { self?.stopLocked(); self?.startEngine(onQueue: true) }
         }
     }
 
-    func startEngine() {
+    func startEngine(onQueue: Bool = false) {
         if engine.isRunning { return }
         engine.prepare()
         // The limiter's values, in the Chrome chain's terms, now that its audio unit exists.
@@ -464,7 +544,14 @@ final class SoundEngine {
         AudioUnitSetParameter(unit, kDynamicsProcessorParam_AttackTime, kAudioUnitScope_Global, 0, 0.001, 0)
         AudioUnitSetParameter(unit, kDynamicsProcessorParam_ReleaseTime, kAudioUnitScope_Global, 0, 0.1, 0)
         AudioUnitSetParameter(unit, kDynamicsProcessorParam_OverallGain, kAudioUnitScope_Global, 0, 0, 0)
-        do { try engine.start() } catch { emitEvent(["type": "soundFailed", "message": String(describing: error)]) }
+        do { try engine.start() } catch { emitEvent(["type": "soundFailed", "message": String(describing: error)]); return }
+        // AV6: every bus's player runs (idle, nothing scheduled) from the engine's start. A player's first play(at:)
+        // after the engine starts can begin its buffers up to a render cycle after the host time asked while its own
+        // clock still says it began on time: measured 16 to 24 ms on the effects bus on a first play (qa/AV6
+        // bus-sync.mjs, AV5 lipsync), 0 on every later play, whose player had played and stopped before. A play
+        // stops these idle players and starts them on the asked host time, as every later play does.
+        let warm = { if !self.playing { for bus in [self.voice, self.music, self.effects] where !bus.node.isPlaying { bus.node.play() } } }
+        if onQueue { warm() } else { queue.sync(execute: warm) }
     }
 
     func setMuted(_ muted: Bool) { engine.mainMixerNode.outputVolume = muted ? 0 : 1 }
@@ -619,8 +706,11 @@ final class SoundEngine {
             // AV4: this tap is after the time pitch unit and the limiter: what it renders at the voice player's sample n
             // left that player the path's latency earlier, so its content is n less the path (it read +90 ms before).
             let first = start.item + (Double(played.sampleTime) / sr - self.pathLatency) * start.rate
+            // AV5: when each window is heard, on the host clock: the render cycle's own host time plus the output's
+            // presentation latency (the tap is after the limiter, the last unit with latency). -1 when not known.
+            let heard = when.isHostTimeValid ? hostSeconds(when.hostTime) + self.engine.outputNode.presentationLatency : -1
             self.tapLock.lock()
-            for w in sums { self.tapWindows.append([first + Double(w.offset) / sr * start.rate, w.sum, Double(w.n)]) }
+            for w in sums { self.tapWindows.append([first + Double(w.offset) / sr * start.rate, w.sum, Double(w.n), heard < 0 ? -1 : heard + Double(w.offset) / sr]) }
             if self.tapWindows.count > 60000 { self.tapWindows.removeFirst(20000) }
             self.tapLock.unlock()
         }
@@ -703,6 +793,8 @@ final class ApplePlayerHost: NSObject {
     var fps = 25.0
     var loadGeneration = 0
     let stats = PlayStats()
+    /// AV5 QA: reads back what the presenter presented (armed by QA only).
+    let qa = QaReadback()
     var sound: SoundEngine?
     /// The presenter's display link (AV2: it runs while an edit is loaded, and measures plays as it presents).
     var displayLink: CVDisplayLink?
@@ -751,14 +843,15 @@ final class ApplePlayerHost: NSObject {
                 for p in times where p >= a.s - 0.0005 && p < b.s - 0.0005 { shown.append(a.t + (p - a.s) * (b.t - a.t) / span) }
             }
         } else {
+            // AV6: on the frame grid, as the composition places it (VideoSeg.shownStart).
             for p in times {
-                let t = seg.timelineStart + (p - seg.sourceStart)
-                if t >= seg.timelineEnd - 0.0005 { break }
-                if t >= seg.timelineStart - 0.0005 { shown.append(t) }
+                let t = seg.shownStart + (p - seg.shownSourceStart)
+                if t >= seg.shownEnd - 0.0005 { break }
+                if t >= seg.shownStart - 0.0005 { shown.append(t) }
             }
         }
         let interval = times.count > 1 ? ((times.last! - times.first!) / Double(times.count - 1) * 10000).rounded() / 10 : nil
-        return PictureSpan(start: seg.timelineStart, end: seg.timelineEnd, shown: shown.sorted(), fileIntervalMs: interval)
+        return PictureSpan(start: seg.shownStart, end: seg.shownEnd, shown: shown.sorted(), fileIntervalMs: interval)
     }
     /// AV3: each file's picture times, read once per run (a preview made again is a new file: AppleAssets.key).
     static var timesCache: [String: [Double]] = [:]
@@ -905,7 +998,7 @@ final class ApplePlayerHost: NSObject {
         // Picture: the same composition without its sound tracks, as long as the edit.
         // Built by the same builder with no sound tracks: a copy with its sound tracks removed retimed pictures by
         // up to 7 ms off their files' own times (measured, AV1b).
-        let pictureBuilt = try buildComposition(Manifest(version: manifest.version, width: manifest.width, height: manifest.height, fps: manifest.fps, durationS: manifest.durationS, video: manifest.video, audio: []))
+        let pictureBuilt = try buildComposition(Manifest(version: manifest.version, width: manifest.width, height: manifest.height, fps: manifest.fps, durationS: manifest.durationS, video: manifest.video, audio: [], gridFps: manifest.gridFps))
         let pictureOnly = pictureBuilt.composition
         if let video = pictureOnly.tracks(withMediaType: .video).first, CMTimeGetSeconds(pictureOnly.duration) < manifest.durationS - 0.001 {
             let from = pictureOnly.duration
@@ -916,7 +1009,7 @@ final class ApplePlayerHost: NSObject {
         let screen = (pictureBuilt.videoComposition?.mutableCopy() as? AVMutableVideoComposition) ?? AVMutableVideoComposition(propertiesOf: pictureOnly)
         screen.customVideoCompositorClass = PictureCompositor.self
         // AV4: the composed picture is a column of tiles (PictureLayout), as the builder sized it.
-        if let video = pictureOnly.tracks(withMediaType: .video).first { screen.sourceTrackIDForFrameTiming = video.trackID }
+        // AV6: frames on the edit's grid (the builder's frameDuration), never one track's times (see buildComposition).
         item.videoComposition = screen
         let output = AVPlayerItemVideoOutput(pixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
         item.add(output)
@@ -1590,6 +1683,17 @@ final class ApplePlayerHost: NSObject {
         let swapId = isFresh ? presenter.swapPicture : nil
         if swapId != nil { presenter.swapPicture = nil }
         let at = target > presenter.lastTarget + refresh / 2 ? target : presenter.lastTarget + refresh
+        // AV5 QA: the drawable as drawn, copied out in this same command buffer before it is presented.
+        var readback: (seq: Int, buffer: MTLBuffer, width: Int, height: Int, row: Int)?
+        if watchPictures && qa.armed, let device = gpu.device {
+            let texture = drawable.texture, row = texture.width * 4
+            if let out = qa.buffer(device, length: row * texture.height), let blit = buffer.makeBlitCommandEncoder() {
+                blit.copy(from: texture, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0), sourceSize: MTLSize(width: texture.width, height: texture.height, depth: 1),
+                          to: out, destinationOffset: 0, destinationBytesPerRow: row, destinationBytesPerImage: row * texture.height)
+                blit.endEncoding()
+                readback = (qa.nextSeq(), out, texture.width, texture.height, row)
+            }
+        }
         buffer.addCompletedHandler { [weak self] done in
             _ = source
             gpu.flush()
@@ -1600,14 +1704,17 @@ final class ApplePlayerHost: NSObject {
                 self.stats.gpuMs = max(self.stats.gpuMs, (done.gpuEndTime - done.gpuStartTime) * 1000)
                 if !now && finished > target { self.stats.latePictures += 1 }
                 self.stats.lock.unlock()
+                if let r = readback { self.qa.done(seq: r.seq, buffer: r.buffer, width: r.width, height: r.height, row: r.row, item: item, due: due, look: generation, fresh: isFresh) }
             }
             self?.recordPresented(picture: picture, item: item, host: due, fresh: isFresh, look: generation, swap: swapId)
         }
+        let readSeq = readback?.seq
         drawable.addPresentedHandler { [weak self] shown in
             guard let self else { return }
             self.stats.lock.lock()
             if shown.presentedTime > 0 { self.stats.presentedDrawables += 1 } else { self.stats.droppedDrawables += 1 }
             self.stats.lock.unlock()
+            if let readSeq { self.qa.wasPresented(seq: readSeq, host: shown.presentedTime) }
         }
         presenter.lastTarget = max(presenter.lastTarget, at)
         buffer.present(drawable, atTime: at)
@@ -1791,6 +1898,54 @@ final class ApplePlayerHost: NSObject {
         return ["ok": true, "itemS": round3(item), "generation": snap.generation, "width": image.width, "height": image.height]
     }
 
+    /// AV5 QA: arm (or disarm) the readback. `full` keeps the newest presented drawable whole; a rect (fractions of the
+    /// frame, w > 0) records every presented drawable's mean brightness there. Arming forgets earlier reads.
+    func qaReadback(full: Bool, rect: (Double, Double, Double, Double)?) -> [String: Any] {
+        guard watchPictures else { return ["ok": false, "error": "QA only"] }
+        qa.lock.lock()
+        qa.full = full
+        qa.probe = rect.flatMap { $0.2 > 0 && $0.3 > 0 ? (x: $0.0, y: $0.1, w: $0.2, h: $0.3) : nil }
+        qa.latest = nil; qa.probes = []; qa.presented = [:]
+        let seq = qa.seq
+        qa.lock.unlock()
+        // Paused, nothing new is presented: draw the picture showing once more, so a read exists.
+        if full { presenterLock.lock(); presenter.redraws = max(presenter.redraws, 1); presenterLock.unlock(); presentNow() }
+        return ["ok": true, "seq": seq]
+    }
+
+    /// AV5 QA: the newest presented drawable as an sRGB PNG at `path` (no path: its numbers only). The numbers say which
+    /// picture it was: its sequence number, item time, the refresh it was due on and when the system presented it.
+    func qaGrab(path: String) -> [String: Any] {
+        guard watchPictures else { return ["ok": false, "error": "QA only"] }
+        qa.lock.lock(); let frame = qa.latest; let seq = qa.seq; let shown = frame.flatMap { qa.presented[$0.seq] }; qa.lock.unlock()
+        guard let frame else { return ["ok": false, "error": "nothing read yet", "seq": seq] }
+        var out: [String: Any] = ["ok": true, "seq": frame.seq, "newestSeq": seq, "itemS": frame.item, "dueHost": frame.due, "look": frame.look, "fresh": frame.fresh,
+                                  "width": frame.width, "height": frame.height, "presentedHost": shown ?? -1, "readHost": frame.encodedHost, "nowHost": CACurrentMediaTime()]
+        if path.isEmpty { return out }
+        guard let provider = CGDataProvider(data: frame.data as CFData),
+              let image = CGImage(width: frame.width, height: frame.height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: frame.row, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                  bitmapInfo: CGBitmapInfo(rawValue: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.noneSkipFirst.rawValue), provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent),
+              let destination = CGImageDestinationCreateWithURL(URL(fileURLWithPath: path + ".part.png") as CFURL, "public.png" as CFString, 1, nil) else { return ["ok": false, "error": "cannot write"] }
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else { return ["ok": false, "error": "cannot write"] }
+        try? FileManager.default.removeItem(atPath: path)
+        do { try FileManager.default.moveItem(atPath: path + ".part.png", toPath: path) } catch { return ["ok": false, "error": "cannot write"] }
+        out["path"] = path
+        return out
+    }
+
+    /// AV5 QA: the probe's records since `after` (sequence number), and the last measured play's picture clock.
+    func qaProbes(after: Int) -> [String: Any] {
+        guard watchPictures else { return ["ok": false, "error": "QA only"] }
+        qa.lock.lock(); let rows = qa.probes.filter { Int($0[0]) > after }; qa.lock.unlock()
+        stats.lock.lock(); let changes = stats.changes; let when = stats.whenHost, start = stats.startItem, rate = stats.rate; stats.lock.unlock()
+        let clock = changes.suffix(20000).map { [$0.host, $0.item] }
+        // The source pictures due over that play (the set `holds` counts skipped pictures against), so QA can tell a
+        // picture never presented from one meant for less than a display refresh.
+        let due = changes.isEmpty ? [] : pictureTimes(from: changes.first!.item - 0.006, to: changes.last!.item + 0.006)
+        return ["ok": true, "probes": rows, "clock": clock, "due": due, "vsyncMs": refreshInterval() * 1000, "play": ["whenHost": when, "startItem": start, "rate": rate], "nowHost": CACurrentMediaTime()]
+    }
+
     /// QA only: put the (opacity 0) QA window under the desktop picture, where an opaque window can be captured unseen.
     func qaBelowDesktop() -> Int {
         guard ProcessInfo.processInfo.environment["PRECUT_QA_BACKGROUND"] == "1", let window else { return 0 }
@@ -1810,6 +1965,7 @@ final class ApplePlayerHost: NSObject {
         out["effectsDuck"] = round3(sound?.lastDuck ?? 1)
         if let sound, ProcessInfo.processInfo.arguments.contains("--precut-apple-sound-tap") {
             sound.tapLock.lock(); out["soundTap"] = sound.tapWindows; sound.tapLock.unlock()
+            out["soundBuses"] = sound.queue.sync { [sound.voice, sound.music, sound.effects].map { ["timed": $0.startedTimed, "startOffsetMs": $0.startOffsetMs.map { ($0 * 100).rounded() / 100 } ?? NSNull()] as [String: Any] } }
         }
         out["look"] = AppleLookState.shared.summary()
         out["composer"] = ["composed": PictureCompositor.composed, "starved": PictureCompositor.starved, "lastFailure": PictureCompositor.lastFailure ?? NSNull(), "presenterTicks": presenter.ticks, "lastPictureS": round3(presenter.lastItem)]
@@ -1869,6 +2025,15 @@ private func jsonString(_ value: [String: Any]) -> UnsafeMutablePointer<CChar>? 
 }
 @_cdecl("apv_qa_below_desktop") public func apv_qa_below_desktop() -> Int32 { Int32(truncatingIfNeeded: ApplePlayerHost.shared.qaBelowDesktop()) }
 @_cdecl("apv_state") public func apv_state() -> UnsafeMutablePointer<CChar>? { jsonString(ApplePlayerHost.shared.state()) }
+@_cdecl("apv_qa_readback") public func apv_qa_readback(_ full: Int32, _ x: Double, _ y: Double, _ w: Double, _ h: Double) -> UnsafeMutablePointer<CChar>? {
+    jsonString(ApplePlayerHost.shared.qaReadback(full: full != 0, rect: (x, y, w, h)))
+}
+@_cdecl("apv_qa_grab") public func apv_qa_grab(_ path: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>? {
+    jsonString(ApplePlayerHost.shared.qaGrab(path: path.map { String(cString: $0) } ?? ""))
+}
+@_cdecl("apv_qa_probes") public func apv_qa_probes(_ after: Double) -> UnsafeMutablePointer<CChar>? {
+    jsonString(ApplePlayerHost.shared.qaProbes(after: Int(after)))
+}
 @_cdecl("apv_qa_frame") public func apv_qa_frame(_ path: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>? {
     jsonString(ApplePlayerHost.shared.qaFrame(path: path.map { String(cString: $0) } ?? ""))
 }

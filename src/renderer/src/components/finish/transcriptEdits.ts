@@ -22,13 +22,20 @@ const sameMarker = (a: { s: number; e: number }, b: { s: number; e: number }) =>
 /** Piece indices belong to the document the person selected, never a later save. A cut piece is found again by its
  * own id, or (made before its save) by the piece it was. */
 export function rebaseWords(edit: CutEdit, from: CutVersion, to: CutVersion): CutEdit {
-  const index = (i: number) => {
-    const piece = from.pieces?.[i];
-    const next = piece ? to.pieces?.findIndex(p => identity(p) === identity(piece) || p.id === piece.id && p.clipId === piece.clipId && p.s < piece.e && p.e > piece.s) ?? -1 : -1;
+  // `near`: clip seconds the edit is about. A piece split meanwhile (a move) matches the half holding them.
+  const index = (i: number, near?: number) => {
+    const piece = from.pieces?.[i], list = to.pieces ?? [];
+    const same = list.findIndex(p => !!piece && identity(p) === identity(piece));
+    const overlapping = piece ? list.map((p, k) => ({ p, k })).filter(({ p }) => p.id === piece.id && p.clipId === piece.clipId && p.s < piece.e && p.e > piece.s) : [];
+    const next = same >= 0 ? same : (near !== undefined && overlapping.find(({ p }) => near >= p.s - 1e-6 && near <= p.e + 1e-6) || overlapping[0])?.k ?? -1;
     if (next < 0) throw new Error('Those words have changed. Select them again.');
     return next;
   };
-  if (edit.kind === 'cutWords' || edit.kind === 'bleep') return { ...edit, spans: edit.spans.map(s => ({ ...s, piece: index(s.piece) })) };
+  if (edit.kind === 'cutWords' || edit.kind === 'bleep') return { ...edit, spans: edit.spans.map(s => ({ ...s, piece: index(s.piece, (s.s + s.e) / 2) })) };
+  if (edit.kind === 'move' && edit.words) {
+    const { last, s, e, at } = edit.words, count = from.pieces?.length ?? 0;
+    return { ...edit, piece: index(edit.piece, s), to: edit.to >= count ? to.pieces?.length ?? 0 : index(edit.to, at), words: { ...edit.words, last: index(last, e) } };
+  }
   if (edit.kind === 'restoreWords' && edit.cut) {
     const was = from.cutPieces?.find(t => t.id === edit.cut), tombs = to.cutPieces ?? [];
     const now = tombs.find(t => t.id === edit.cut) ?? (was ? tombs.find(t => t.piece.id === was.piece.id && t.piece.clipId === was.piece.clipId && t.piece.s < was.piece.e && t.piece.e > was.piece.s) : undefined);
@@ -118,6 +125,45 @@ export function projectWords(shoot: Shoot, version: CutVersion, edit: CutEdit): 
   if (tombs.length) out.cutPieces = tombs.map(t => ({ ...t, at: tombIndex(t, placed) })); else delete out.cutPieces;
   return out;
 }
+/** SCRIPT2: the document the person sees at once while a move saves: the words' pieces split at the gaps around them
+ * (and where they land), then the block of them put back before the landing piece. Mirrors movePiece with words; main
+ * snaps each split onto the frame grid, so these halves are close, not exact, until the save lands. */
+export function projectMove(shoot: Shoot, version: CutVersion, edit: CutEdit): CutVersion {
+  if (edit.kind !== 'move' || !edit.words) return version;
+  const pieces = version.pieces ?? [], { last, s, e, at } = edit.words;
+  /** Where piece i splits for clip seconds `t`: before the word starting there, after the word ending there; null at its edges. */
+  const point = (i: number, t: number | undefined): number | null => {
+    const piece = pieces[i];
+    if (!piece || t === undefined || piece.kind !== 'voice') return null;
+    const all = wordsOf(shoot, piece).filter(w => w.e > piece.s && w.s < piece.e).sort((a, b) => a.s - b.s);
+    const starts = all.findIndex(w => Math.abs(w.s - t) < 1e-6), ends = all.findIndex(w => Math.abs(w.e - t) < 1e-6);
+    const after = starts >= 0 ? starts - 1 : ends >= 0 ? ends : all.findIndex((w, k) => w.e <= t && (all[k + 1]?.s ?? Infinity) >= t);
+    if (after < 0 || after >= all.length - 1) return null;
+    return (all[after].e + all[after + 1].s) / 2;
+  };
+  const cuts = [{ i: edit.piece, at: point(edit.piece, s) }, { i: last, at: point(last, e) }, { i: edit.to, at: point(edit.to, at) }];
+  type Half = Piece & { old: number };
+  const halves: Half[] = pieces.flatMap((piece, old) => {
+    const marks = [...new Set(cuts.filter(c => c.i === old && c.at !== null).map(c => c.at!))].sort((a, b) => a - b);
+    const edges = [piece.s, ...marks, piece.e], whole = keptLength(piece as Piece & { removed: Marker[] });
+    return edges.slice(0, -1).map((from, k) => {
+      const half = { ...piece, s: from, e: edges[k + 1], removed: (piece.removed ?? []).filter(m => (k === 0 || m.s >= from) && (k === edges.length - 2 || m.s < edges[k + 1])) };
+      return { ...half, old, lengthS: marks.length && whole > 0 ? (piece.lengthS ?? whole) * keptLength(half) / whole : piece.lengthS };
+    });
+  });
+  const lo = cuts[0].at ?? -Infinity, hi = cuts[1].at ?? Infinity, lands = cuts[2].at ?? -Infinity;
+  const moving = halves.filter(h => h.old >= edit.piece && h.old <= last && (h.old !== edit.piece || h.s >= lo - 1e-9) && (h.old !== last || h.e <= hi + 1e-9));
+  if (!moving.length) return version;
+  const target = edit.to >= pieces.length ? null : halves.find(h => h.old === edit.to && h.s >= lands - 1e-9) ?? halves.find(h => h.old > edit.to) ?? null;
+  const rest = halves.filter(h => !moving.includes(h)), at2 = target ? rest.indexOf(target) : rest.length;
+  if (target && moving.includes(target)) return version;
+  rest.splice(at2 < 0 ? rest.length : at2, 0, ...moving);
+  let cursor = 0;
+  const placed = rest.map(({ old: _o, ...h }) => { const timelineS = cursor; cursor += h.lengthS ?? 0; return { ...h, timelineS }; });
+  const out: CutVersion = { ...version, pieces: placed };
+  if (version.cutPieces) out.cutPieces = version.cutPieces.map(t => ({ ...t, at: tombIndex(t, placed) }));
+  return out;
+}
 export function correctWords(shoot: Shoot, clipId: string, fix: { s: number; e: number; text: string }): Shoot {
   const tokens = fix.text.trim().split(/\s+/).filter(Boolean), weight = tokens.reduce((n,w) => n + Array.from(w).length,0);
   let at = fix.s;
@@ -161,7 +207,7 @@ export class DocumentQueue<T> {
  * Picture edits and voice edits save as separate versions, in order: a picture edit moves the voice with it when
  * it saves, and a voice edit in the same version would skip that. */
 export type ScriptJob =
-  | { kind: 'edit'; label: string; group?: 'picture' | 'voice'; build: (draft: CutVersion) => CutEdit | null | 'wait'; project?: (draft: CutVersion, edit: CutEdit) => CutVersion }
+  | { kind: 'edit'; label: string; group?: 'picture' | 'voice'; build: (draft: CutVersion) => CutEdit | null | 'wait'; project?: (draft: CutVersion, edit: CutEdit) => CutVersion; alone?: boolean }
   | { kind: 'fix'; clipId: string; fix: { s: number; e: number; text: string }; after: Shoot };
 export class ScriptQueue {
   private pending: ScriptJob[] = [];
@@ -213,7 +259,7 @@ export class ScriptQueue {
           let draft = this.confirmed, used = jobs.length;
           const edits: CutEdit[] = [], labels: string[] = [];
           for (let i = 0; i < jobs.length; i++) {
-            if (i && (jobs[i].group ?? 'voice') !== (jobs[0].group ?? 'voice')) { used = i; break; }
+            if (i && ((jobs[i].group ?? 'voice') !== (jobs[0].group ?? 'voice') || jobs[i].alone)) { used = i; break; }
             const built = jobs[i].build(draft);
             if (built === 'wait') {
               // Its target is saved by this burst: it goes next, against what this burst saves.
@@ -223,6 +269,8 @@ export class ScriptQueue {
             if (!built) continue;
             edits.push(built); labels.push(jobs[i].label);
             if (jobs[i].project) draft = jobs[i].project!(draft, built);
+            // SCRIPT2: a move is its own version (one undo), and nothing is built on its guessed halves.
+            if (jobs[i].alone) { used = i + 1; break; }
           }
           if (!edits.length) { this.pending.unshift(...jobs.slice(used)); if (shoot) this.io.saved(null, shoot); break; }
           const label = [...new Set(labels)].length === 1 ? labels[0] : 'Edited the script';

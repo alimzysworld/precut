@@ -279,7 +279,7 @@ export interface CutVersion {
   title: string;
   voice: string[];                              // take attempt ids in play order (L3A2 = line 3, attempt 2)
   broll: { id: string; over: string | null }[]; // b-roll ids (B4); over = a voice id, or null for a b-roll-led stretch
-  music: { pinnedArrangement?: MusicArrangementAnchor; file: string; startS: number; endS?: number; gainDb?: number; duckDepthDb?: number; stemDucking?: boolean; fit?: boolean; followStory?: boolean; duck?: boolean } | null;  // duck (M1, default true): dips under the voice
+  music: { pinnedArrangement?: MusicArrangementAnchor; file: string; startS: number; endS?: number; gainDb?: number; duckDepthDb?: number; stemDucking?: boolean; fit?: boolean; followStory?: boolean; duck?: boolean; shape?: import("./music-shape").MusicShapeMark[] } | null;  // duck (M1, default true): dips under the voice. shape (PRO3a): stillnesses and hit dips on top of the duck
   bleeps?: { piece: number; s: number; e: number; sound: "beep" | "mute" }[];  // UL1: source spans (word-snapped) bleeped or muted; caption shows the word as "f***"
   lowerThirds?: LowerThird[];                   // UL1: name/title graphics, styled from the edit's caption font and accent
   layouts?: (LayoutChoice | null)[];            // UL3: aligned with pieces; null/absent = the piece's own picture (face)
@@ -287,6 +287,7 @@ export interface CutVersion {
   videoType?: VideoType;                        // VT1: the type this edit was cut as
   motionGraphics?: boolean;                     // GFX2: the person switched on agent-made motion graphics for this edit; absent/false = off (default)
   critique?: { rounds: number; issues: { what: string; fixed: boolean; how?: string }[]; at: string; from?: number } | null;  // MB1: what "Make it better" found and changed, in plain words; from = the version it improved (Undo opens it)
+  produce?: ProducePass | null;                // PRO1: the Produce pass this version carries (its ranked groups of moves, before-values, which are still in); absent = none
   angleCuts?: { atS: number; clipId: string }[];  // UL6: multicam switches on the reel clock; each shows that angle until the next; absent = no multicam
   post?: PostCopy[];                            // UL5: per-platform copy, written on request
   captionLanguage?: string | null;              // UL5: BCP 47 tag of translated captions in this version; null/absent = as spoken
@@ -506,13 +507,15 @@ export interface Api {
   placeVoiceover(root: string, cutId: string, recording: string, lineIds?: string[]): Promise<{ cutId: string; version: number; captions?: VoiceoverCaptions; snapshot?: CutVersion }>;  // OPEN1: snapshot = the placed version, so the page opens it without listing every version first  // VO3: split a take at the script's lines (all lines for a one-take, or the redone ones) and lay it on the edit as a new version; shots fit around it, music ducks
   followVoiceoverCaptions(root: string, cutId: string, version: number, lineIds?: string[]): Promise<{ cutId: string; version: number; captions: VoiceoverCaptions }>;  // V66: Update (hand-edited captions) or Turn on (captions off) so captions follow the placed voiceover; one undoable version, lineIds = the lines just placed (absent = every placed line)
   onRecordWords(cb: (e: { recordingId: string; words: string[]; available?: boolean }) => void): () => void;  // VO4: words heard so far while recording (on-device), so the teleprompter follows the voice
-  makeBetter(root: string, cutId: string, version: number): Promise<{ cutId: string; version: number; changes: string[] }>;  // MB1: watch, critique, improve with a stopping rule; a new version with the changes in plain words
+  makeBetter(root: string, cutId: string, version: number): Promise<{ cutId: string; version: number; changes: string[] }>;
+  produceEdit?(root: string, cutId: string, version: number): Promise<ProduceOutcome>;   // PRO2: Produce it (watch, direct, apply as one pass, watch it back); never automatic
+  produceOutcome?(root: string, cutId: string, version: number): Promise<ProduceOutcome | null>;  // PRO2: what the last Produce on this version came to (null = never produced)  // MB1: watch, critique, improve with a stopping rule; a new version with the changes in plain words
   proposeBetter(root: string, cutId: string, version: number): Promise<BetterProposal>;  // V62: watch and ask once; returns what it would change, saves nothing
   applyBetter(root: string, cutId: string, version: number, issueIds: string[]): Promise<{ cutId: string; version: number; changes: string[] }>;  // V62: one undoable version with only the chosen lines
   extensions(): Promise<ExtensionInfo[]>;    // J7: add-ons and connections ("VS Code for video"): what exists, what's installed, sizes
   installExtension(id: string): Promise<ExtensionInfo>;   // J7: runs on the activity bus (progress, cancelable); downloads only from the manifest's pinned official URLs, checksummed
   removeExtension(id: string): Promise<ExtensionInfo>;    // J7: deletes its files under user data; a connection forgets its key
-  soundLibrary(): Promise<{ id: string; name: string; kind: SfxItem["kind"]; lengthS: number; url: string }[]>;  // J2: bundled sounds plus the person's generated ones
+  soundLibrary(): Promise<{ id: string; name: string; kind: SfxItem["kind"]; lengthS: number; url: string; role?: SoundRole; hitS?: number }[]>;  // J2: bundled sounds plus the person's generated ones
   soundKey(op: "status" | "clear" | { set: string }): Promise<{ elevenlabs: boolean }>;  // J3: the person's own ElevenLabs key, kept in the macOS keychain (safeStorage), never in files or logs
   generateSound(root: string, prompt: string, seconds: number): Promise<{ file: string; name: string }>;  // J3: ElevenLabs sound generation on the person's key; saved into <root>/.sidething/sfx/ and the library
   renderSampleLooks(sample: "daylight" | "warm" | "night" | "skyline", preset?: string): Promise<{ id: string; name: string; description: string; image: string }[]>;  // O1: the gallery on one of the bundled stock frames (onboarding, Settings), cached; H9: "skyline" = the Look panel tiles
@@ -592,7 +595,7 @@ export type CutEdit =
   | { kind: "captionWord"; index: number; text?: string; s?: number; e?: number; accent?: boolean } // V38: edit-clock words, no picture rebuild
   | { kind: "retimeCaptions" } // V38: local speech timing
   | { kind: "duplicate"; pieces: number[] } // V33: exact selected occurrences, one version
-  | { kind: "move"; piece: number; to: number }          // TL1: final zero-based position on the magnetic spine
+  | { kind: "move"; piece: number; to: number; words?: { last: number; s?: number; e?: number; at?: number } }  // TL1: final zero-based position on the magnetic spine. SCRIPT2 words: pieces piece..words.last hold the moved words (split first at clip seconds s in the first and e in the last, each snapped to a gap between words); `to` is then where they go: before piece `to` of this version (pieces.length = the end), or inside it at clip seconds `at`, split there first
   | { kind: "trim"; piece: number; s: number; e: number; magnetic: true } // TL1: explicit frame trim within source footage
   | { kind: "swap"; piece: number; take: string }        // piece index in version.pieces; take = "L11A2"
   | { kind: "remove"; piece: number }
@@ -633,9 +636,12 @@ export type CutEdit =
   | { kind: "layoutSplit"; at: number }
   | { kind: "angles"; cuts: { atS: number; clipId: string }[] | null } // UL6: null = back to precut's choice
   | { kind: "bigLine"; s: number; big: boolean | null }    // J1: make this caption line big or normal; null = back to precut's choice
-  | { kind: "sfx"; op: "add"; item: Omit<SfxItem, "id" | "auto"> }   // J2: placed by the person
-  | { kind: "sfx"; op: "update"; id: string; patch: Partial<Omit<SfxItem, "id">> }  // moving an auto one makes it the person's (auto=false)
+  | { kind: "sfx"; op: "add"; item: Omit<SfxItem, "id" | "auto"> & { landAtS?: number } }   // PRO3a: landAtS puts the sound's measured hit there (atS = landAtS - hitS); J2: placed by the person
+  | { kind: "sfx"; op: "update"; id: string; patch: Partial<Omit<SfxItem, "id">> & { landAtS?: number } }  // moving an auto one makes it the person's (auto=false)
   | { kind: "sfx"; op: "remove"; id: string }
+  | { kind: "sfx"; op: "musicShape"; shape: import("./music-shape").MusicShapeMark[] | null }  // PRO3a: replace the music's stillnesses and hit dips (null clears them)
+  | { kind: "produce"; op: "apply"; pass: ProduceRequest }  // PRO1: write a Produce pass as ONE version (main records each move's target and before-value)
+  | { kind: "produce"; op: "less" | "more" | "remove" }      // PRO1: take out the weakest group still in, put back the strongest one out, or take the whole pass out; one version each
   | { kind: "insert"; at: number; source: { take: string } | { clipId: string; s: number; e: number } }  // D9: put a take or a clip span in at piece index `at` (edges snapped like trim); "Add to edit" from Footage
   | { kind: "replace"; piece: number; clipId: string; s?: number; e?: number }  // RP1: put another clip in this piece's place in one step, keeping the slot's length where the new clip allows; no s/e = precut picks the new clip's best usable moment
   | { kind: "format"; op: "add"; aspect: SkillFormat["aspect"] }     // D7: starts from a measured reframe (face tracking), no model call
@@ -687,7 +693,62 @@ export interface SfxItem {
   kind: "whoosh" | "hit" | "pop" | "riser" | "impact" | "ambience" | "roomtone" | "ui" | "other";
   auto: boolean;                                // true = placed by precut; false = the person placed or moved it
   reason?: string;                              // why precut put it here, shown in place
+  role?: SoundRole;                             // PRO3a: placed at its role's level against the edit's voice; gainDb then trims it (0 = the role's level). Absent = the J2 loudness level
 }
+// PRO3a: where a sound sits in the mix, loudest first: hit (a landing), accent (whoosh, pop, land), ui (click, tick), ambience (a bed).
+export type SoundRole = "hit" | "accent" | "ui" | "ambience";
+
+// ---- PRO1 (docs/plans/produced/spike-v1.md, "After Codex round 1"): pass ownership. A Produce pass is ranked groups of
+// moves; a move is a value precut already has (a trim, clip settings, a join, a layout, a punch, a sound, a graphic, a
+// caption accent, a music mark). Each move keeps its target by identity (piece id + clip + span, a sound or graphic id,
+// a caption word by text and neighbours, a time anchored to the piece under it), so later edits that shift indexes or
+// times do not lose it, and its before-value, so Less and Remove can put it back. A move the person changed after the
+// pass is theirs (handed): Less, More and Remove leave it alone and say so.
+export interface ProducePieceRef { id: string; clipId: string; s: number; e: number }  // a spine piece: its id and clip; s/e (source seconds) tell repeated occurrences apart
+export interface ProduceAnchor { piece: ProducePieceRef; sourceS: number }                // a reel time held as the source second of the piece under it, so it moves with the picture as precut's ripple moves items
+export type ProduceSlot = "span" | "fx" | "join" | "layout" | "punch" | "sound" | "graphic" | "word" | "music";
+export interface ProduceMove {
+  slot: ProduceSlot;
+  label: string;                 // plain words for the row: "the cut at 0:49"
+  piece?: ProducePieceRef;       // span, fx, layout, punch: that piece; join: the piece before the join
+  next?: ProducePieceRef;        // join: the piece after it
+  id?: string;                   // sound, graphic: the item's id in the newest version that holds it
+  word?: { text: string; s: number; prev: string[]; next: string[] };  // word: a caption word by its text and neighbours
+  before: unknown;               // the value before the pass (null = absent); sounds, graphics and music marks carry their anchor
+  after: unknown;                // the value the pass left
+  bind?: string;                 // moves that only make sense together (the two trims of one cut) are kept or taken out as one
+  handed?: boolean;              // the person changed it after the pass: it is theirs now
+}
+export interface ProduceGroup { id: string; rank: number; reason: string; needs?: string[]; on: boolean; moves: ProduceMove[] }  // rank 1 = what the edit most needs; Less takes the highest rank out first
+export interface ProducePass {
+  id: string; idea: string; payoff?: string; quiet?: string;
+  at: string; madeOn: number;    // when, and the version it was applied on
+  groups: ProduceGroup[];
+  removed?: number;              // the version Remove made; absent = the pass is in the edit
+  note?: { version: number; text: string };  // what the last Less, More or Remove kept of the person's, shown on that version only
+}
+export type ProduceMoveEdit = CutEdit | { kind: "punch"; piece: number; scale: number | null } | { kind: "musicMark"; mark: import("./music-shape").MusicShapeMark } | MotionEdit;
+// PRO3b: motion moves in edit seconds, resolved on the draft they run on (src/main/motion-edits.ts). clipPunch and
+// clipExposure set a clip's whole list (null clears it), keeping its other settings; piece absent = the clip under the
+// first atS. cutOnWord moves the cut into `piece` (absent: the nearest cut) so that shot starts `frames` frames before
+// caption word `word` (read_captions index), keeping the length: slide keeps the incoming shot's first frame and
+// ripples its tail; roll moves its in-point (absent: slide for b-roll, roll for a shot that carries its own words).
+export type MotionEdit =
+  | { kind: "clipPunch"; piece?: number; punches: ({ atS: number } & Omit<PiecePunch, "sourceS">)[] | null }
+  | { kind: "clipExposure"; piece?: number; keys: { atS: number; levels: number[] }[] | null }
+  | { kind: "cutOnWord"; word: number; text?: string; frames?: number; piece?: number; mode?: "slide" | "roll" };
+export interface ProduceRequest {
+  idea: string; payoff?: string; quiet?: string;
+  groups: { id?: string; rank: number; reason: string; needs?: string[]; moves: { edit: ProduceMoveEdit; label?: string; bind?: string }[] }[];
+}
+// PRO2: what the last "Produce it" on a version came to. landed = a pass was written (version), with any groups the
+// review took out and why; left = no pass, the read is best as it is (text says why); refused = the director's answer
+// couldn't be applied as a whole (text says why, nothing changed); failed = it stopped (text in plain words);
+// waiting = QA replay only: the engine request is on disk.
+export type ProduceOutcome =
+  | { state: "landed"; on: number; version: number; idea: string; payoff: string | null; quiet: string | null; dropped: { reason: string; why: string }[]; notes?: string[]; at: string }
+  | { state: "left" | "refused" | "failed"; on: number; text: string; notes?: string[]; at: string }
+  | { state: "waiting"; on: number; step: "director" | "critic"; dir: string; text: string; at: string };
 // UL1: a name/title graphic. s/e reel seconds.
 export interface LowerThird { id: string; s: number; e: number; title: string; subtitle?: string; position: "left" | "right" | "centre" }
 // UL3: how a piece is laid out. screen = a screen recording fills the frame; bubble = screen with the face in a round bubble;
@@ -737,7 +798,16 @@ export interface PieceFx {
   reverse?: boolean;                            // F1: play this clip backwards (b-roll mostly); its own sound is muted while reversed
   background?: { mode: "blur" | "colour" | "image"; amount?: number; colour?: string; image?: string } | null;  // UL4: behind the person (person mask); amount 0..100 for blur; image inside .sidething/backgrounds/
   look?: PieceLook | null;                      // H5: this clip's own look on top of the edit's; absent/null = follows the edit
+  punches?: PiecePunch[];                       // PRO3b: punches on any clip (b-roll too), each locked to the source frame it lands on
+  exposure?: PieceExposure[];                   // PRO3b: exposure keys on the picture (a flash), each locked to the source frame it starts on
 }
+// PRO3b: a punch lands on the frame showing source second sourceS. settle (the default, the launch video's): it lands
+// at scale and eases to 1 over `frames` frames (out cubic), times (1 + creep x frames since the hit) so it never sits
+// dead; hold: it steps to scale for lengthS (absent = to the end of the shot). Absent frames = 0.2 s of frames.
+export interface PiecePunch { sourceS: number; scale: number; style?: "settle" | "hold"; frames?: number; creep?: number; lengthS?: number }
+// PRO3b: from the frame showing source second sourceS, one exposure level per frame (1 = as graded, 1.9 = a hit),
+// applied to the graded picture by shared/look-scalar.ts exposureKey in the viewer and the export.
+export interface PieceExposure { sourceS: number; levels: number[] }
 // H5 (docs/SPIKE-14-edits-panel.md): "This clip" in the Look panel. Each field absent = the edit's value.
 // basic is ADDED to the edit's basic (so "a touch brighter on this clip" survives a change of the edit's look);
 // preset/intensity replace the edit's for this clip; mixer entries replace the edit's for that colour.
@@ -773,6 +843,7 @@ export interface MotionGraphic {
   layer?: "front" | "behind";                   // behind = composited behind the person (person mask)
   words?: { text: string; atS: number }[];      // spoken cues it is synced to (reel seconds), for re-timing when the cut changes
   template?: string;                            // the starter it came from, if any
+  media?: string;                               // PRO4b: a card's picture, a file in the shoot's own cache (card-<hash>.webp); drawn in by the title page
 }
 export interface CoverChoice { t: number; auto: boolean; title: string | null }  // t = reel seconds; title drawn in the edit's caption style
 
@@ -1031,6 +1102,7 @@ export interface DraftPiece {
   timeMap?: { t: number; s: number }[];    // N2b: reel t -> source s, piecewise linear over startS..endS (speed, ramps); absent = inS + (t - startS)
   opacity?: { t: number; a: number }[];    // N2b: 0..1 over reel time (dissolve); absent = 1. Spine pieces may overlap during a dissolve; the later one draws on top
   blur?: { t: number; amount: number; angle: number }[];  // N2b: directional motion blur (whip, zoom); amount = fraction of frame width, angle in radians; absent = none
+  exposure?: { t: number; k: number }[];   // PRO3b: exposure level from reel second t until the next key (stepped, per frame); absent = 1
 }
 
 // N8: the Ask panel. One thread per shoot (the sidekick thread, upgraded): the person's own Claude Code
@@ -1049,7 +1121,7 @@ export interface ChatTurn {
 // R7: the live mix the player builds in WebAudio. Each voice piece plays its prepared (cleaned) take span, or the raw
 // audio until that is ready; effects and room tone are scheduled buffers; music ducks under the voice envelope.
 export interface LiveSoundPiece { clean?: ClipSoundClean; duckDb?: number; layer?: 0 | 1; muted?: boolean; id: string; piece?: number; url: string; rawUrl?: string; rawSourceStart?: number; startS: number; endS: number; timeMap: { t: number; s: number }[]; sourceStart?: number; gainDb: number; normalizeDb?: number; fadeInS?: number; fadeOutS?: number; loop?: boolean; peaks?: number[] }
-export interface LiveSound { durationS: number; pieces: LiveSoundPiece[]; effects: LiveSoundPiece[]; audio: AudioFinish; music: { endS?: number; peaks?: number[]; sourcePeaks?: number[]; sourceDurationS?: number; waveformDurationS?: number; sourceBars?: number[]; arrangementSource?: string; arrangementSummary?: string; arrangementSections?: { sourceS: number; sourceE: number; atS: number; section: number }[]; arrangementState?: "preparing" | "ready" | "error"; stems?: MusicStems; stemsStartS?: number; url: string; rawUrl?: string; rawSourceStart?: number; startS: number; gainDb?: number; duckDepthDb?: number; stemDucking?: boolean; fit?: boolean; followStory?: boolean; duck?: boolean } | null; bleeps: { s: number; e: number; sound: "beep" | "mute" }[] }
+export interface LiveSound { durationS: number; pieces: LiveSoundPiece[]; effects: LiveSoundPiece[]; audio: AudioFinish; music: { endS?: number; peaks?: number[]; sourcePeaks?: number[]; sourceDurationS?: number; waveformDurationS?: number; sourceBars?: number[]; arrangementSource?: string; arrangementSummary?: string; arrangementSections?: { sourceS: number; sourceE: number; atS: number; section: number }[]; arrangementState?: "preparing" | "ready" | "error"; stems?: MusicStems; stemsStartS?: number; url: string; rawUrl?: string; rawSourceStart?: number; startS: number; gainDb?: number; duckDepthDb?: number; stemDucking?: boolean; fit?: boolean; followStory?: boolean; duck?: boolean; shape?: import("./music-shape").MusicShapeMark[] } | null; bleeps: { s: number; e: number; sound: "beep" | "mute" }[] }
 export interface DraftTimeline {
   captionSource?: import('../main/titles/captions').CaptionSource;
   voiceover?: VoiceoverLine[];                 // VO3: recorded line blocks on the Voiceover lane
@@ -1067,7 +1139,7 @@ export interface DraftTimeline {
   look: { preset: LookPreset; intensity: number } | null;   // the saved choice, for the controls
   titles: TitleTrack | null;
   joins?: { index: number; atS: number; choice: JoinChoice; auto: boolean; between: ["voice" | "broll", "voice" | "broll"] }[];  // N2b: one per join on the spine, for the storyboard's transition cards
-  overlays?: (OverlayItem & { url: string })[];   // N4: drawn in the titles layer, live and in the export
+  overlays?: (OverlayItem & { url: string; mediaUrl?: string })[];   // N4: drawn in the titles layer, live and in the export
   loudness?: { lufs: number; truePeakDb: number; target: number } | null;  // S1: measured on the draft mix (the same chain as export); null while measuring
   cover?: (CoverChoice & { image: string | null }) | null;  // N9: image = still of that frame with its title
 }

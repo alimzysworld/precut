@@ -34,10 +34,29 @@ export function gradientFilter(bg:LayoutBackground,width:number,height:number,fp
   });
   return `color=c=black:s=${width}x${height}:r=${fps},trim=end_frame=1,format=gbrp,geq=r='${expressions[0]}':g='${expressions[1]}':b='${expressions[2]}',loop=loop=-1:size=1:start=0,trim=duration=${duration},setpts=N/(${fps}*TB)[${label}]`;
 }
+/** The nine viewer taps (offsets n*radius/4, weights exp(-n^2/8)) with their bilinear reads folded into one separable
+ * pixel kernel, edges clamped. Longest half-width is ceil(radius), at most MAX_HALF (47 taps). */
+const MAX_HALF=23,COEFFICIENT_SCALE=65536;
+export function backdropKernel(radius:number,gain=1):number[]{
+  const half=Math.max(1,Math.ceil(radius)),taps=Array.from({length:9},(_,i)=>i-4),weights=taps.map(n=>Math.exp(-n*n/8)),total=weights.reduce((a,b)=>a+b,0);
+  const kernel=new Array<number>(2*half+1).fill(0);
+  taps.forEach((n,i)=>{const d=n*radius/4,f=Math.floor(d),frac=d-f,w=weights[i]/total*gain;kernel[f+half]+=w*(1-frac);if(frac>0)kernel[f+1+half]+=w*frac;});
+  return kernel;
+}
+function blurPasses(radius:number,dim:number):string{
+  const half=Math.max(1,Math.ceil(radius)),pass=(mode:'row'|'column',gain:number)=>{
+    // convolution keeps whole-number coefficients, so scale the weights up and divide back with rdiv.
+    const m=backdropKernel(radius,gain).map(v=>Math.round(v*COEFFICIENT_SCALE)).join(' ');
+    return [0,1,2].map(p=>`${p}m='${m}':${p}rdiv=${1/COEFFICIENT_SCALE}:${p}mode=${mode}`).join(':');
+  };
+  // Padding is smeared (edge pixels repeated), as the old geq clamp did; convolution alone would mirror.
+  return `pad=iw+${2*half}:ih+${2*half}:${half}:${half},fillborders=left=${half}:right=${half}:top=${half}:bottom=${half}:mode=smear,convolution=${pass('row',1)},convolution=${pass('column',dim)},crop=iw-${2*half}:ih-${2*half}:${half}:${half}`;
+}
 export function backdropFilter(bg:LayoutBackground,width:number,height:number):string{
   const radius=(bg.blur??0)*.0005*width,dim=1-(bg.dim??0)/100;
   if(!radius)return `format=gbrp,lutrgb=r='val*${dim}':g='val*${dim}':b='val*${dim}'`;
-  const taps=Array.from({length:9},(_,i)=>i-4),weights=taps.map(n=>Math.exp(-n*n/8)),total=weights.reduce((a,b)=>a+b,0);
-  const pass=(axis:'x'|'y',gain:number)=>'geq='+['r','g','b'].map(ch=>`${ch}='(${taps.map((n,i)=>`${ch}(clip(X+${axis==='x'?n*radius/4:0},0,W-1),clip(Y+${axis==='y'?n*radius/4:0},0,H-1))*${weights[i]}`).join('+')})/${total}*${gain}'`).join(':');
-  return 'format=gbrp,'+pass('x',1)+','+pass('y',dim);
+  if(radius<=MAX_HALF)return 'format=gbrp,'+blurPasses(radius,dim);
+  // Wider than 47 taps reach: blur a smaller picture (same spread in picture terms) and scale it back up.
+  const k=Math.ceil(radius/MAX_HALF),w=Math.max(2,Math.round(width/k)),h=Math.max(2,Math.round(height/k));
+  return `format=gbrp,scale=${w}:${h}:flags=area,${blurPasses(radius*w/width,dim)},scale=${width}:${height}:flags=bilinear`;
 }

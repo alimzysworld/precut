@@ -9,6 +9,35 @@ import { planFx, syncFxMetadata, layoutRangeAdvance } from "./edits-fx";
 import { finishStoredVersion, renderStoredPreview, type StoredVersion } from "./sidekick";
 import { runActivity } from "./activity";
 import { retimeKinetic } from "./titles/captions";
+import { splitPiecesAt, tombIndex, type PieceTomb } from "./edits-words";
+
+type MoveEdit = Extract<CutEdit, { kind: "move" }>;
+/** SCRIPT2: a move of words is a split, then this same piece move. The selection's edge pieces and the piece it lands in
+ * are split at word boundaries first (splitPiecesAt), so the words become whole pieces; the result is the block of new
+ * pieces to move and the new piece index it lands before. */
+function splitForWords(record: StoredVersion, assembly: StoredVersion["assembly"], edit: MoveEdit & { words: NonNullable<MoveEdit["words"]> }) {
+  const count = cutPieceGroups(assembly.cutList).length, { last, s, e, at } = edit.words;
+  if (![edit.piece, last, edit.to].every(Number.isInteger) || edit.piece < 0 || last < edit.piece || last >= count || edit.to < 0 || edit.to > count)
+    throw new Error("Choose words and a place in this edit.");
+  if ([s, e, at].some(v => v !== undefined && !Number.isFinite(v))) throw new Error("Choose words and a place in this edit.");
+  const cuts = [{ piece: edit.piece, at: s ?? -Infinity }, { piece: last, at: e ?? Infinity }, ...(at !== undefined && edit.to < count ? [{ piece: edit.to, at }] : [])]
+    .filter(c => Number.isFinite(c.at));
+  const split = splitPiecesAt(record, assembly, cuts);
+  const point = (piece: number, value: number | undefined, edge: number) => {
+    const i = cuts.findIndex(c => c.piece === piece && c.at === value);
+    return value === undefined || i < 0 ? edge : split.points[i];
+  };
+  const from = point(edit.piece, s, -Infinity), through = point(last, e, Infinity);
+  const block = split.halves.flatMap((h, i) => h.old >= edit.piece && h.old <= last && (h.old !== edit.piece || h.s >= from - 1e-9) && (h.old !== last || h.e <= through + 1e-9) ? [i] : []);
+  if (!block.length) throw new Error("Select the words to move.");
+  const lands = point(edit.to, at, -Infinity);
+  let before = edit.to >= count ? split.halves.length : split.halves.findIndex(h => h.old === edit.to && h.s >= lands - 1e-9);
+  if (before < 0) before = split.halves.findIndex(h => h.old > edit.to);
+  if (before < 0) before = split.halves.length;
+  const first = block[0], end = block.at(-1)!;
+  if (before >= first && before <= end + 1) throw new Error("Choose a place outside the words you are moving.");
+  return { first, end, before };
+}
 
 export function retimeMagneticTrim(previous: StoredVersion, record: StoredVersion, piece: number) {
   // The older trim constructor lists its original fields explicitly. Preserve
@@ -40,14 +69,17 @@ export function retimeMagneticItems(previous: StoredVersion, record: StoredVersi
 
 export function movePiece(root: string, cutId: string, version: number, edit: Extract<CutEdit, { kind: "move" | "duplicate" | "shotOrder" }>) {
   if(edit.kind==='duplicate' && (!Array.isArray(edit.pieces) || !edit.pieces.length || edit.pieces.length>500))return Promise.reject(new Error("Choose clips in this edit."));
-  return runActivity({ kind: "edit", root, target: { cutId, version }, label: "Moving clip", cancelable: true }, () =>
+  const words = edit.kind==='move' && edit.words ? edit as MoveEdit & { words: NonNullable<MoveEdit["words"]> } : null;
+  return runActivity({ kind: "edit", root, target: { cutId, version }, label: words ? "Moving words" : "Moving clip", cancelable: true }, () =>
     finishStoredVersion(root, cutId, version, true, async (record, assembly) => {
+      // SCRIPT2: the words' pieces are split first; from here on it is the same move of whole pieces.
+      const block = words ? splitForWords(record, assembly, words) : null;
       const previous = structuredClone(record), groups = cutPieceGroups(assembly.cutList);
       const duplicated=edit.kind==='duplicate' ? [...new Set(edit.pieces)].sort((a,b)=>a-b) : [];
       if(edit.kind==='duplicate' && (!duplicated.length || duplicated.length>500 || duplicated.some(i=>!Number.isInteger(i) || i<0 || i>=groups.length)))throw new Error('Choose clips in this edit.');
       const order = edit.kind==='shotOrder'
         ? shotOrder(groups.map(g=>g.items[0].seg?.clip),edit.pieces,edit.keepMyMoves ? handMovedPieces(previous,(await readCut(root,cutId)).versions) : undefined)
-        : edit.kind==='move' ? moveOrder(groups.length, edit.piece, edit.to) : Array.from({length:groups.length},(_,i)=>i);
+        : block ? blockOrder(groups.length, block) : edit.kind==='move' ? moveOrder(groups.length, edit.piece, edit.to) : Array.from({length:groups.length},(_,i)=>i);
       if(duplicated.length)order.splice(duplicated.at(-1)!+1,0,...duplicated);
       const index = (old: number) => order.indexOf(old);
       const fps = assembly.template.fps, before = planFx(assembly.cutList, fps, previous);
@@ -62,13 +94,25 @@ export function movePiece(root: string, cutId: string, version: number, edit: Ex
       record.assembly = { ...assembly, cutList, reel };
       record.voice = reel.cuts.map(c => c.id);
       record.pieces = order.map(old => ({...structuredClone(previous.pieces![old]),
-        ...(edit.kind==='move' && old===edit.piece ? {handMoved:true} : {}),
+        ...(block ? old>=block.first && old<=block.end ? {handMoved:true} : {} : edit.kind==='move' && old===edit.piece ? {handMoved:true} : {}),
         ...(edit.kind==='shotOrder' && !edit.keepMyMoves && (!edit.pieces || edit.pieces.includes(old)) ? {handMoved:false} : {})}));
       record.pieceFx = previous.pieceFx && order.map(old => previous.pieceFx?.[old] ?? null);
       record.layouts = previous.layouts && order.map(old => previous.layouts?.[old] ?? null);
       record.jumpScales = previous.jumpScales && order.map(old => previous.jumpScales?.[old] ?? null);
       record.bleeps = previous.bleeps?.flatMap(b => order.flatMap((old,piece)=>old===b.piece ? [{...b,piece}] : []));
       record.joins = order.slice(1).map((right, i) => right === order[i] + 1 ? previous.joins?.[order[i]] ?? null : null);
+      if (block) {
+        // Old and new seams are plain cuts. A transition the person set on the moved words' own edges goes with them;
+        // its J or L sound came from the old neighbour, so that part does not.
+        const at = index(block.first), end = index(block.end), own = (join: NonNullable<typeof record.joins>[number] | undefined) => {
+          if (!join) return null; const { audio: _a, ...rest } = join; return rest;
+        };
+        const entry = own(previous.joins?.[block.first - 1]), exit = own(previous.joins?.[block.end]);
+        if (entry && at > 0) record.joins[at - 1] = entry;
+        if (exit && end < order.length - 1) record.joins[end] = exit;
+        // Cut pieces stay after the piece they followed.
+        if (record.cutPieces) record.cutPieces = (record.cutPieces as PieceTomb[]).map(tomb => { const old = tombIndex(tomb, previous.pieces ?? []); return { ...tomb, at: old === 0 ? 0 : index(old - 1) + 1 }; });
+      }
       if (record.grade?.matchRef != null) record.grade = { ...record.grade, matchRef: index(record.grade.matchRef) };
       record.formats = previous.formats?.map(f => ({ ...f, pieceFraming: f.pieceFraming && order.map(old => f.pieceFraming?.[old] ?? null) }));
       const after = planFx(cutList, fps, record);
@@ -150,8 +194,25 @@ export function movePiece(root: string, cutId: string, version: number, edit: Ex
       }
       if(edit.kind==='shotOrder' && !edit.keepMyMoves && !edit.pieces)record.shotOrderResetAt=record.version;
       const clips=(n:number)=>`${n} clip${n===1?'':'s'}`;  // FIX4: plural only above one
-      record.feedback = edit.kind==='shotOrder' ? `Moved ${clips(order.filter((old,i)=>old!==i).length)} into shot order` : duplicated.length ? `Duplicated ${clips(duplicated.length)}` : "Moved a clip";
+      record.feedback = edit.kind==='shotOrder' ? `Moved ${clips(order.filter((old,i)=>old!==i).length)} into shot order` : duplicated.length ? `Duplicated ${clips(duplicated.length)}` : block ? movedWords(previous, block) : "Moved a clip";
       await renderStoredPreview(root, cutId, record, record.assembly);
       return { cutId, version: record.version };
     }));
+}
+
+/** SCRIPT2: the spine with pieces first..end (inclusive) taken out and put back before piece `before`. */
+function blockOrder(count: number, { first, end, before }: { first: number; end: number; before: number }): number[] {
+  const all = Array.from({ length: count }, (_, i) => i), moved = all.slice(first, end + 1), rest = all.filter(i => i < first || i > end);
+  rest.splice(before > end ? before - moved.length : before, 0, ...moved);
+  return rest;
+}
+/** The undo label: the moved words, short. */
+function movedWords(record: StoredVersion, { first, end }: { first: number; end: number }): string {
+  // The measured words each piece plays (a piece's own `words` can be its file's name when it has no script line).
+  const words = (record.pieces ?? []).slice(first, end + 1).filter(p => p.kind === "voice").flatMap(p =>
+    (record.assembly.shoot.clips.find(c => c.id === p.clipId)?.transcript ?? []).flatMap(s => s.words)
+      .filter(w => w.e > p.s + 1e-6 && w.s < p.e - 1e-6 && !(p.removed ?? []).some(r => r.kind !== "pause" && w.s < r.e && w.e > r.s))
+      .map(w => w.w.trim())).filter(Boolean);
+  if (!words.length) return "Moved words";
+  return `Moved “${words.slice(0, 6).join(" ")}${words.length > 6 ? "…" : ""}”`;
 }

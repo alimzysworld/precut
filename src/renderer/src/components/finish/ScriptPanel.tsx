@@ -11,7 +11,7 @@ import { heardVoiceWords, placeVoiceWords, retypeVoiceWords, voiceAddedOf, voice
 import { buildCaptionTrack, followEmphasis, DEFAULT_CAPTION_STYLE, type CaptionTrack } from "../../../../main/titles/captions";
 import { transcriptSeparator, transcriptText } from "../../../../main/titles/text";
 import { buildScript, spellingOnly, takeSpan, type ScriptDoc, type ScriptWord } from "./scriptDoc";
-import { correctWords, projectWords, rebaseWords, ScriptQueue } from "./transcriptEdits";
+import { correctWords, projectMove, projectWords, rebaseWords, ScriptQueue } from "./transcriptEdits";
 import { otherOccurrences, removableFillerCount, seekWorkspace, transcriptPieces } from "./TranscriptPanel";
 import { useTimelinePrefs } from "../timeline/prefs";
 import { runShortcut } from "../../hooks/useShortcuts";
@@ -27,6 +27,9 @@ type Point = { w: number; o: number };
 type Sel = { a: Point; f: Point };
 type Draft = { first: number; last: number; text: string; caret: number; end?: number };
 type Occurrence = { clipId: string; s: number; e: number; text: string };
+/** SCRIPT2: where moved words land: before a word of a camera paragraph, or at its end (before: null). */
+type Spot = { block: number; before: number | null };
+const VOICE_LATER = "Voiceover lines move in a later update.";
 const SHOW_CUTS = "precut.script.show-cuts";
 const readShowCuts = () => { try { return globalThis.localStorage?.getItem(SHOW_CUTS) !== "0"; } catch { return true; } };
 const message = (cause: unknown, fallback: string) => cause instanceof Error ? cause.message.replace(/^Error invoking remote method '[^']+':\s*/i, "").replace(/^Error:\s*/i, "") : fallback;
@@ -69,6 +72,9 @@ export function ScriptPanel({ shoot: inputShoot, version: savedVersion, time = 0
   const [error, setError] = useState<string | null>(null), [note, setNote] = useState<string | null>(null), [saving, setSaving] = useState(false);
   const [offer, setOffer] = useState<{ words: Occurrence[]; correction: string } | null>(null);
   const [bleepMenu, setBleepMenu] = useState(false), [viewer, setViewer] = useState(false), [playing, setPlaying] = useState<string | null>(null);
+  // SCRIPT2: words cut with ⌘X wait here for ⌘V; a drag shows where they will land.
+  const [heldKeys, setHeld] = useState<string[] | null>(null), [drop, setDrop] = useState<Spot | null>(null), [dragging, setDragging] = useState<number[] | null>(null);
+  const drag = useRef<{ words: number[]; x: number; y: number; moving: boolean } | null>(null), selectAfter = useRef<string[] | null>(null);
   const host = useRef<HTMLDivElement>(null), caretAfter = useRef<Point | null>(null), lastKey = useRef(0), pointer = useRef<{ x: number; y: number; moved: boolean } | null>(null);
   const seekTimer = useRef<ReturnType<typeof setTimeout>>(), listening = useRef(0), activeIndex = useRef(-1);
   const { closeGaps } = useTimelinePrefs();
@@ -82,6 +88,9 @@ export function ScriptPanel({ shoot: inputShoot, version: savedVersion, time = 0
   const shown = (i: number) => showCuts || !doc.words[i]?.cut;
   const selected = useMemo(() => dots ?? coveredWords(doc, sel, shown), [doc, sel, dots, showCuts]);
   const selectedCut = selected.filter(i => doc.words[i].cut || doc.words[i].hidden);
+  // Held words by identity, so a save landing meanwhile still finds them.
+  const wordKey = (w: ScriptWord) => w.kind === "camera" ? `c:${w.clipId}:${w.s}:${w.cut ? 1 : 0}` : w.key;
+  const held = useMemo(() => { if (!heldKeys) return null; const keys = new Set(heldKeys), list = doc.words.flatMap((w, i) => keys.has(wordKey(w)) ? [i] : []); return list.length ? list : null; }, [doc, heldKeys]);
   const selectedLive = selected.filter(i => !doc.words[i].cut);
 
   // ------------------------------------------------------------------ saving
@@ -97,10 +106,11 @@ export function ScriptPanel({ shoot: inputShoot, version: savedVersion, time = 0
   const live = useRef({ shoot, version, onChange, onSaving }); live.current = { shoot, version, onChange, onSaving };
   const confirmedShoot = useRef(inputShoot);
   const stagePreview = useRef<{ detail: { root: string; cutId?: string; version: CutVersion | null }; queued: boolean }>();
-  // The strike paints on the keypress; the stage, timeline and captions follow a frame later.
-  function publish(next: CutVersion | null) {
+  // The strike paints on the keypress; the stage, timeline and captions follow a frame later. A move's guessed halves
+  // stay in the document only (stage = false): the stage waits for main's exact split.
+  function publish(next: CutVersion | null, stage = true) {
     setLocalVersion(next);
-    if (typeof CustomEvent === "undefined") return;
+    if (!stage || typeof CustomEvent === "undefined") return;
     const pending = stagePreview.current;
     stagePreview.current = { detail: { root: owner.current.root, cutId: owner.current.cutId, version: next }, queued: true };
     if (pending?.queued) return;
@@ -260,6 +270,66 @@ export function ScriptPanel({ shoot: inputShoot, version: savedVersion, time = 0
     if (next !== version) apply(next);
     setDots(null);
   }
+  // ------------------------------------------------------------------ moving words (SCRIPT2)
+  /** The camera words a move takes, or why it can't. Struck words inside go with them. */
+  function movable(indices: number[]): { first: ScriptWord; last: ScriptWord } | string {
+    if (range) return "Move words from the Script panel.";
+    const chosen = indices.map(i => doc.words[i]).filter(Boolean);
+    if (chosen.some(w => w.kind === "voice")) return VOICE_LATER;
+    const live = chosen.filter(w => !w.cut && w.kind === "camera" && w.piece !== undefined);
+    if (!live.length) return "Select spoken words to move.";
+    return { first: live[0], last: live.at(-1)! };
+  }
+  /** A cursor or pointer spot as a landing place: the nearest word boundary, or (sentences) the nearest sentence boundary. */
+  function spotAt(p: Point, sentences: boolean): Spot | string | null {
+    const word = doc.words[p.w], block = word ? doc.blocks[word.block] : undefined;
+    if (!word || !block) return null;
+    if (block.kind === "voice" || block.kind === "draft") return `Camera words go between camera lines. ${VOICE_LATER}`;
+    if (block.kind !== "camera" || block.piece === undefined) return null;
+    const k = block.words.indexOf(p.w), half = p.o * 2 >= word.text.length && word.text.length > 0;
+    const at = half ? k + 1 : k;  // a boundary, as the index in the paragraph it sits before
+    if (!sentences) return { block: word.block, before: block.words[at] ?? null };
+    const bounds = [0, ...block.words.flatMap((i, n) => n && /[.!?…]["”’)]*$/u.test(doc.words[block.words[n - 1]].text.trim()) ? [n] : []), block.words.length];
+    const best = bounds.reduce((b, n) => Math.abs(n - at) < Math.abs(b - at) ? n : b, bounds[0]);
+    return { block: word.block, before: block.words[best] ?? null };
+  }
+  /** Moves the selected camera words to `spot`: split at word boundaries and a piece move in main, one version. */
+  function moveWords(indices: number[], spot: Spot | string | null) {
+    const source = movable(indices);
+    if (typeof source === "string") { setNote(source); return; }
+    if (typeof spot === "string") { setNote(spot); return; }
+    if (!spot) { setNote("Put the cursor where the words go, then press ⌘V."); return; }
+    if (!owner.current.cutId) { setError("Open an edit before editing its script."); return; }
+    const block = doc.blocks[spot.block], piece = block.piece!;
+    const after = spot.before === null ? undefined : block.words.find(i => i >= spot.before! && !doc.words[i].cut);
+    const liveBefore = after !== undefined && block.words.some(i => i < after && !doc.words[i].cut);
+    const target: { to: number; at?: number } = after === undefined ? { to: piece + 1 } : liveBefore ? { to: piece, at: doc.words[after].s! } : { to: piece };
+    // On the spine (piece, clip seconds): landing at the words' own start or just after them changes nothing; inside them is refused.
+    const liveOf = (p: number) => doc.words.filter(w => w.kind === "camera" && !w.cut && w.piece === p);
+    const firstOwn = liveOf(source.first.piece!)[0] === source.first, next = liveOf(source.last.piece!).find(w => w.s! > source.last.s!);
+    const cmp = (a: { p: number; t: number }, b: { p: number; t: number }) => a.p - b.p || a.t - b.t;
+    const start = { p: source.first.piece!, t: firstOwn ? -Infinity : source.first.s! }, beyond = next ? { p: source.last.piece!, t: next.s! } : { p: source.last.piece! + 1, t: -Infinity };
+    const lands = { p: target.to, t: target.at ?? -Infinity };
+    if (cmp(lands, start) === 0 || cmp(lands, beyond) === 0) { setNote("Those words are already there."); return; }
+    if (cmp(lands, start) > 0 && cmp(lands, beyond) < 0) { setNote("Choose a place outside the words you are moving."); return; }
+    const edit: CutEdit = { kind: "move", piece: source.first.piece!, to: target.to,
+      words: { last: source.last.piece!, s: source.first.s!, e: source.last.e!, ...(target.at !== undefined ? { at: target.at } : {}) } };
+    const from = version;
+    let projected = version;
+    try { projected = projectMove(shoot, version, edit); } catch { /* the save still lands; the document waits for it */ }
+    queue.current!.add({ kind: "edit", label: "Move words", group: "picture", alone: true,
+      project: (draft, e) => projectMove(live.current.shoot, draft, e), build: draft => rebaseWords(edit, from, draft) });
+    selectAfter.current = indices.map(i => doc.words[i]).filter(w => w.kind === "camera" && !w.cut).map(w => `${w.clipId}:${w.s}`);
+    if (projected !== version) publish(projected, false);
+    setHeld(null); setDrop(null); setDragging(null); setDots(null); setError(null);
+    setNote(null);
+  }
+  function holdWords() {
+    const list = selectedNow(), source = movable(list);
+    if (typeof source === "string") { setHeld(null); setNote(source); return; }
+    setHeld(list.map(i => wordKey(doc.words[i]))); setNote(null);
+  }
+
   function fixVoice(fix: { word: string; text: string }[], add: NonNullable<Extract<CutEdit, { kind: "voiceWords" }>["add"]>, label: string) {
     const track = version.titles, lines = version.voiceover?.lines ?? [];
     const takeSource = (file: string) => takes.find(t => t.file === file);
@@ -404,6 +474,16 @@ export function ScriptPanel({ shoot: inputShoot, version: savedVersion, time = 0
     const d = draft;
     if (d) { place({ w: d.first, o: d.end ?? d.caret }, { w: d.first, o: d.caret }); return; }
     if (caretAfter.current) { const p = caretAfter.current; caretAfter.current = null; place(p); }
+    // After a move, the moved words stay selected where they now are.
+    if (selectAfter.current) {
+      const keys = new Set(selectAfter.current), found = doc.words.map((w, i) => w.kind === "camera" && !w.cut && keys.has(`${w.clipId}:${w.s}`) ? i : -1).filter(i => i >= 0);
+      if (found.length) {
+        selectAfter.current = null;
+        const a = { w: found[0], o: 0 }, f = { w: found.at(-1)!, o: doc.words[found.at(-1)!].text.length };
+        place(a, f); setSel({ a, f });
+        host.current?.querySelector?.(`[data-w="${found[0]}"]`)?.scrollIntoView?.({ block: "nearest" });
+      }
+    }
   });
   const selectedNow = () => dots ?? coveredWords(docRef.current, readSelection() ?? sel, shown);
   function type(text: string) {
@@ -459,10 +539,17 @@ export function ScriptPanel({ shoot: inputShoot, version: savedVersion, time = 0
     const key = event.key, meta = event.metaKey || event.ctrlKey;
     lastKey.current = Date.now();
     if (meta && key.toLowerCase() === "z") { event.preventDefault(); event.stopPropagation(); void undo(event.shiftKey); return; }
-    if (meta && (key.toLowerCase() === "x" || key.toLowerCase() === "v")) { event.preventDefault(); setNote(key.toLowerCase() === "x" ? "Moving words comes later. Delete cuts them." : "Pasting comes later. Type to fix a word."); return; }
+    if (meta && key.toLowerCase() === "x") { event.preventDefault(); event.stopPropagation(); commit(); holdWords(); return; }
+    if (meta && key.toLowerCase() === "v") {
+      event.preventDefault(); event.stopPropagation();
+      if (!held) { setNote("Select words and press ⌘X, then put the cursor where they go and press ⌘V."); return; }
+      const p = (readSelection() ?? sel)?.f;
+      moveWords(held, p ? spotAt(p, false) : null); return;
+    }
     if (meta) return;
     if (key === "Escape") {
       if (draftRef.current) { event.preventDefault(); event.stopPropagation(); setDraft(null); caretAfter.current = { w: draftRef.current.first, o: 0 }; return; }
+      if (held || drag.current) { event.preventDefault(); event.stopPropagation(); setHeld(null); setDrop(null); setDragging(null); drag.current = null; setNote(null); return; }
       if (selected.length || bleepMenu) { event.preventDefault(); event.stopPropagation(); setDots(null); setBleepMenu(false); const p = (readSelection() ?? sel)?.f; if (p) place(p); return; }
       host.current?.blur?.(); return;
     }
@@ -482,12 +569,48 @@ export function ScriptPanel({ shoot: inputShoot, version: savedVersion, time = 0
     if ((event.target as HTMLElement | null)?.closest?.("textarea, input, select, button")) { pointer.current = null; return; }
     pointer.current = { x: event.clientX, y: event.clientY, moved: false };
     const dot = (event.target as HTMLElement).closest?.("[data-dot]") as HTMLElement | null;
-    if (dot) { event.preventDefault(); chooseDot(dot); }
+    if (dot) { event.preventDefault(); chooseDot(dot); return; }
+    // SCRIPT2: pressing on selected words starts a drag that moves them; the selection stays as it is.
+    const span = (event.target as HTMLElement).closest?.("[data-w]") as HTMLElement | null, list = selectedNow();
+    if (event.button === 0 && span && !draftRef.current && list.length && list.includes(Number(span.dataset.w))) {
+      event.preventDefault();
+      drag.current = { words: list, x: event.clientX, y: event.clientY, moving: false };
+    }
   }
+  /** The document point under the pointer. */
+  function pointAt(x: number, y: number): Point | null {
+    const probe = (document as Document & { caretRangeFromPoint?: (x: number, y: number) => Range | null }).caretRangeFromPoint?.(x, y);
+    return probe ? pointOf(probe.startContainer, probe.startOffset) : null;
+  }
+  const dragHandlers = useRef({ move: (_e: MouseEvent) => {}, up: (_e: MouseEvent) => {} });
+  dragHandlers.current = {
+    move: event => {
+      const d = drag.current; if (!d) return;
+      if (!d.moving) { if (Math.hypot(event.clientX - d.x, event.clientY - d.y) < 4) return; d.moving = true; setDragging(d.words); setHeld(null); }
+      const p = pointAt(event.clientX, event.clientY), spot = p ? spotAt(p, true) : null;
+      if (typeof spot === "string") { setDrop(null); setNote(spot); return; }
+      setNote(spot ? null : "Drop between sentences of camera speech.");
+      setDrop(prior => prior?.block === spot?.block && prior?.before === spot?.before ? prior : spot);
+    },
+    up: event => {
+      const d = drag.current; drag.current = null;
+      if (!d) return;
+      if (!d.moving) { const p = pointAt(event.clientX, event.clientY); if (p) { place(p); seek(doc.words[p.w]?.start ?? 0); } return; }
+      const p = pointAt(event.clientX, event.clientY), spot = p ? spotAt(p, true) : null;
+      setDragging(null); setDrop(null);
+      if (spot) moveWords(d.words, spot); else setNote(null);
+    },
+  };
+  useEffect(() => {
+    if (typeof document === "undefined" || !document.addEventListener) return;
+    const move = (e: MouseEvent) => dragHandlers.current.move(e), up = (e: MouseEvent) => dragHandlers.current.up(e);
+    document.addEventListener("mousemove", move); document.addEventListener("mouseup", up);
+    return () => { document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); };
+  }, []);
   function onMouseMove(event: React.MouseEvent) { const p = pointer.current; if (p && Math.hypot(event.clientX - p.x, event.clientY - p.y) > 3) p.moved = true; }
   function onMouseUp() {
     const p = pointer.current; pointer.current = null;
-    if (!p || p.moved) return;
+    if (!p || p.moved || drag.current) return;
     const now = readSelection();
     if (now && now.a.w === now.f.w && now.a.o === now.f.o) seek(doc.words[now.f.w]?.start ?? 0);
   }
@@ -550,7 +673,7 @@ export function ScriptPanel({ shoot: inputShoot, version: savedVersion, time = 0
 
   // ------------------------------------------------------------------ render
   const words = useMemo(() => {
-    const d = draft;
+    const d = draft, moving = new Set(dragging ?? held ?? []);
     return doc.blocks.map((block, b) => {
       if (block.kind === "broll") return <p key={block.key} contentEditable={false} data-script-broll className="script-broll">{block.label}</p>;
       if (block.kind === "draft") return <div key={block.key} contentEditable={false} data-script-block={b} data-kind="draft" className="script-para script-voice script-draft">
@@ -571,18 +694,21 @@ export function ScriptPanel({ shoot: inputShoot, version: savedVersion, time = 0
           onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); chooseDot(event.currentTarget); } }} />);
         hiddenRun = [];
       };
+      const bar = <span key="drop" data-script-drop contentEditable={false} aria-hidden="true" className="script-drop" />;
       block.words.forEach((i, k) => {
         const w = doc.words[i];
+        if (drop?.block === b && drop.before === i) items.push(bar);
         if (d && i > d.first && i <= d.last) return;
         if (d && i === d.first) { items.push(<span key={`draft-${i}`} data-draft className="w script-typing">{d.text || "​"}</span>, " "); return; }
         if (w.cut && !showCuts) { hiddenRun.push(i); return; }
         flush(String(i));
-        items.push(<span key={w.key} data-w={i} className={`w${w.cut ? " script-cut" : ""}${w.hidden ? " script-hidden" : ""}${w.added ? " script-added" : ""}`}
+        items.push(<span key={w.key} data-w={i} className={`w${w.cut ? " script-cut" : ""}${w.hidden ? " script-hidden" : ""}${w.added ? " script-added" : ""}${moving.has(i) ? " script-held" : ""}`}
           title={w.cut ? "Cut. Select it and choose Restore to put it back" : w.hidden ? "Left out of the captions" : undefined}>{w.text}</span>);
         // "full" "-time" read as one word, as in captions; other words have a space between them.
         if (k < block.words.length - 1) { const gap = transcriptSeparator(w.text, doc.words[block.words[k + 1]].text); if (gap) items.push(gap); }
       });
       flush("end");
+      if (drop?.block === b && drop.before === null) items.push(bar);
       return <div key={block.key} data-script-block={b} data-kind={block.kind} className={`script-para${voiceBlock ? " script-voice" : ""}${block.tomb ? " script-tomb" : ""}`}>
         <div contentEditable={false} className="script-who">
           {voiceBlock ? <Voice size={14} /> : null}<span>{voiceBlock ? "Voiceover" : `On camera · ${block.label}`}</span>
@@ -597,11 +723,11 @@ export function ScriptPanel({ shoot: inputShoot, version: savedVersion, time = 0
           <button type="button" className="script-chip" onClick={() => { for (const line of block.suspect!) editJob("Listen again", { kind: "voiceWords", relisten: { line } }, version, "other"); setNote("Listening again…"); }}>Listen again</button></p> : null}
       </div>;
     });
-  }, [doc, draft, showCuts, dots, playing, voice?.prompt, voice?.working, voice?.device, voice?.loadingScript, range]);
+  }, [doc, draft, showCuts, dots, playing, voice?.prompt, voice?.working, voice?.device, voice?.loadingScript, range, drop, held, dragging]);
 
   const cutCount = doc.words.filter(w => w.cut).length;
   const camera = selectedLive.some(i => doc.words[i].kind === "camera");
-  const status = error ? null : note ?? (saving ? "Saving…" : selectedLive.length > 1 ? `${selectedLive.length} words selected · Delete cuts them, typing fixes them` : selectedCut.length ? `${selectedCut.length} cut ${selectedCut.length === 1 ? "word" : "words"} selected` : cutCount ? `${cutCount} ${cutCount === 1 ? "word" : "words"} cut · ⌘Z undoes` : "Click a word to put the cursor there");
+  const status = error ? null : note ?? (dragging ? "Drop between sentences to move them · Esc cancels" : held ? `${held.filter(i => !doc.words[i]?.cut).length} ${held.filter(i => !doc.words[i]?.cut).length === 1 ? "word" : "words"} ready to move · Put the cursor where they go and press ⌘V · Esc cancels` : saving ? "Saving…" : selectedLive.length > 1 ? `${selectedLive.length} words selected · Delete cuts them, ⌘X or drag moves them` : selectedCut.length ? `${selectedCut.length} cut ${selectedCut.length === 1 ? "word" : "words"} selected` : cutCount ? `${cutCount} ${cutCount === 1 ? "word" : "words"} cut · ⌘Z undoes` : "Click a word to put the cursor there");
   return <div className={`script-panel${range ? " script-range" : ""}`} data-script-panel data-transcript-panel>
     {voice && !range ? <ScriptRecording voice={voice} root={shoot.root} onTakeOpen={setViewer} /> : null}
     {!viewer ? <>

@@ -1,6 +1,6 @@
 {
  "version": 1,
- "note": "Bundled sound library. CC0 packs, plus sounds made for precut. Whooshes, risers and room tone are synthesised or measured by the app (src/main/sfx.ts, sound-design.ts). The v3 sounds (v3/) come from the precut launch video, 26 Oct: synthesised by Claude or processed from precut's own CC0 v2 sounds, peak-normalised to -1 dBFS as they are.",
+ "note": "Bundled sound library. CC0 packs, plus sounds made for precut. Whooshes, risers and room tone are synthesised or measured by the app (src/main/sfx.ts, sound-design.ts). The v3 sounds (v3/) come from the precut launch video, 26 Oct: synthesised by Claude or processed from precut's own CC0 v2 sounds, peak-normalised to -1 dBFS as they are. PRO3a: role places a sound at its level against the edit's voice (hit, accent, ui, ambience); hitS is where it lands (the onset of its loudest 10 ms), punchDb its loudest 50 ms RMS (dBFS); measured once by qa/PRO3a/manifest-measure.mjs.",
  "sounds": [
   {
    "id": "lib:kenney-impactpunch-heavy-000",
@@ -8,7 +8,10 @@
    "kind": "hit",
    "file": "kenney/impactPunch_heavy_000.ogg",
    "lengthS": 0.649,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "hit",
+   "hitS": 0.025,
+   "punchDb": -8.06
   },
   {
    "id": "lib:kenney-impactpunch-heavy-001",
@@ -16,7 +19,10 @@
    "kind": "hit",
    "file": "kenney/impactPunch_heavy_001.ogg",
    "lengthS": 0.536,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "hit",
+   "hitS": 0.022,
+   "punchDb": -8.21
   },
   {
    "id": "lib:kenney-impactpunch-heavy-002",
@@ -24,7 +30,10 @@
    "kind": "hit",
    "file": "kenney/impactPunch_heavy_002.ogg",
    "lengthS": 0.457,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "hit",
+   "hitS": 0.02,
+   "punchDb": -7.76
   },
   {
    "id": "lib:kenney-impactpunch-heavy-003",
@@ -32,7 +41,10 @@
    "kind": "hit",
    "file": "kenney/impactPunch_heavy_003.ogg",
    "lengthS": 0.474,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "hit",
+   "hitS": 0.02,
+   "punchDb": -8.19
   },
   {
    "id": "lib:kenney-impactpunch-heavy-004",
@@ -40,7 +52,10 @@
    "kind": "hit",
    "file": "kenney/impactPunch_heavy_004.ogg",
    "lengthS": 0.536,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "hit",
+   "hitS": 0.022,
+   "punchDb": -8.17
   },
   {
    "id": "lib:kenney-impactpunch-medium-000",
@@ -48,7 +63,10 @@
    "kind": "hit",
    "file": "kenney/impactPunch_medium_000.ogg",
    "lengthS": 0.431,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "hit",
+   "hitS": 0.02,
+   "punchDb": -8.56
   },
   {
    "id": "lib:kenney-impactpunch-medium-001",
@@ -56,7 +74,10 @@
    "kind": "hit",
    "file": "kenney/impactPunch_medium_001.ogg",
    "lengthS": 0.405,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "hit",
+   "hitS": 0.018,
+   "punchDb": -8.45
   },
   {
    "id": "lib:kenney-impactpunch-medium-002",
@@ -64,7 +85,10 @@
    "kind": "hit",
    "file": "kenney/impactPunch_medium_002.ogg",
    "lengthS": 0.541,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "hit",
+   "hitS": 0.024,
+   "punchDb": -9.17
   },
   {
    "id": "lib:kenney-impactpunch-medium-003",
@@ -72,7 +96,10 @@
    "kind": "hit",
    "file": "kenney/impactPunch_medium_003.ogg",
    "lengthS": 0.455,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "hit",
+   "hitS": 0.02,
+   "punchDb": -9.27
   },
   {
    "id": "lib:kenney-impactpunch-medium-004",
@@ -80,7 +107,10 @@
    "kind": "hit",
    "file": "kenney/impactPunch_medium_004.ogg",
    "lengthS": 0.543,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "hit",
+   "hitS": 0.024,
+   "punchDb": -9.04
   },
   {
    "id": "lib:kenney-impactsoft-heavy-000",
@@ -88,7 +118,10 @@
    "kind": "impact",
    "file": "kenney/impactSoft_heavy_000.ogg",
    "lengthS": 0.505,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "hit",
+   "hitS": 0,
+   "punchDb": -8
   },
   {
    "id": "lib:kenney-impactsoft-heavy-001",
@@ -96,7 +129,10 @@
    "kind": "impact",
    "file": "kenney/impactSoft_heavy_001.ogg",
    "lengthS": 0.572,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "hit",
+   "hitS": 0,
+   "punchDb": -7.85
   },
   {
    "id": "lib:kenney-impactsoft-heavy-002",
@@ -104,7 +140,10 @@
    "kind": "impact",
    "file": "kenney/impactSoft_heavy_002.ogg",
    "lengthS": 0.572,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "hit",
+   "hitS": 0,
+   "punchDb": -7.56
   },
   {
    "id": "lib:kenney-impactsoft-heavy-003",
@@ -112,7 +151,10 @@
    "kind": "impact",
    "file": "kenney/impactSoft_heavy_003.ogg",
    "lengthS": 0.544,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "hit",
+   "hitS": 0,
+   "punchDb": -7.13
   },
   {
    "id": "lib:kenney-impactsoft-heavy-004",
@@ -120,7 +162,10 @@
    "kind": "impact",
    "file": "kenney/impactSoft_heavy_004.ogg",
    "lengthS": 0.501,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "hit",
+   "hitS": 0,
+   "punchDb": -7.63
   },
   {
    "id": "lib:kenney-impactsoft-medium-000",
@@ -128,7 +173,10 @@
    "kind": "impact",
    "file": "kenney/impactSoft_medium_000.ogg",
    "lengthS": 0.118,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "accent",
+   "hitS": 0,
+   "punchDb": -10.64
   },
   {
    "id": "lib:kenney-impactsoft-medium-001",
@@ -136,7 +184,10 @@
    "kind": "impact",
    "file": "kenney/impactSoft_medium_001.ogg",
    "lengthS": 0.183,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "accent",
+   "hitS": 0,
+   "punchDb": -9.34
   },
   {
    "id": "lib:kenney-impactsoft-medium-002",
@@ -144,7 +195,10 @@
    "kind": "impact",
    "file": "kenney/impactSoft_medium_002.ogg",
    "lengthS": 0.135,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "accent",
+   "hitS": 0,
+   "punchDb": -9.93
   },
   {
    "id": "lib:kenney-impactsoft-medium-003",
@@ -152,7 +206,10 @@
    "kind": "impact",
    "file": "kenney/impactSoft_medium_003.ogg",
    "lengthS": 0.14,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "accent",
+   "hitS": 0,
+   "punchDb": -9.89
   },
   {
    "id": "lib:kenney-impactsoft-medium-004",
@@ -160,7 +217,10 @@
    "kind": "impact",
    "file": "kenney/impactSoft_medium_004.ogg",
    "lengthS": 0.147,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "accent",
+   "hitS": 0,
+   "punchDb": -9.89
   },
   {
    "id": "lib:kenney-click-001",
@@ -168,7 +228,10 @@
    "kind": "ui",
    "file": "kenney/click_001.ogg",
    "lengthS": 0.1,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "ui",
+   "hitS": 0,
+   "punchDb": -26.53
   },
   {
    "id": "lib:kenney-click-002",
@@ -176,7 +239,10 @@
    "kind": "ui",
    "file": "kenney/click_002.ogg",
    "lengthS": 0.01,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "ui",
+   "hitS": 0,
+   "punchDb": -19.18
   },
   {
    "id": "lib:kenney-click-003",
@@ -184,7 +250,10 @@
    "kind": "ui",
    "file": "kenney/click_003.ogg",
    "lengthS": 0.01,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "ui",
+   "hitS": 0,
+   "punchDb": -17.59
   },
   {
    "id": "lib:kenney-click-004",
@@ -192,7 +261,10 @@
    "kind": "ui",
    "file": "kenney/click_004.ogg",
    "lengthS": 0.01,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "ui",
+   "hitS": 0,
+   "punchDb": -21.69
   },
   {
    "id": "lib:kenney-click-005",
@@ -200,7 +272,10 @@
    "kind": "ui",
    "file": "kenney/click_005.ogg",
    "lengthS": 0.01,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "ui",
+   "hitS": 0,
+   "punchDb": -14.57
   },
   {
    "id": "lib:kenney-confirmation-001",
@@ -208,7 +283,10 @@
    "kind": "ui",
    "file": "kenney/confirmation_001.ogg",
    "lengthS": 0.29,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "ui",
+   "hitS": 0,
+   "punchDb": -9.36
   },
   {
    "id": "lib:kenney-confirmation-002",
@@ -216,7 +294,10 @@
    "kind": "ui",
    "file": "kenney/confirmation_002.ogg",
    "lengthS": 0.539,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "ui",
+   "hitS": 0,
+   "punchDb": -10.4
   },
   {
    "id": "lib:kenney-confirmation-003",
@@ -224,7 +305,10 @@
    "kind": "ui",
    "file": "kenney/confirmation_003.ogg",
    "lengthS": 0.322,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "ui",
+   "hitS": 0,
+   "punchDb": -10.92
   },
   {
    "id": "lib:kenney-confirmation-004",
@@ -232,7 +316,10 @@
    "kind": "ui",
    "file": "kenney/confirmation_004.ogg",
    "lengthS": 0.49,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "ui",
+   "hitS": 0.117,
+   "punchDb": -7.88
   },
   {
    "id": "lib:kenney-drop-001",
@@ -240,7 +327,10 @@
    "kind": "pop",
    "file": "kenney/drop_001.ogg",
    "lengthS": 0.11,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "accent",
+   "hitS": 0,
+   "punchDb": -16.97
   },
   {
    "id": "lib:kenney-drop-002",
@@ -248,7 +338,10 @@
    "kind": "pop",
    "file": "kenney/drop_002.ogg",
    "lengthS": 0.191,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "accent",
+   "hitS": 0,
+   "punchDb": -14.02
   },
   {
    "id": "lib:kenney-drop-003",
@@ -256,7 +349,10 @@
    "kind": "pop",
    "file": "kenney/drop_003.ogg",
    "lengthS": 0.191,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "accent",
+   "hitS": 0,
+   "punchDb": -13.86
   },
   {
    "id": "lib:kenney-drop-004",
@@ -264,7 +360,10 @@
    "kind": "pop",
    "file": "kenney/drop_004.ogg",
    "lengthS": 0.287,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "accent",
+   "hitS": 0,
+   "punchDb": -13.16
   },
   {
    "id": "lib:kenney-glitch-001",
@@ -272,7 +371,10 @@
    "kind": "ui",
    "file": "kenney/glitch_001.ogg",
    "lengthS": 0.02,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "ui",
+   "hitS": 0,
+   "punchDb": -9.79
   },
   {
    "id": "lib:kenney-glitch-002",
@@ -280,7 +382,10 @@
    "kind": "ui",
    "file": "kenney/glitch_002.ogg",
    "lengthS": 0.03,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "ui",
+   "hitS": 0,
+   "punchDb": -13.67
   },
   {
    "id": "lib:kenney-glitch-003",
@@ -288,7 +393,10 @@
    "kind": "ui",
    "file": "kenney/glitch_003.ogg",
    "lengthS": 0.01,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "ui",
+   "hitS": 0,
+   "punchDb": -12.24
   },
   {
    "id": "lib:kenney-glitch-004",
@@ -296,7 +404,10 @@
    "kind": "ui",
    "file": "kenney/glitch_004.ogg",
    "lengthS": 0.023,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "ui",
+   "hitS": 0,
+   "punchDb": -15.58
   },
   {
    "id": "lib:kenney-maximize-001",
@@ -304,7 +415,10 @@
    "kind": "pop",
    "file": "kenney/maximize_001.ogg",
    "lengthS": 0.258,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "accent",
+   "hitS": 0.227,
+   "punchDb": -10.57
   },
   {
    "id": "lib:kenney-maximize-002",
@@ -312,7 +426,10 @@
    "kind": "pop",
    "file": "kenney/maximize_002.ogg",
    "lengthS": 0.258,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "accent",
+   "hitS": 0.225,
+   "punchDb": -7.95
   },
   {
    "id": "lib:kenney-maximize-003",
@@ -320,7 +437,10 @@
    "kind": "pop",
    "file": "kenney/maximize_003.ogg",
    "lengthS": 0.212,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "accent",
+   "hitS": 0.147,
+   "punchDb": -18.69
   },
   {
    "id": "lib:kenney-maximize-004",
@@ -328,7 +448,10 @@
    "kind": "pop",
    "file": "kenney/maximize_004.ogg",
    "lengthS": 0.418,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "accent",
+   "hitS": 0.358,
+   "punchDb": -11.08
   },
   {
    "id": "lib:kenney-maximize-005",
@@ -336,7 +459,10 @@
    "kind": "pop",
    "file": "kenney/maximize_005.ogg",
    "lengthS": 0.526,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "accent",
+   "hitS": 0.465,
+   "punchDb": -10.31
   },
   {
    "id": "lib:kenney-maximize-006",
@@ -344,7 +470,10 @@
    "kind": "pop",
    "file": "kenney/maximize_006.ogg",
    "lengthS": 0.38,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "accent",
+   "hitS": 0.059,
+   "punchDb": -11.67
   },
   {
    "id": "lib:kenney-maximize-007",
@@ -352,7 +481,10 @@
    "kind": "pop",
    "file": "kenney/maximize_007.ogg",
    "lengthS": 0.186,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "accent",
+   "hitS": 0,
+   "punchDb": -11.43
   },
   {
    "id": "lib:kenney-maximize-008",
@@ -360,7 +492,10 @@
    "kind": "pop",
    "file": "kenney/maximize_008.ogg",
    "lengthS": 0.225,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "accent",
+   "hitS": 0.143,
+   "punchDb": -10.75
   },
   {
    "id": "lib:kenney-maximize-009",
@@ -368,7 +503,10 @@
    "kind": "pop",
    "file": "kenney/maximize_009.ogg",
    "lengthS": 0.225,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "accent",
+   "hitS": 0.015,
+   "punchDb": -9.83
   },
   {
    "id": "lib:kenney-minimize-001",
@@ -376,7 +514,10 @@
    "kind": "pop",
    "file": "kenney/minimize_001.ogg",
    "lengthS": 0.258,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "accent",
+   "hitS": 0,
+   "punchDb": -11.75
   },
   {
    "id": "lib:kenney-minimize-002",
@@ -384,7 +525,10 @@
    "kind": "pop",
    "file": "kenney/minimize_002.ogg",
    "lengthS": 0.258,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "accent",
+   "hitS": 0,
+   "punchDb": -9.1
   },
   {
    "id": "lib:kenney-minimize-003",
@@ -392,7 +536,10 @@
    "kind": "pop",
    "file": "kenney/minimize_003.ogg",
    "lengthS": 0.212,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "accent",
+   "hitS": 0.009,
+   "punchDb": -18.69
   },
   {
    "id": "lib:kenney-minimize-004",
@@ -400,7 +547,10 @@
    "kind": "pop",
    "file": "kenney/minimize_004.ogg",
    "lengthS": 0.418,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "accent",
+   "hitS": 0.037,
+   "punchDb": -11.08
   },
   {
    "id": "lib:kenney-minimize-005",
@@ -408,7 +558,10 @@
    "kind": "pop",
    "file": "kenney/minimize_005.ogg",
    "lengthS": 0.526,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "accent",
+   "hitS": 0.034,
+   "punchDb": -10.32
   },
   {
    "id": "lib:kenney-minimize-006",
@@ -416,7 +569,10 @@
    "kind": "pop",
    "file": "kenney/minimize_006.ogg",
    "lengthS": 0.38,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "accent",
+   "hitS": 0.299,
+   "punchDb": -11.68
   },
   {
    "id": "lib:kenney-minimize-007",
@@ -424,7 +580,10 @@
    "kind": "pop",
    "file": "kenney/minimize_007.ogg",
    "lengthS": 0.186,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "accent",
+   "hitS": 0.17,
+   "punchDb": -10.03
   },
   {
    "id": "lib:kenney-minimize-008",
@@ -432,7 +591,10 @@
    "kind": "pop",
    "file": "kenney/minimize_008.ogg",
    "lengthS": 0.225,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "accent",
+   "hitS": 0.064,
+   "punchDb": -10.77
   },
   {
    "id": "lib:kenney-minimize-009",
@@ -440,7 +602,10 @@
    "kind": "pop",
    "file": "kenney/minimize_009.ogg",
    "lengthS": 0.225,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "accent",
+   "hitS": 0.184,
+   "punchDb": -9.39
   },
   {
    "id": "lib:kenney-pluck-001",
@@ -448,7 +613,10 @@
    "kind": "pop",
    "file": "kenney/pluck_001.ogg",
    "lengthS": 0.102,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "accent",
+   "hitS": 0,
+   "punchDb": -17.47
   },
   {
    "id": "lib:kenney-pluck-002",
@@ -456,7 +624,10 @@
    "kind": "pop",
    "file": "kenney/pluck_002.ogg",
    "lengthS": 0.165,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "accent",
+   "hitS": 0,
+   "punchDb": -16.72
   },
   {
    "id": "lib:kenney-tick-001",
@@ -464,7 +635,10 @@
    "kind": "ui",
    "file": "kenney/tick_001.ogg",
    "lengthS": 0.023,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "ui",
+   "hitS": 0,
+   "punchDb": -24.78
   },
   {
    "id": "lib:kenney-tick-002",
@@ -472,7 +646,10 @@
    "kind": "ui",
    "file": "kenney/tick_002.ogg",
    "lengthS": 0.023,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "ui",
+   "hitS": 0,
+   "punchDb": -19.86
   },
   {
    "id": "lib:kenney-tick-004",
@@ -480,7 +657,10 @@
    "kind": "ui",
    "file": "kenney/tick_004.ogg",
    "lengthS": 0.055,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "ui",
+   "hitS": 0.043,
+   "punchDb": -15.57
   },
   {
    "id": "lib:kenney-toggle-001",
@@ -488,7 +668,10 @@
    "kind": "ui",
    "file": "kenney/toggle_001.ogg",
    "lengthS": 0.139,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "ui",
+   "hitS": 0,
+   "punchDb": -12.94
   },
   {
    "id": "lib:kenney-toggle-002",
@@ -496,7 +679,10 @@
    "kind": "ui",
    "file": "kenney/toggle_002.ogg",
    "lengthS": 0.139,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "ui",
+   "hitS": 0,
+   "punchDb": -10.99
   },
   {
    "id": "lib:kenney-toggle-003",
@@ -504,7 +690,10 @@
    "kind": "ui",
    "file": "kenney/toggle_003.ogg",
    "lengthS": 0.139,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "ui",
+   "hitS": 0,
+   "punchDb": -13.21
   },
   {
    "id": "lib:kenney-toggle-004",
@@ -512,15 +701,21 @@
    "kind": "ui",
    "file": "kenney/toggle_004.ogg",
    "lengthS": 0.066,
-   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds"
+   "licence": "CC0 1.0, Kenney (kenney.nl), Impact Sounds / Interface Sounds",
+   "role": "ui",
+   "hitS": 0,
+   "punchDb": -18.28
   },
   {
    "id": "lib:v3-boom",
    "name": "deep boom",
    "kind": "impact",
    "file": "v3/v3-boom.wav",
-   "lengthS": 3.0,
-   "licence": "Made for precut by sidething, shipped with precut. Synthesised by Claude for the precut launch video; peak-normalised to -1 dBFS."
+   "lengthS": 3,
+   "licence": "Made for precut by sidething, shipped with precut. Synthesised by Claude for the precut launch video; peak-normalised to -1 dBFS.",
+   "role": "hit",
+   "hitS": 0.032,
+   "punchDb": -3.29
   },
   {
    "id": "lib:v3-clean",
@@ -528,7 +723,10 @@
    "kind": "other",
    "file": "v3/v3-clean.wav",
    "lengthS": 0.6,
-   "licence": "Made for precut by sidething, shipped with precut. Synthesised by Claude for the precut launch video; peak-normalised to -1 dBFS."
+   "licence": "Made for precut by sidething, shipped with precut. Synthesised by Claude for the precut launch video; peak-normalised to -1 dBFS.",
+   "role": "accent",
+   "hitS": 0,
+   "punchDb": -20.4
   },
   {
    "id": "lib:v3-click",
@@ -536,7 +734,10 @@
    "kind": "ui",
    "file": "v3/v3-click.wav",
    "lengthS": 0.06,
-   "licence": "Made for precut by sidething, shipped with precut. Synthesised by Claude for the precut launch video; peak-normalised to -1 dBFS."
+   "licence": "Made for precut by sidething, shipped with precut. Synthesised by Claude for the precut launch video; peak-normalised to -1 dBFS.",
+   "role": "ui",
+   "hitS": 0,
+   "punchDb": -20.4
   },
   {
    "id": "lib:v3-hit",
@@ -544,7 +745,10 @@
    "kind": "hit",
    "file": "v3/v3-hit.wav",
    "lengthS": 0.48,
-   "licence": "Made for precut by sidething, shipped with precut. Processed from precut's own CC0 v2 sounds for the precut launch video; peak-normalised to -1 dBFS."
+   "licence": "Made for precut by sidething, shipped with precut. Processed from precut's own CC0 v2 sounds for the precut launch video; peak-normalised to -1 dBFS.",
+   "role": "hit",
+   "hitS": 0,
+   "punchDb": -7.37
   },
   {
    "id": "lib:v3-impact-dark",
@@ -552,7 +756,10 @@
    "kind": "impact",
    "file": "v3/v3-impact-dark.wav",
    "lengthS": 0.9,
-   "licence": "Made for precut by sidething, shipped with precut. Processed from precut's own CC0 v2 sounds for the precut launch video; peak-normalised to -1 dBFS."
+   "licence": "Made for precut by sidething, shipped with precut. Processed from precut's own CC0 v2 sounds for the precut launch video; peak-normalised to -1 dBFS.",
+   "role": "hit",
+   "hitS": 0,
+   "punchDb": -7.28
   },
   {
    "id": "lib:v3-impact",
@@ -560,7 +767,10 @@
    "kind": "impact",
    "file": "v3/v3-impact.wav",
    "lengthS": 0.9,
-   "licence": "Made for precut by sidething, shipped with precut. Processed from precut's own CC0 v2 sounds for the precut launch video; peak-normalised to -1 dBFS."
+   "licence": "Made for precut by sidething, shipped with precut. Processed from precut's own CC0 v2 sounds for the precut launch video; peak-normalised to -1 dBFS.",
+   "role": "hit",
+   "hitS": 0,
+   "punchDb": -7.37
   },
   {
    "id": "lib:v3-keys",
@@ -568,7 +778,10 @@
    "kind": "ui",
    "file": "v3/v3-keys.wav",
    "lengthS": 0.42,
-   "licence": "Made for precut by sidething, shipped with precut. Synthesised by Claude for the precut launch video; peak-normalised to -1 dBFS."
+   "licence": "Made for precut by sidething, shipped with precut. Synthesised by Claude for the precut launch video; peak-normalised to -1 dBFS.",
+   "role": "ui",
+   "hitS": 0.114,
+   "punchDb": -23.49
   },
   {
    "id": "lib:v3-land",
@@ -576,7 +789,10 @@
    "kind": "hit",
    "file": "v3/v3-land.wav",
    "lengthS": 0.16,
-   "licence": "Made for precut by sidething, shipped with precut. Synthesised by Claude for the precut launch video; peak-normalised to -1 dBFS."
+   "licence": "Made for precut by sidething, shipped with precut. Synthesised by Claude for the precut launch video; peak-normalised to -1 dBFS.",
+   "role": "accent",
+   "hitS": 0,
+   "punchDb": -7.48
   },
   {
    "id": "lib:v3-launch",
@@ -584,7 +800,10 @@
    "kind": "whoosh",
    "file": "v3/v3-launch.wav",
    "lengthS": 0.5,
-   "licence": "Made for precut by sidething, shipped with precut. Synthesised by Claude for the precut launch video; peak-normalised to -1 dBFS."
+   "licence": "Made for precut by sidething, shipped with precut. Synthesised by Claude for the precut launch video; peak-normalised to -1 dBFS.",
+   "role": "accent",
+   "hitS": 0.085,
+   "punchDb": -11.64
   },
   {
    "id": "lib:v3-pop",
@@ -592,7 +811,10 @@
    "kind": "pop",
    "file": "v3/v3-pop.wav",
    "lengthS": 0.22,
-   "licence": "Made for precut by sidething, shipped with precut. Processed from precut's own CC0 v2 sounds for the precut launch video; peak-normalised to -1 dBFS."
+   "licence": "Made for precut by sidething, shipped with precut. Processed from precut's own CC0 v2 sounds for the precut launch video; peak-normalised to -1 dBFS.",
+   "role": "accent",
+   "hitS": 0,
+   "punchDb": -10.3
   },
   {
    "id": "lib:v3-riser",
@@ -600,7 +822,10 @@
    "kind": "riser",
    "file": "v3/v3-riser.wav",
    "lengthS": 3.333,
-   "licence": "Made for precut by sidething, shipped with precut. Synthesised by Claude for the precut launch video; peak-normalised to -1 dBFS."
+   "licence": "Made for precut by sidething, shipped with precut. Synthesised by Claude for the precut launch video; peak-normalised to -1 dBFS.",
+   "role": "accent",
+   "hitS": 3.039,
+   "punchDb": -3.63
   },
   {
    "id": "lib:v3-rush",
@@ -608,7 +833,10 @@
    "kind": "whoosh",
    "file": "v3/v3-rush.wav",
    "lengthS": 0.75,
-   "licence": "Made for precut by sidething, shipped with precut. Synthesised by Claude for the precut launch video; peak-normalised to -1 dBFS."
+   "licence": "Made for precut by sidething, shipped with precut. Synthesised by Claude for the precut launch video; peak-normalised to -1 dBFS.",
+   "role": "accent",
+   "hitS": 0.28,
+   "punchDb": -11.94
   },
   {
    "id": "lib:v3-shutter",
@@ -616,15 +844,21 @@
    "kind": "ui",
    "file": "v3/v3-shutter.wav",
    "lengthS": 0.16,
-   "licence": "Made for precut by sidething, shipped with precut. Synthesised by Claude for the precut launch video; peak-normalised to -1 dBFS."
+   "licence": "Made for precut by sidething, shipped with precut. Synthesised by Claude for the precut launch video; peak-normalised to -1 dBFS.",
+   "role": "ui",
+   "hitS": 0,
+   "punchDb": -22.29
   },
   {
    "id": "lib:v3-slam",
    "name": "slam",
    "kind": "impact",
    "file": "v3/v3-slam.wav",
-   "lengthS": 1.0,
-   "licence": "Made for precut by sidething, shipped with precut. Synthesised by Claude for the precut launch video; peak-normalised to -1 dBFS."
+   "lengthS": 1,
+   "licence": "Made for precut by sidething, shipped with precut. Synthesised by Claude for the precut launch video; peak-normalised to -1 dBFS.",
+   "role": "hit",
+   "hitS": 0.101,
+   "punchDb": -2.99
   },
   {
    "id": "lib:v3-subdrop",
@@ -632,7 +866,10 @@
    "kind": "impact",
    "file": "v3/v3-subdrop.wav",
    "lengthS": 1.8,
-   "licence": "Made for precut by sidething, shipped with precut. Synthesised by Claude for the precut launch video; peak-normalised to -1 dBFS."
+   "licence": "Made for precut by sidething, shipped with precut. Synthesised by Claude for the precut launch video; peak-normalised to -1 dBFS.",
+   "role": "hit",
+   "hitS": 0.007,
+   "punchDb": -3.19
   },
   {
    "id": "lib:v3-swish",
@@ -640,7 +877,10 @@
    "kind": "whoosh",
    "file": "v3/v3-swish.wav",
    "lengthS": 0.44,
-   "licence": "Made for precut by sidething, shipped with precut. Processed from precut's own CC0 v2 sounds for the precut launch video; peak-normalised to -1 dBFS."
+   "licence": "Made for precut by sidething, shipped with precut. Processed from precut's own CC0 v2 sounds for the precut launch video; peak-normalised to -1 dBFS.",
+   "role": "accent",
+   "hitS": 0.221,
+   "punchDb": -13.48
   },
   {
    "id": "lib:v3-thud",
@@ -648,7 +888,10 @@
    "kind": "hit",
    "file": "v3/v3-thud.wav",
    "lengthS": 0.9,
-   "licence": "Made for precut by sidething, shipped with precut. Synthesised by Claude for the precut launch video; peak-normalised to -1 dBFS."
+   "licence": "Made for precut by sidething, shipped with precut. Synthesised by Claude for the precut launch video; peak-normalised to -1 dBFS.",
+   "role": "hit",
+   "hitS": 0,
+   "punchDb": -3.25
   },
   {
    "id": "lib:v3-tick",
@@ -656,15 +899,21 @@
    "kind": "ui",
    "file": "v3/v3-tick.wav",
    "lengthS": 0.09,
-   "licence": "Made for precut by sidething, shipped with precut. Synthesised by Claude for the precut launch video; peak-normalised to -1 dBFS."
+   "licence": "Made for precut by sidething, shipped with precut. Synthesised by Claude for the precut launch video; peak-normalised to -1 dBFS.",
+   "role": "ui",
+   "hitS": 0,
+   "punchDb": -16.23
   },
   {
    "id": "lib:v3-timestop",
    "name": "time stop",
    "kind": "other",
    "file": "v3/v3-timestop.wav",
-   "lengthS": 1.0,
-   "licence": "Made for precut by sidething, shipped with precut. Synthesised by Claude for the precut launch video; peak-normalised to -1 dBFS."
+   "lengthS": 1,
+   "licence": "Made for precut by sidething, shipped with precut. Synthesised by Claude for the precut launch video; peak-normalised to -1 dBFS.",
+   "role": "accent",
+   "hitS": 0,
+   "punchDb": -4.48
   },
   {
    "id": "lib:v3-turn",
@@ -672,7 +921,10 @@
    "kind": "whoosh",
    "file": "v3/v3-turn.wav",
    "lengthS": 0.62,
-   "licence": "Made for precut by sidething, shipped with precut. Synthesised by Claude for the precut launch video; peak-normalised to -1 dBFS."
+   "licence": "Made for precut by sidething, shipped with precut. Synthesised by Claude for the precut launch video; peak-normalised to -1 dBFS.",
+   "role": "accent",
+   "hitS": 0.484,
+   "punchDb": -13.8
   },
   {
    "id": "lib:v3-whip",
@@ -680,7 +932,10 @@
    "kind": "whoosh",
    "file": "v3/v3-whip.wav",
    "lengthS": 0.24,
-   "licence": "Made for precut by sidething, shipped with precut. Synthesised by Claude for the precut launch video; peak-normalised to -1 dBFS."
+   "licence": "Made for precut by sidething, shipped with precut. Synthesised by Claude for the precut launch video; peak-normalised to -1 dBFS.",
+   "role": "accent",
+   "hitS": 0.053,
+   "punchDb": -13.74
   },
   {
    "id": "lib:v3-whoosh",
@@ -688,7 +943,10 @@
    "kind": "whoosh",
    "file": "v3/v3-whoosh.wav",
    "lengthS": 0.688,
-   "licence": "Made for precut by sidething, shipped with precut. Processed from precut's own CC0 v2 sounds for the precut launch video; peak-normalised to -1 dBFS."
+   "licence": "Made for precut by sidething, shipped with precut. Processed from precut's own CC0 v2 sounds for the precut launch video; peak-normalised to -1 dBFS.",
+   "role": "accent",
+   "hitS": 0.462,
+   "punchDb": -13.34
   }
  ]
 }

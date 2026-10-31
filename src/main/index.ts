@@ -2,6 +2,7 @@ import { enableAppWriter, savesPending, savesSettled } from "./writer-lock";
 import { app, BrowserWindow, nativeTheme, Notification, powerMonitor, session, shell } from "electron";
 import { governor } from "./resource-governor";
 import { join, resolve as resolvePath } from "node:path";
+import { bundledFile, checkoutFile } from "./bundle-paths";
 import fs from "node:fs";
 import { execFile } from "node:child_process";
 import { registerIpc } from "./ipc";
@@ -134,7 +135,7 @@ function createWindow(): void {
       visualEffectState: "followWindow" as const,
     } : {}),
     webPreferences: {
-      preload: join(__dirname, "../preload/index.mjs"),
+      preload: bundledFile("../preload/index.mjs"),
       sandbox: false,
       backgroundThrottling: !qaBackground,
     },
@@ -153,7 +154,7 @@ function createWindow(): void {
   if (process.env["ELECTRON_RENDERER_URL"]) {
     void win.loadURL(process.env["ELECTRON_RENDERER_URL"]).catch(error => reportRuntimeFailure("Opening window", error));
   } else {
-    void win.loadFile(join(__dirname, "../renderer/index.html")).catch(error => reportRuntimeFailure("Opening window", error));
+    void win.loadFile(bundledFile("../renderer/index.html")).catch(error => reportRuntimeFailure("Opening window", error));
   }
 }
 
@@ -196,7 +197,7 @@ function notifyStageFailure(root: string, stage: ProcessingStageId): void {
   void (async () => {
     if ((await getPreferences()).notifications === false || BrowserWindow.getFocusedWindow() || !Notification.isSupported()) return;
     const icon = app.isPackaged ? join(process.resourcesPath, "icon.icns")
-      : join(__dirname, "../../build/icon-source/precut-icon-1024.png");
+      : checkoutFile("build/icon-source/precut-icon-1024.png");
     const notification = new Notification({ title: "precut", body: `${STAGE_FAILED_TEXT[stage]} Open precut to retry.`, icon });
     notifications.add(notification);
     notification.on("click", () => { notifications.delete(notification); focusActivity(`#/clips?shoot=${encodeURIComponent(root)}`); });
@@ -218,7 +219,7 @@ setActivityCompletionHandler(activity => {
     if ((await getPreferences()).notifications === false || BrowserWindow.getFocusedWindow() || !Notification.isSupported()) return;
     // Installed builds use the bundled panda; development uses its PNG source.
     const icon = app.isPackaged ? join(process.resourcesPath, "icon.icns")
-      : join(__dirname, "../../build/icon-source/precut-icon-1024.png");
+      : checkoutFile("build/icon-source/precut-icon-1024.png");
     const notification = new Notification({ title: "precut", body: activityNotificationBody(activity), icon });
     notifications.add(notification);
     notification.on("click", () => { notifications.delete(notification); focusActivity(activityHash(activity)); });
@@ -307,7 +308,7 @@ app.whenReady().then(async () => {
   // A development run is the Electron binary: give the Dock our name and the panda.
   if (!app.isPackaged && process.platform === "darwin") {
     app.setName("precut");
-    const icon = join(__dirname, "../../build/icon-source/precut-icon-1024.png");
+    const icon = checkoutFile("build/icon-source/precut-icon-1024.png");
     if (fs.existsSync(icon) && !qaBackground) app.dock?.setIcon(icon);
   }
   await pathReady;

@@ -13,8 +13,10 @@ export interface TemplateInfo {
   frame: "overlay" | "full"; widthPx: number; heightPx: number; durationS: number; params: TemplateParam[];
 }
 type Params = Record<string, unknown>;
-type Built = { html: string; css: string; js?: string };
-interface Template extends TemplateInfo { build(p: Params, theme: GraphicTheme, durationS: number): Built }
+// A starter may size its own frame from its params (a card takes its picture's shape).
+type Built = { html: string; css: string; js?: string; size?: { widthPx: number; heightPx: number }; media?: string };
+// hidden: made only by its own tool (add_card), never offered as a starter, so its checks can't be skipped.
+interface Template extends TemplateInfo { hidden?: boolean; build(p: Params, theme: GraphicTheme, durationS: number): Built }
 
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
@@ -40,8 +42,51 @@ function data(p: Params, fallback: [string, number][], max = 8): [string, number
 }
 const fmt = (n: number) => (Math.round(n * 100) / 100).toString();
 
+// ---- PRO4: the card's numbers, shared with add_card and the director.
+export const CARD_TEMPLATE = "screen-card";
+/** The picture lives once in the html (the <img>); its params carry this marker instead, and graphicSource puts it back.
+ * PRO4b: a card made now carries no picture at all: its params and the graphic name the picture's media handle in the
+ * shoot's own cache (CARD_MEDIA), and the title page puts that one picture in when it draws the card. Old cards keep
+ * their inline picture. */
+const CARD_IMAGE_REF = "@shot";
+// PRO4b: a card made by add_card names its picture by a media handle instead of carrying it: a content-named file in
+// that shoot's own cache (<root>/.sidething/overlays/card-<hash>.webp). The name is the whole handle (no path, no
+// scheme) and the html shows it in exactly one place; the title page draws that one file in (sanitize.ts checks it).
+export const CARD_MEDIA = /^card-[a-f0-9]{32}\.webp$/;
+export const CARD_MEDIA_SRC = "#card-media";
+const CARD_IMAGE = /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/;
+export const CARD_MOTION = {
+  side: 1400,                                                   // the card's longer side in design px
+  springDamping: 24, springStiffness: 340, springMass: 0.45,    // the launch video's SNAP (ActThree.tsx)
+  tilt: { x: 16, y: 11, scale: 0.1, drop: 0.05 },               // degrees about x and y, scale and drop (of its height) it settles from
+  holdS: 0.42,                                                  // flat and still before the push starts
+  pushMax: 1.5,                                                 // the push never goes further in than this
+  popS: 4 / 30, popFrom: 1.4,                                   // the stamp: 1.4 to 1 over 4 frames at 30 fps (kit.tsx ClipTile)
+  exitS: 0.3,                                                   // an eased exit; a cut exit has none
+  imageChars: 56_000,                                           // an old card's inline picture, inside the 60 KB html a graphic may have
+  pictureSide: 4096,                                            // PRO4b: a card's picture (a media handle) at full resolution, up to this side
+  stampWords: 4, stampChars: 28,
+} as const;
+/** x, y, w, h as fractions, kept inside the picture; null when it isn't a box. */
+export function cardBox(v: unknown): [number, number, number, number] | null {
+  if (!Array.isArray(v) || v.length !== 4 || !v.every(n => typeof n === "number" && Number.isFinite(n))) return null;
+  const x = clamp(v[0], 0, 0.995), y = clamp(v[1], 0, 0.995);
+  return [x, y, clamp(v[2], 0.005, 1 - x), clamp(v[3], 0.005, 1 - y)].map(n => Math.round(n * 10000) / 10000) as [number, number, number, number];
+}
+/** The stamp as it is shown: one short line in sentence case (its words are checked against what he says by add_card). */
+export function cardStamp(v: unknown): string {
+  const text = typeof v === "string" ? v.replace(/\s+/g, " ").trim().replace(/^["'“‘]+|["'”’.,;:!?]+$/g, "") : "";
+  if (!text) return "";
+  const short = text.split(" ").slice(0, CARD_MOTION.stampWords).join(" ").slice(0, CARD_MOTION.stampChars);
+  return /^[a-z][^A-Z]/.test(short) || /^[a-z]$/.test(short) ? short[0].toUpperCase() + short.slice(1) : short;
+}
+function luminance(hex: string): number {
+  const [r, g, b] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255).map(c => c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
 /** The css every starter shares: tokens from the edit's look, the exit fade, and the few moves the starters reuse. */
-function base(theme: GraphicTheme, durationS: number): string {
+function base(theme: GraphicTheme, durationS: number, lines = true): string {   // lines: the line-drawing moves icons and charts use
   const light = theme.tone === "light";
   const surface = light ? "#f6f4ef" : "#15151b", on = light ? "#15151b" : "#ffffff", muted = light ? "rgba(21,21,27,.62)" : "rgba(255,255,255,.64)", line = light ? "rgba(21,21,27,.14)" : "rgba(255,255,255,.16)";
   const family = `"${theme.font}","Outfit","Inter Display",sans-serif`;
@@ -52,10 +97,10 @@ function base(theme: GraphicTheme, durationS: number): string {
     + `@keyframes rise{from{opacity:0;transform:translateY(calc(var(--u)*3))}to{opacity:1;transform:none}}`
     + `@keyframes pop{from{opacity:0;transform:scale(.92)}to{opacity:1;transform:none}}`
     + `@keyframes fade{from{opacity:0}to{opacity:1}}`
-    + `@keyframes draw{from{stroke-dashoffset:1}to{stroke-dashoffset:0}}`
+    + (lines ? `@keyframes draw{from{stroke-dashoffset:1}to{stroke-dashoffset:0}}` : "")
     + `@keyframes grow{from{transform:scaleY(0)}to{transform:scaleY(1)}}`
     + `@keyframes sweep{from{transform:scaleX(0)}to{transform:scaleX(1)}}`
-    + `.stroke{stroke-dasharray:1;stroke-dashoffset:1;animation:draw .8s var(--ease) calc(var(--at,0s) + var(--i,0)*.18s) both}`;
+    + (lines ? `.stroke{stroke-dasharray:1;stroke-dashoffset:1;animation:draw .8s var(--ease) calc(var(--at,0s) + var(--i,0)*.18s) both}` : "");
 }
 const wrap = (id: string, params: Params, inner: string) => `<div class="root" data-gfx-template="${id}" data-gfx-params="${esc(JSON.stringify(params))}">${inner}</div>`;
 
@@ -238,31 +283,97 @@ el.querySelector('.num').textContent=PRE+v.toLocaleString('en-US',{minimumFracti
     },
   },
   {
-    id: "screenshot-frame", name: "Screenshot frame", kind: "screenshot", about: "A window around a screenshot, a highlight that lands on the part that matters and a cursor that moves to it.",
+    // PRO4: house rules for anything around a picture: soft fills only (no stroke, ring, outline or shadow) and nothing
+    // invented. Without a screenshot the window stays empty: no placeholder bars, no made-up title, no fake window dots.
+    id: "screenshot-frame", name: "Screenshot frame", kind: "screenshot", about: "A window around a screenshot, a soft highlight that lands on the part that matters and a cursor that moves to it.",
     frame: "overlay", widthPx: 1280, heightPx: 760, durationS: 6,
-    params: [{ name: "image", label: "Screenshot (a data image, optional)", type: "image", default: "" }, { name: "title", label: "Window title", type: "text", default: "Dashboard" },
+    params: [{ name: "image", label: "Screenshot (a data image, optional)", type: "image", default: "" }, { name: "title", label: "Window title (optional)", type: "text", default: "" },
       { name: "highlight", label: "Highlight (x, y, w, h as fractions of the screenshot)", type: "data", default: [0.58, 0.3, 0.32, 0.22] }, { name: "caption", label: "Caption under the highlight", type: "text", default: "" }],
     build(p, theme, d) {
       const image = typeof p.image === "string" && /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(p.image) ? p.image : "";
-      const title = str(p, "title", "Dashboard", 40), caption = str(p, "caption", "", 60);
+      const title = str(p, "title", "", 40), caption = str(p, "caption", "", 60);
       const h = Array.isArray(p.highlight) && p.highlight.length === 4 && p.highlight.every(v => typeof v === "number" && Number.isFinite(v)) ? (p.highlight as number[]).map(v => clamp(v, 0, 1)) : [0.58, 0.3, 0.32, 0.22];
-      const W = 1280, barH = 64, sx = 48, sy = 40 + barH, sw = W - 96, sh = 760 - sy - 40;
+      const W = 1280, barH = title ? 64 : 0, sx = 48, sy = 40 + barH, sw = W - 96, sh = 760 - sy - 40;
       const hx = sx + h[0] * sw, hy = sy + h[1] * sh, hw = Math.max(40, h[2] * sw), hh = Math.max(40, h[3] * sh);
       const cx0 = sx + sw * 0.18, cy0 = sy + sh * 0.82, cx1 = hx + hw * 0.62, cy1 = hy + hh * 0.62;
       const hl = Math.min(2.4, d * 0.34), cur = hl - .2;
-      const screen = image ? `<img class="shot" alt="" src="${image}">` : `<div class="ph"><i style="width:34%"></i><i style="width:58%"></i><i style="width:46%"></i><b></b><b></b><b></b></div>`;
-      return { html: wrap("screenshot-frame", p, `<div class="win"><div class="bar"><i></i><i></i><i></i><span>${esc(title)}</span></div><div class="screen">${screen}</div></div>`
+      const screen = image ? `<img class="shot" alt="" src="${image}">` : "";
+      return { html: wrap("screenshot-frame", p, `<div class="win">${title ? `<div class="bar"><span>${esc(title)}</span></div>` : ""}<div class="screen">${screen}</div></div>`
         + `<div class="hl" style="left:${fmt(hx)}px;top:${fmt(hy)}px;width:${fmt(hw)}px;height:${fmt(hh)}px"></div>`
         + (caption ? `<div class="cap" style="left:${fmt(hx)}px;top:${fmt(Math.min(760 - 90, hy + hh + 18))}px">${esc(caption)}</div>` : "")
-        + `<svg class="cur" viewBox="0 0 24 24" width="56" height="56"><path d="M4 2l15 9-6.5 1.5L9 19 4 2z" fill="#fff" stroke="#15151b" stroke-width="1.4" stroke-linejoin="round"/></svg><i class="click" style="left:${fmt(cx1)}px;top:${fmt(cy1)}px"></i>`),
-        css: `${base(theme, d)}.win{position:absolute;left:${sx}px;top:40px;width:${sw}px;height:${sh + barH}px;border-radius:26px;background:var(--surface);overflow:hidden;animation:pop .7s var(--ease) both}`
-          + `.bar{height:${barH}px;display:flex;align-items:center;gap:12px;padding:0 26px;border-bottom:2px solid var(--line)}.bar i{width:16px;height:16px;border-radius:50%;background:var(--line)}.bar span{margin-left:14px;font-weight:600;font-size:26px;color:var(--muted)}`
+        + `<svg class="cur" viewBox="0 0 24 24" width="56" height="56"><path d="M4 2l15 9-6.5 1.5L9 19 4 2z" fill="currentColor"/></svg><i class="click" style="left:${fmt(cx1)}px;top:${fmt(cy1)}px"></i>`),
+        css: `${base(theme, d, false)}.win{position:absolute;left:${sx}px;top:40px;width:${sw}px;height:${sh + barH}px;border-radius:26px;background:var(--surface);overflow:hidden;animation:pop .7s var(--ease) both}`
+          + `.bar{height:${barH}px;display:flex;align-items:center;padding:0 30px;background:color-mix(in srgb,var(--on) 7%,transparent)}.bar span{font-weight:600;font-size:26px;color:var(--muted)}`
           + `.screen{position:absolute;left:0;right:0;top:${barH}px;bottom:0}.shot{width:100%;height:100%;object-fit:cover;display:block}`
-          + `.ph{position:absolute;inset:0;padding:36px;display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:auto 1fr;gap:22px}.ph i{display:block;height:22px;border-radius:11px;background:var(--line);grid-column:span 1}.ph i:nth-child(n){margin-top:6px}.ph b{display:block;border-radius:18px;background:var(--line);opacity:.6;grid-row:2}`
-          + `.hl{position:absolute;border-radius:20px;background:color-mix(in srgb,var(--accent) 22%,transparent);border:6px solid var(--accent);box-sizing:border-box;transform-origin:center;animation:hlin .7s var(--ease) ${fmt(hl)}s both}@keyframes hlin{from{opacity:0;transform:scale(1.12)}to{opacity:1;transform:none}}`
+          + `.hl{position:absolute;border-radius:20px;background:color-mix(in srgb,var(--accent) 30%,transparent);transform-origin:center;animation:hlin .7s var(--ease) ${fmt(hl)}s both}@keyframes hlin{from{opacity:0;transform:scale(1.12)}to{opacity:1;transform:none}}`
           + `.cap{position:absolute;max-width:520px;padding:12px 22px;border-radius:16px;background:var(--accent);color:#fff;font-weight:700;font-size:30px;animation:rise .5s var(--ease) ${fmt(hl + .35)}s both}`
-          + `.cur{position:absolute;left:0;top:0;animation:cur ${fmt(cur)}s cubic-bezier(.5,0,.2,1) .6s both}@keyframes cur{from{opacity:0;transform:translate(${fmt(cx0)}px,${fmt(cy0)}px)}12%{opacity:1}to{opacity:1;transform:translate(${fmt(cx1)}px,${fmt(cy1)}px)}}`
-          + `.click{position:absolute;width:70px;height:70px;margin:-35px 0 0 -35px;border-radius:50%;border:5px solid var(--accent);box-sizing:border-box;animation:ripple .6s ease-out ${fmt(0.6 + cur)}s both}@keyframes ripple{from{opacity:.9;transform:scale(.2)}to{opacity:0;transform:scale(1.2)}}` };
+          + `.cur{position:absolute;left:0;top:0;color:var(--accent);animation:cur ${fmt(cur)}s cubic-bezier(.5,0,.2,1) .6s both}@keyframes cur{from{opacity:0;transform:translate(${fmt(cx0)}px,${fmt(cy0)}px)}12%{opacity:1}to{opacity:1;transform:translate(${fmt(cx1)}px,${fmt(cy1)}px)}}`
+          + `.click{position:absolute;width:70px;height:70px;margin:-35px 0 0 -35px;border-radius:50%;background:color-mix(in srgb,var(--accent) 40%,transparent);animation:ripple .6s ease-out ${fmt(0.6 + cur)}s both}@keyframes ripple{from{opacity:.9;transform:scale(.2)}to{opacity:0;transform:scale(1.2)}}` };
+    },
+  },
+  {
+    // PRO4: a card for something on a screen. The picture is his own (a frame of a recording, a screenshot, a photo),
+    // cropped and encoded by add_card. It arrives with a tilt that settles flat on the launch video's SNAP spring
+    // (damping 24, stiffness 340, mass 0.45: about 5 frames at 30 fps), holds, pushes slowly towards the named region,
+    // and a stamp (his own words, checked by add_card) pops 1.4 to 1 over 4 frames at 30 fps. It cuts out on a cut or
+    // eases off. Soft fills only: no shadow, glow, blur, outline or stroke. Everything is a function of t.
+    id: CARD_TEMPLATE, name: "Card", kind: "card", hidden: true, about: "A real picture from the shoot that tilts in, settles flat, pushes towards the part that matters and can carry a stamp.",
+    frame: "overlay", widthPx: 1568, heightPx: 1036, durationS: 3,
+    params: [{ name: "image", label: "Picture (made by add_card)", type: "image", default: "" }, { name: "media", label: "Picture in the shoot (made by add_card)", type: "text", default: "" }, { name: "px", label: "Picture size in pixels", type: "data", default: [1600, 1000] },
+      { name: "region", label: "Region to push towards (x, y, w, h as fractions of the picture)", type: "data", default: null },
+      { name: "stamp", label: "Stamp (his own words)", type: "text", default: "" }, { name: "stampAtS", label: "Stamp time (seconds into the card)", type: "number", default: 0.9 },
+      { name: "exit", label: "Exit", type: "choice", default: "ease", options: ["ease", "cut"] }],
+    build(p, theme, d) {
+      const media = typeof p.media === "string" && CARD_MEDIA.test(p.media) ? p.media : "";
+      const image = media ? CARD_MEDIA_SRC : typeof p.image === "string" && CARD_IMAGE.test(p.image) ? p.image : "";
+      if (!image) throw new Error("A card shows a real picture from your shoot. Make it with add_card.");
+      const px = Array.isArray(p.px) && p.px.length === 2 && p.px.every(v => typeof v === "number" && v > 0) ? p.px as number[] : [1600, 1000];
+      const aspect = clamp(px[0] / px[1], 0.3, 3.4), M = CARD_MOTION.side;
+      const CW = aspect >= 1 ? M : Math.round(M * aspect), CH = aspect >= 1 ? Math.round(M / aspect) : M;
+      const padX = Math.round(Math.max(28, CW * 0.06)), padY = Math.round(Math.max(28, CH * 0.06));
+      const region = cardBox(p.region), stamp = cardStamp(p.stamp), exit = pick(p, "exit", ["ease", "cut"], "ease");
+      const stampAt = num(p, "stampAtS", Math.min(d * 0.45, 1.1), 0, Math.max(0, d - 0.2));
+      const push = region ? clamp(0.55 / Math.max(region[2], region[3]), 1.08, CARD_MOTION.pushMax) : 1.05;
+      const radius = Math.round(Math.min(CW, CH) * 0.045), font = Math.round(clamp(Math.min(CW, CH) * 0.075, 30, 96));
+      const stampInk = luminance(theme.accent) > 0.55 ? "#15151b" : "#ffffff";
+      const { springDamping: c, springStiffness: k, springMass: m, holdS, exitS, popS, popFrom, tilt } = CARD_MOTION;
+      const html = `<div class="card"><img class="shot" alt="" src="${image}">${stamp ? `<span class="stamp">${esc(stamp)}</span>` : ""}</div>`;
+      return { size: { widthPx: CW + 2 * padX, heightPx: CH + 2 * padY }, ...(media ? { media } : {}),
+        html: wrap(CARD_TEMPLATE, media ? { ...p, image: "", media } : { ...p, image: CARD_IMAGE_REF }, html),
+        css: `${base(theme, d, false)}.root{animation:none;perspective:${Math.round(Math.max(CW, CH) * 2.2)}px;perspective-origin:50% 50%}`
+          + `.card{position:absolute;left:${padX}px;top:${padY}px;width:${CW}px;height:${CH}px;border-radius:${radius}px;overflow:hidden;background:var(--surface);transform-origin:50% 60%;opacity:0}`
+          + `.shot{position:absolute;left:0;top:0;width:100%;height:100%;display:block;transform-origin:50% 50%}`
+          + `.stamp{position:absolute;left:0;top:0;padding:.3em .62em .34em;border-radius:999px;background:var(--accent);color:${stampInk};font-weight:700;font-size:${font}px;line-height:1.05;letter-spacing:-.005em;white-space:nowrap;opacity:0}`,
+        js: `var D=${fmt(d)},W=${CW},H=${CH},REG=${JSON.stringify(region)},PUSH=${fmt(push)},SAT=${fmt(stampAt)},HOLD=${holdS},OUT=${exit === "ease" ? exitS : 0},POP=${fmt(popS)},POPF=${popFrom},TX=${tilt.x},TY=${tilt.y},TS=${tilt.scale},TD=${tilt.drop};
+var Z=${c}/(2*Math.sqrt(${k}*${m})),W0=Math.sqrt(${k}/${m}),WD=W0*Math.sqrt(1-Z*Z);
+function snap(t){return t<=0?0:1-Math.exp(-Z*W0*t)*(Math.cos(WD*t)+Z*W0/WD*Math.sin(WD*t));}
+function clamp01(x){return Math.min(1,Math.max(0,x));}
+function inout(x){x=clamp01(x);return x<.5?4*x*x*x:1-Math.pow(-2*x+2,3)/2;}
+function out3(x){x=clamp01(x);return 1-Math.pow(1-x,3);}
+function pushAt(t){var k=inout((t-HOLD)/Math.max(0.3,D-OUT-HOLD)),s=1+(PUSH-1)*k,tx=0,ty=0;
+if(REG){tx=-s*(REG[0]+REG[2]/2-0.5)*W*k;ty=-s*(REG[1]+REG[3]/2-0.5)*H*k;var mx=(s-1)*W/2,my=(s-1)*H/2;tx=Math.max(-mx,Math.min(mx,tx));ty=Math.max(-my,Math.min(my,ty));}
+return [s,tx,ty];}
+function regionAt(m){return [W/2+m[0]*(REG[0]*W-W/2)+m[1],H/2+m[0]*(REG[1]*H-H/2)+m[2],m[0]*REG[2]*W,m[0]*REG[3]*H];}
+// Where the stamp sits, chosen once (as the region is when it lands) so it never jumps: just above the region, else beside
+// a short region (a line of text), else just below it while that stays clear of the caption band, else on the region's
+// own top-left corner. It follows the push.
+var SPOT=null;
+function spot(sw,sh,inset,gap){if(SPOT)return SPOT;if(!REG)return SPOT='corner';var r=regionAt(pushAt(SAT));
+SPOT=r[1]-gap-sh*POPF>=inset?'above':r[3]<sh*2&&r[0]+r[2]+gap+sw*POPF<=W-inset?'beside':r[1]+r[3]+gap+sh*POPF<=H*0.8?'below':'inside';return SPOT;}
+function render(t,el){
+var card=el.querySelector('.card'),shot=el.querySelector('.shot'),stamp=el.querySelector('.stamp');
+var q=1-snap(t),o=clamp01(t/0.05),sc=1-TS*q,ex=0;
+if(OUT>0&&t>D-OUT){ex=clamp01((t-D+OUT)/OUT);ex=ex*ex*ex;o*=1-ex;sc*=1-0.03*ex;}
+card.style.opacity=o.toFixed(4);
+card.style.transform='translateY('+(q*H*TD).toFixed(2)+'px) rotateX('+(q*TX).toFixed(3)+'deg) rotateY('+(-q*TY).toFixed(3)+'deg) scale('+sc.toFixed(4)+')';
+var m=pushAt(t);shot.style.transform='translate('+m[1].toFixed(2)+'px,'+m[2].toFixed(2)+'px) scale('+m[0].toFixed(4)+')';
+if(!stamp)return;
+var a=t-SAT;if(a<0){stamp.style.opacity='0';return;}
+var sw=stamp.offsetWidth,sh=stamp.offsetHeight,inset=Math.min(W,H)*0.05,gap=H*0.02,where=spot(sw,sh,inset,gap),x=inset,y=inset,low=false;
+if(REG){var r=regionAt(m);x=r[0];if(where==='above'){y=r[1]-gap-sh;low=true;}else if(where==='beside'){x=r[0]+r[2]+gap;y=r[1]+r[3]/2-sh/2;}else if(where==='below'){y=r[1]+r[3]+gap;}else{x+=inset*0.6;y=r[1]+inset*0.6;}}
+x=Math.max(inset,Math.min(W-inset-sw*POPF,x));y=low?Math.max(inset+sh*(POPF-1),Math.min(H-inset-sh,y)):Math.max(inset,Math.min(H-inset-sh*POPF,y));
+stamp.style.opacity='1';stamp.style.transformOrigin=low?'0 100%':'0 0';
+stamp.style.transform='translate('+x.toFixed(2)+'px,'+y.toFixed(2)+'px) scale('+(POPF-(POPF-1)*out3(a/POP)).toFixed(4)+')';}` };
     },
   },
   {
@@ -295,7 +406,7 @@ el.querySelector('.num').textContent=PRE+v.toLocaleString('en-US',{minimumFracti
 ];
 
 export function graphicTemplates(): TemplateInfo[] {
-  return TEMPLATES.map(({ build: _build, ...info }) => info);
+  return TEMPLATES.filter(t => !t.hidden).map(({ build: _build, hidden: _hidden, ...info }) => info);
 }
 export function templateInfo(id: string): TemplateInfo | undefined {
   return graphicTemplates().find(t => t.id === id);
@@ -310,8 +421,9 @@ export function buildFromTemplate(id: string, params: Record<string, unknown> = 
   const built = template.build(params ?? {}, resolved, durationS);
   // The look rides along in the html so the starter can be rebuilt to a new length without losing it.
   built.html = built.html.replace(/data-gfx-params="/, `data-gfx-theme="${esc(JSON.stringify(resolved))}" data-gfx-params="`);
-  const graphic: MotionGraphic = { html: built.html, css: built.css, widthPx: template.widthPx, heightPx: template.heightPx, durationS, frame: template.frame, template: template.id };
+  const graphic: MotionGraphic = { html: built.html, css: built.css, widthPx: built.size?.widthPx ?? template.widthPx, heightPx: built.size?.heightPx ?? template.heightPx, durationS, frame: template.frame, template: template.id };
   if (built.js) graphic.js = built.js;
+  if (built.media) graphic.media = built.media;
   if (options.layer === "behind" && template.frame === "overlay") graphic.layer = "behind";
   if (options.words?.length) graphic.words = options.words;
   return graphic;
@@ -322,6 +434,11 @@ const unesc = (s: string) => s.replace(/&quot;/g, '"').replace(/&lt;/g, "<").rep
 export function graphicSource(g: MotionGraphic): { template: string; params: Record<string, unknown>; theme: Partial<GraphicTheme> } | null {
   const template = /data-gfx-template="([a-z0-9-]+)"/.exec(g.html), params = /data-gfx-params="([^"]*)"/.exec(g.html), theme = /data-gfx-theme="([^"]*)"/.exec(g.html);
   if (!template || !params) return null;
-  try { return { template: template[1], params: JSON.parse(unesc(params[1])), theme: theme ? JSON.parse(unesc(theme[1])) : {} }; }
+  try {
+    const found = { template: template[1], params: JSON.parse(unesc(params[1])) as Record<string, unknown>, theme: theme ? JSON.parse(unesc(theme[1])) : {} };
+    // PRO4: a card keeps its picture once, in its <img>; put it back so a rebuild (a new length) keeps it.
+    if (found.params.image === CARD_IMAGE_REF) found.params.image = /<img class="shot" alt="" src="(data:image\/[a-z]+;base64,[A-Za-z0-9+/=]+)"/.exec(g.html)?.[1] ?? "";
+    return found;
+  }
   catch { return null; }
 }

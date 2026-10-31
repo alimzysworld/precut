@@ -3,6 +3,7 @@ import { app } from "electron";
 import * as fs from "node:fs/promises";
 import { createReadStream, existsSync } from "node:fs";
 import * as path from "node:path";
+import { checkoutFile } from "./bundle-paths";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
@@ -208,7 +209,7 @@ export function createStemsEngine(deps: {
             activity.progress(null, "", 60 + durationS * (mode === "voice" ? .9 : .35));
             const input = path.join(staging, "input.wav");
             await command({ command: tool("ffmpeg"), args: ["-nostdin", "-v", "error", ...(span ? ["-ss", String(span.s)] : []), "-i", source, ...(span ? ["-t", String(durationS)] : []), "-map", "0:a:0", "-vn", "-ac", "2", "-ar", mode === "voice" ? "48000" : "44100", "-c:a", "pcm_s16le", input], cwd: staging, env, signal });
-            const helper = deps.helper ?? [app.isPackaged && path.join(process.resourcesPath, "pipeline/stems.py"), path.resolve(__dirname, "../../pipeline/stems.py")].find(p => p && existsSync(p));
+            const helper = deps.helper ?? [app.isPackaged && path.join(process.resourcesPath, "pipeline/stems.py"), checkoutFile("pipeline/stems.py")].find(p => p && existsSync(p));
             if (!helper) throw new Error("Update precut to separate sound.");
             await command({ command: path.join(addon, "venv/bin/python"), args: ["-I", "-B", helper, "--input", input, "--output", staging, "--addon", addon, "--mode", mode], cwd: staging, env, signal,
               progress: p => activity.progress(Math.min(99, p.completed / p.total * 100), "", p.etaS ?? null) });

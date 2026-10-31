@@ -97,7 +97,7 @@ export function magneticSpans(timeline: DraftTimeline) {
 }
 function shiftPicture(p: DraftPiece, delta: number): DraftPiece {
   return { ...p, startS:p.startS+delta, endS:p.endS+delta, timeMap:p.timeMap?.map(k => ({...k,t:k.t+delta})), frame:p.frame?.map(k => ({...k,t:k.t+delta})) ?? null,
-    opacity:p.opacity?.map(k => ({...k,t:k.t+delta})), blur:p.blur?.map(k => ({...k,t:k.t+delta})) };
+    opacity:p.opacity?.map(k => ({...k,t:k.t+delta})), blur:p.blur?.map(k => ({...k,t:k.t+delta})), ...(p.exposure ? { exposure:p.exposure.map(k => ({...k,t:k.t+delta})) } : {}) };
 }
 /** Local picture and sound use the same source spans. No decoder reload or IPC
  * is needed during a drag, including edits with removed words and speed. */

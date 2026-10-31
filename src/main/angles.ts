@@ -1,6 +1,7 @@
 import * as fs from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import * as path from 'node:path';
+import { checkoutFile } from './bundle-paths';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
@@ -39,7 +40,7 @@ export function measureAngles(root: string): Promise<AngleGroup[]> {
     return runActivity({ kind: 'render', root, target: null, label: 'Lining up camera angles', cancelable: true }, async activity => {
       let angles: AngleGroup[] = [];
       if (shoot.clips.filter(c => !c.photo && c.meta && c.proxy && c.stage !== 'error').length > 1) {
-        const script = [process.resourcesPath && path.join(process.resourcesPath, 'pipeline/angles.py'), path.resolve(__dirname, '../../pipeline/angles.py'), path.resolve('pipeline/angles.py')].find(p => p && existsSync(p));
+        const script = [process.resourcesPath && path.join(process.resourcesPath, 'pipeline/angles.py'), checkoutFile('pipeline/angles.py'), path.resolve('pipeline/angles.py')].find(p => p && existsSync(p));
         if (!script) throw new Error('The camera sync helper is missing.');
         const { stdout } = await promisify(execFile)(tool('python3'), ['-I', script, root], { signal: activity.signal, env: toolEnvironment(), maxBuffer: 4 * 1024 * 1024 });
         angles = JSON.parse(stdout);

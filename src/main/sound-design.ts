@@ -5,7 +5,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { app } from 'electron';
-import type { Api, CutEdit, CutVersion, SfxItem } from '../shared/schema';
+import type { Api, CutEdit, CutVersion, SfxItem, SoundRole } from '../shared/schema';
+import { validMusicShape } from '../shared/music-shape';
+import { laneDb } from '../shared/lane-levels';
 import type { StoredVersion } from './sidekick';
 import type { FxPlan } from './edits-fx';
 import type { CaptionTrack } from './titles/captions';
@@ -18,7 +20,60 @@ import { tool } from './tools';
 
 const kinds = ['whoosh', 'hit', 'pop', 'riser', 'impact', 'ambience', 'roomtone', 'ui', 'other'];
 const synthKinds = ['whoosh', 'hit', 'pop', 'riser', 'impact'] as const;
-type LibrarySound = { id: string; name: string; kind: SfxItem['kind']; lengthS: number; file: string };
+type LibrarySound = { id: string; name: string; kind: SfxItem['kind']; lengthS: number; file: string; role?: SoundRole; hitS?: number; punchDb?: number };
+const roles: SoundRole[] = ['hit', 'accent', 'ui', 'ambience'];
+/** PRO3a: each role's level against the edit's voice: the sound's loudest 50 ms (RMS dBFS) minus the voice's integrated
+ * loudness (LUFS) as it plays in the mix. The launch video's 109 cues, measured the same way against its lead (music 0.6,
+ * -14.4 LUFS), put hits at a median -2.4 dB, accents -13.0, UI -26.3. On a real talking-head edit a thud at +5.6
+ * was about 3 dB hot over "back" and wanted 3 to 4 dB less (PRO0), so a hit sits at -1: under the words, not lost.
+ * Ambience is a bed 20 dB under the voice. gainDb trims around it: 0 = the role's level. Evidence: qa/PRO3a/measurements.json. */
+export const ROLE_LEVEL_DB: Record<SoundRole, number> = { hit: -1, accent: -13, ui: -26, ambience: -20 };
+/** Measured once per file: the loudest 50 ms and where the sound lands (the onset of its loudest moment). */
+export type SoundShape = { punchDb: number; hitS: number };
+export function measureSoundShape(stereo: Float32Array, rate = 48000): SoundShape {
+  const frames = Math.floor(stereo.length / 2), energy = new Float64Array(frames + 1);
+  for (let i = 0; i < frames; i++) energy[i + 1] = energy[i] + (stereo[2 * i] ** 2 + stereo[2 * i + 1] ** 2) / 2;
+  const rms = (centre: number, width: number) => { const a = Math.max(0, centre - (width >> 1)), b = Math.min(frames, a + width); return b > a ? Math.sqrt((energy[b] - energy[a]) / (b - a)) : 0; };
+  const hop = Math.round(rate / 1000), short = Math.round(rate * .01), long = Math.round(rate * .05);
+  let punch = 0, peak = 0, at = 0;
+  for (let i = 0; i < frames; i += hop) { punch = Math.max(punch, rms(i, long)); const v = rms(i, short); if (v > peak) { peak = v; at = i; } }
+  // Walk back from the loudest 10 ms while it stays within 3 dB: a slam lands on its attack, a whoosh on its swell.
+  while (at - hop >= 0 && rms(at - hop, short) >= peak / Math.SQRT2) at -= hop;
+  return { punchDb: Math.round(2000 * Math.log10(Math.max(punch, 1e-9))) / 100, hitS: Math.round(at / rate * 1000) / 1000 };
+}
+const shapes = new Map<string, Promise<SoundShape>>();
+/** The manifest's measurement for a bundled sound; one decode for anything else (cached per file identity). */
+export async function soundShape(root: string, id: string): Promise<SoundShape> {
+  const library = id.startsWith('lib:') ? (await libraryFiles([], false)).find(s => s.id === id) : undefined;
+  if (library?.punchDb !== undefined && library.hitS !== undefined) return { punchDb: library.punchDb, hitS: library.hitS };
+  const file = library?.file || (id.startsWith('lib:synth-') ? await synthSound(id.slice('lib:synth-'.length) as typeof synthKinds[number]) : await resolveSound(root, id));
+  const key = hash(await sourceIdentity(file));
+  if (!shapes.has(key)) {
+    const pending = execute(tool('ffmpeg'), ['-v', 'error', '-nostdin', ...await sourceAudioInput(file), '-vn', '-ac', '2', '-ar', '48000', '-f', 'f32le', 'pipe:1'], { encoding: 'buffer', maxBuffer: 256 * 1024 * 1024, signal: currentActivity()?.signal })
+      .then(({ stdout }) => measureSoundShape(new Float32Array(stdout.buffer, stdout.byteOffset, stdout.length >> 2)));
+    shapes.set(key, pending); void pending.catch(() => shapes.delete(key));
+  }
+  return shapes.get(key)!;
+}
+/** The voice's integrated loudness as it plays in this edit's mix, before the master: what a role level is set against.
+ * Auto (or Even out voices) levels every voice to -20 LUFS; otherwise the narration takes, or the cut's camera voice, are
+ * measured (on a real edit the raw take reads within 1 LU of the voice in the finished mix). The voice or clip-sound
+ * lane moves it with the voice. */
+export async function voiceReferenceDb(version: Pick<CutVersion, 'audio' | 'voiceover' | 'laneLevels'> & { assembly?: Pick<StoredVersion['assembly'], 'reel'> }, root: string): Promise<number> {
+  const takes = [...new Set((version.voiceover?.lines ?? []).flatMap(l => l.take ? [path.resolve(root, l.take.file)] : []))];
+  const lane = laneDb(version, takes.length ? 'voice' : 'clip-sound');
+  if (version.audio?.auto !== false || version.audio?.evenOutVoices === true) return -20 + lane;
+  if (!takes.length) return (version.assembly?.reel.voiceLUFS ?? -20) + lane;
+  const levels = (await Promise.all(takes.map(f => soundLevel(f).catch(() => null)))).flatMap(m => m && m.input_i > -70 ? [m.input_i] : []);
+  return (levels.length ? 10 * Math.log10(levels.reduce((sum, l) => sum + 10 ** (l / 10), 0) / levels.length) : -20) + lane;
+}
+/** PRO3a: where a sound starts so its measured hit lands at landAtS. */
+export async function placeByLanding(root: string, file: string, landAtS: number): Promise<number> {
+  if (!Number.isFinite(landAtS) || landAtS < 0) throw new Error('Give landAtS as edit seconds.');
+  const atS = Math.round((landAtS - (await soundShape(root, file)).hitS) * 1e6) / 1e6;
+  if (atS < 0) throw new Error(`That sound needs ${(landAtS - atS).toFixed(3)} s before its hit; land it later than ${(landAtS - atS).toFixed(3)} s.`);
+  return atS;
+}
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 24);
 const execute = promisify(execFile);
 function sfxDirectory() {
@@ -72,16 +127,16 @@ export async function libraryFiles(roots?: string[], prepare = true): Promise<Li
   return result;
 }
 export async function soundLibrary(): ReturnType<Api['soundLibrary']> {
-  return (await libraryFiles()).map(({ file: _file, ...s }) => ({ ...s, url: `st-media://local/sounds/${encodeURIComponent(s.id)}` }));
+  return (await libraryFiles()).map(({ file: _file, punchDb: _punch, ...s }) => ({ ...s, url: `st-media://local/sounds/${encodeURIComponent(s.id)}` }));
 }
 export function validateSfx(item: SfxItem, duration: number): SfxItem {
   if (!item || typeof item.file !== 'string' || !item.file || typeof item.name !== 'string' || !item.name.trim() ||
     !kinds.includes(item.kind) || !Number.isFinite(item.atS) || item.atS < 0 || item.atS >= duration ||
     !Number.isFinite(item.gainDb) || item.gainDb < -24 || item.gainDb > 6 ||
     (item.lengthS !== undefined && (!Number.isFinite(item.lengthS) || item.lengthS <= 0 || item.lengthS > duration - item.atS + 1e-6)) ||
-    (item.reason !== undefined && typeof item.reason !== 'string')) throw new Error('Choose a sound, a time inside the edit and gain from -24 to 6 dB.');
+    (item.reason !== undefined && typeof item.reason !== 'string') || (item.role !== undefined && !roles.includes(item.role))) throw new Error('Choose a sound, a time inside the edit, gain from -24 to 6 dB and a role of hit, accent, ui or ambience.');
   return { id: item.id, file: item.file, name: item.name.trim(), atS: item.atS, gainDb: item.gainDb, kind: item.kind, auto: item.auto,
-    ...(item.lengthS === undefined ? {} : { lengthS: item.lengthS }), ...(item.reason === undefined ? {} : { reason: item.reason }) };
+    ...(item.lengthS === undefined ? {} : { lengthS: item.lengthS }), ...(item.reason === undefined ? {} : { reason: item.reason }), ...(item.role === undefined ? {} : { role: item.role }) };
 }
 
 /** Bounded-memory local scan. Reject transcript speech, clipped and digitally silent windows. */
@@ -262,8 +317,10 @@ async function soundLevel(file: string) {
   return levels.get(key)!;
 }
 export type PreparedEffect = { id?: string; atS: number; file: string; sound?: import('../shared/schema').TransitionSound; lengthS?: number; gainDb?: number; normalizeDb?: number; loopSamples?: number; bed?: boolean };
-export async function prepareDesignSounds(root: string, plan: FxPlan, version: Pick<CutVersion, 'sfx' | 'audio' | 'overlays'>): Promise<PreparedEffect[]> {
+export async function prepareDesignSounds(root: string, plan: FxPlan, version: Pick<CutVersion, 'sfx' | 'audio' | 'overlays'> & Partial<Pick<CutVersion, 'voiceover' | 'laneLevels'>> & { assembly?: Pick<StoredVersion['assembly'], 'reel'> }): Promise<PreparedEffect[]> {
   const items = version.sfx ?? [];
+  // PRO3a: a sound with a role sits at that role's level against this edit's voice, whatever its file's loudness.
+  const voice = items.some(s => s.role) ? await voiceReferenceDb(version, root) : 0;
   // A saved auto pass owns join sounds. Overlays always retain their own sound.
   const events = soundEvents(version.sfx !== undefined ? { ...plan, joins: [] } : plan, version);
   const output: PreparedEffect[] = [];
@@ -272,26 +329,42 @@ export async function prepareDesignSounds(root: string, plan: FxPlan, version: P
     if (item.atS >= plan.durationS || item.atS < 0) continue;
     if (item.auto && version.audio?.design === false) continue;
     const file = await resolveSound(root, item.file), bed = item.kind === 'roomtone' || item.kind === 'ambience';
-    const level = bed ? null : await soundLevel(file);
+    const level = bed || item.role ? null : await soundLevel(file);
+    const roleDb = item.role ? ROLE_LEVEL_DB[item.role] + voice - (await soundShape(root, item.file)).punchDb : undefined;
     let loopSamples: number | undefined;
     if (bed && item.lengthS) {
       const probe = await execute(tool('ffprobe'), ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', file], { signal: currentActivity()?.signal });
       loopSamples = Math.round(Number(probe.stdout) * 48000);
     }
-    output.push({ id:item.id, atS: item.atS, file, lengthS: Math.min(item.lengthS ?? plan.durationS, plan.durationS - item.atS), gainDb: item.gainDb, normalizeDb: level ? Math.max(-24, Math.min(24, -22 - level.input_i)) : 0, loopSamples, bed });
+    output.push({ id:item.id, atS: item.atS, file, lengthS: Math.min(item.lengthS ?? plan.durationS, plan.durationS - item.atS), gainDb: item.gainDb, normalizeDb: roleDb !== undefined ? Math.round(Math.max(-60, Math.min(24, roleDb)) * 100) / 100 : level ? Math.max(-24, Math.min(24, -22 - level.input_i)) : 0, loopSamples, bed });
   }
   return output;
 }
 export function editSounds(root: string, cutId: string, version: number, edit: Extract<CutEdit, { kind: 'sfx' }>) {
   return runActivity({ kind: 'edit', root, target: { cutId, version }, label: 'Updating sounds', cancelable: true }, async () => {
-    if (!['add', 'update', 'remove'].includes(edit.op)) throw new Error('Choose add, update or remove for a sound.');
+    if (!['add', 'update', 'remove', 'musicShape'].includes(edit.op)) throw new Error('Choose add, update or remove for a sound, or musicShape.');
     const { finishStoredVersion, renderStoredPreview } = await import('./sidekick');
     return finishStoredVersion(root, cutId, version, true, async (record, assembly) => {
       const duration = planFx(assembly.cutList, assembly.template.fps, record).durationS, items = [...(record.sfx ?? [])];
+      if (edit.op === 'musicShape') {
+        // PRO3a: the music's stillnesses and hit dips live on the music, so every mix that reads the music reads them.
+        const music = record.music !== undefined ? record.music : assembly.reel.music ? { file: assembly.reel.music.file, startS: assembly.reel.music.startS, gainDb: assembly.reel.music.gainDb,
+          ...(assembly.reel.music.endS === undefined ? {} : { endS: assembly.reel.music.endS }), ...(assembly.reel.music.fit ? { fit: true } : {}), ...(assembly.reel.music.followStory ? { followStory: true } : {}) } : null;
+        if (!music) throw new Error('This edit has no music to shape. Add music first.');
+        const shape = edit.shape === null ? [] : validMusicShape(edit.shape, duration);
+        const { shape: _old, ...rest } = music;
+        record.music = shape.length ? { ...rest, shape } : rest;
+        record.assembly = assembly;
+        await renderStoredPreview(root, cutId, record, assembly);
+        return { cutId, version: record.version };
+      }
       const index = edit.op === 'add' ? -1 : items.findIndex(s => s.id === edit.id);
       if (edit.op !== 'add' && index < 0) throw new Error('That sound is no longer in this edit.');
       if (edit.op === 'add' || edit.op === 'update') {
-        const item = validateSfx(edit.op === 'add' ? { ...edit.item, id: randomUUID(), auto: false } : { ...items[index], ...edit.patch, id: items[index].id, auto: false }, duration);
+        const { landAtS, ...given } = edit.op === 'add' ? edit.item : edit.patch;
+        const merged = edit.op === 'add' ? { ...given, id: randomUUID(), auto: false } as SfxItem : { ...items[index], ...given, id: items[index].id, auto: false };
+        if (landAtS !== undefined) { await resolveSound(root, merged.file); merged.atS = await placeByLanding(root, merged.file, landAtS); }
+        const item = validateSfx(merged, duration);
         await resolveSound(root, item.file);
         if (edit.op === 'add') items.push(item); else items[index] = item;
       } else {

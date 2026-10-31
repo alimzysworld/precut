@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { MotionGraphic } from "../../shared/schema";
+import { CARD_MEDIA, CARD_MEDIA_SRC, CARD_TEMPLATE } from "./templates";
 
 // GFX1: everything a graphic is allowed to contain. The sandbox (CSP, no network, no storage, no real clocks, a
 // frame budget) is the real wall; these checks turn the common mistakes into plain, fixable messages before any
@@ -9,6 +10,9 @@ export const GRAPHIC_LIMITS = { html: 60_000, css: 60_000, js: 40_000, total: 14
 export class GraphicError extends Error {}
 const fail = (message: string): never => { throw new GraphicError(message); };
 
+// PRO4b: only a screen-card may name a picture by media handle (templates.ts CARD_MEDIA), and its html shows it in
+// exactly one place. The graphic's frame still loads nothing: the title page fetches that one file from the shoot cache
+// and puts it into the frame as a data image.
 const dataImage = /^data:image\/(?:png|jpeg|webp|gif|svg\+xml);base64,[A-Za-z0-9+/=]+$/;
 
 /** CSS escapes and comments can hide a word from a plain search; check what the browser would read. */
@@ -91,6 +95,11 @@ export function sanitizeGraphic(input: unknown): MotionGraphic {
     if (typeof g.template !== "string" || !/^[a-z0-9-]{1,40}$/.test(g.template)) fail("The template name is not valid.");
     out.template = g.template as string;
   }
+  if (g.media !== undefined && g.media !== null) {
+    if (out.template !== CARD_TEMPLATE || typeof g.media !== "string" || !CARD_MEDIA.test(g.media)) fail("Only a card made by add_card can show a picture from the shoot.");
+    if (html.split(`src="${CARD_MEDIA_SRC}"`).length !== 2) fail("A card shows its picture once.");
+    out.media = g.media as string;
+  }
   if (g.words !== undefined && g.words !== null) {
     if (!Array.isArray(g.words) || g.words.length > GRAPHIC_LIMITS.words) fail("The words list is too long.");
     out.words = (g.words as unknown[]).map(word => {
@@ -104,5 +113,5 @@ export function sanitizeGraphic(input: unknown): MotionGraphic {
 
 /** What makes two graphics render identically (words and the template name only matter for re-timing). */
 export function graphicKey(g: MotionGraphic): string {
-  return createHash("sha256").update(JSON.stringify([g.html, g.css, g.js ?? "", g.widthPx, g.heightPx, g.durationS, g.frame, g.layer ?? "front"])).digest("hex");
+  return createHash("sha256").update(JSON.stringify([g.html, g.css, g.js ?? "", g.widthPx, g.heightPx, g.durationS, g.frame, g.layer ?? "front", ...(g.media ? [g.media] : [])])).digest("hex");
 }

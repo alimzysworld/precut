@@ -181,7 +181,7 @@ export function finishCut(root: string, cutId: string, version: number, opts: Fi
         record.assembly = assembly;
         record.audio = audioOptions(record.audio, opts.audio);
         if (opts.music !== undefined) {
-          record.music = opts.music ? { ...opts.music, fit: opts.music.fit ?? record.music?.fit ?? (record.music?.file !== opts.music.file ? true : undefined), followStory: opts.music.followStory ?? record.music?.followStory, stemDucking: opts.music.stemDucking ?? record.music?.stemDucking, duckDepthDb: opts.music.duckDepthDb ?? record.music?.duckDepthDb } : null;
+          record.music = opts.music ? { ...opts.music, fit: opts.music.fit ?? record.music?.fit ?? (record.music?.file !== opts.music.file ? true : undefined), followStory: opts.music.followStory ?? record.music?.followStory, stemDucking: opts.music.stemDucking ?? record.music?.stemDucking, duckDepthDb: opts.music.duckDepthDb ?? record.music?.duckDepthDb, ...(record.music?.shape ? { shape: record.music.shape } : {}) } : null;  // PRO3a: the edit's music shape stays with a new track or level
           assembly.reel = { ...assembly.reel, music: record.music ? { ...assembly.reel.music, ...record.music, gainDb: record.music.gainDb ?? -18, durationS: musicDuration ?? record.lengthS, musicLUFS: assembly.reel.music?.musicLUFS ?? -16 } : undefined };
         }
         if (opts.cutToBeat === false || opts.music !== undefined && record.cutToBeat && !currentCutMusicPlan(record)) record.cutToBeat = false;
@@ -218,7 +218,7 @@ export function finishCut(root: string, cutId: string, version: number, opts: Fi
       if (opts.faceMatch !== undefined) record.faceMatch = opts.faceMatch;
       if (opts.framing !== undefined) record.framing = { ...opts.framing };
       if (opts.music !== undefined) {
-        record.music = opts.music ? { ...opts.music, fit: opts.music.fit ?? record.music?.fit ?? (record.music?.file !== opts.music.file ? true : undefined), followStory: opts.music.followStory ?? record.music?.followStory, stemDucking: opts.music.stemDucking ?? record.music?.stemDucking, duckDepthDb: opts.music.duckDepthDb ?? record.music?.duckDepthDb } : null;
+        record.music = opts.music ? { ...opts.music, fit: opts.music.fit ?? record.music?.fit ?? (record.music?.file !== opts.music.file ? true : undefined), followStory: opts.music.followStory ?? record.music?.followStory, stemDucking: opts.music.stemDucking ?? record.music?.stemDucking, duckDepthDb: opts.music.duckDepthDb ?? record.music?.duckDepthDb, ...(record.music?.shape ? { shape: record.music.shape } : {}) } : null;  // PRO3a: the edit's music shape stays with a new track or level
         assembly.reel = { ...assembly.reel, music: opts.music ? { ...assembly.reel.music, ...opts.music, durationS: musicDuration ?? record.lengthS, musicLUFS: assembly.reel.music?.musicLUFS ?? -16 } : undefined };
       }
       const energy = opts.energy ?? record.energy ?? "subtle";

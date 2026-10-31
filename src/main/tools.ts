@@ -2,6 +2,7 @@
 import { accessSync, constants, existsSync, mkdirSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { checkoutFile } from "./bundle-paths";
 
 export const supportDir = () => path.join(os.homedir(), "Library", "Application Support", "precut");
 
@@ -26,7 +27,7 @@ export function tool(name: string, options: { resourcesPath?: string; developmen
   if (!/^[a-zA-Z0-9_-]+$/.test(name)) throw new Error("Invalid tool name");
   const resources = options.resourcesPath ?? (process.defaultApp ? undefined : process.resourcesPath);
   // Packaged apps must never execute a tool from an arbitrary working directory.
-  const bundled = resources ? path.join(resources, "tools") : options.developmentPath ?? path.resolve(__dirname, "../../build/tools");
+  const bundled = resources ? path.join(resources, "tools") : options.developmentPath ?? checkoutFile("build/tools");
   const relative = name === "exiftool" ? path.join("exiftool", "exiftool") : name;
   const candidates = [path.join(bundled, relative)];
   if (name === "python3") { if (!options.supportPath) keepBundleSealed(); candidates.push(path.join(options.supportPath ?? supportDir(), "venv/bin/python")); }

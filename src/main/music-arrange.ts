@@ -41,6 +41,32 @@ async function pinFits(root:string,file:string,pinnedS:number,durationS:number,p
   const beat=gaps.length ? gaps[Math.floor(gaps.length/2)]/(m.beats?.length ? 1 : 4) : 0;
   return delta<=beat+1e-6;
 }
+// FIX7: a pin survives the shoot (or its music folder) moving, being renamed or copied. It names the music by what
+// it is, not where it is: the file's size and a hash of its first and last 64 KiB. Pins made before this carry the
+// old form (the shoot's realpath and the file's ctime); they still match in place, and after a move they hold while
+// the shoot's own cache has their arrangement and the track is still that length. Either way the next saved pin
+// is written in the new form.
+const PIN_FORM='c1:';
+async function contentIdentity(file:string) {
+  const handle=await fs.open(file,'r');
+  try {
+    const {size}=await handle.stat(),span=Math.min(65536,size),hash=createHash('sha256'),head=Buffer.alloc(span);
+    await handle.read(head,0,span,0);hash.update(head);
+    if(size>span){const tail=Buffer.alloc(span);await handle.read(tail,0,span,size-span);hash.update(tail);}
+    return {size,sample:hash.digest('hex')};
+  } finally {await handle.close();}
+}
+const trackLengths=new Map<string,Promise<number|null>>();
+async function movedOldPin(root:string,file:string,key:string) {
+  const receipt=await fs.readFile(path.join(await fs.realpath(root),'.sidething/finish-cache',`arrange-${key}.json`),'utf8').then(s=>JSON.parse(s) as MusicArrangement).catch(()=>null);
+  const measured=receipt?.measurements?.durationS,stat=await fs.stat(file).catch(()=>null);
+  if(typeof measured!=='number' || !Number.isFinite(measured) || !stat)return false;
+  const memo=JSON.stringify([file,stat.size,stat.mtimeMs]);
+  let length=trackLengths.get(memo);
+  if(!length){length=sourceAudioDuration(file).catch(()=>null);trackLengths.set(memo,length);}
+  const now=await length;
+  return now!==null && Math.abs(now-measured)<=.1;
+}
 const editClock=(s:number)=>{const t=Math.round(s);return `${Math.floor(t/60)}:${String(t%60).padStart(2,'0')}`;};
 /** V63: say when reaching the length meant playing part of the song again. */
 export function repeatLine(parts:MusicPart[],durationS:number) {
@@ -163,6 +189,7 @@ async function request(root:string,record:ArrangeRecord,fx:FxPlan) {
   if(!music || !music.fit && !music.followStory)return null;
   const file=path.resolve(root,music.file), identity=await sourceIdentity(file).catch(()=>null);
   if(!identity)return null;
+  const content=await contentIdentity(file).catch(()=>null);
   const currentPacket=music.followStory ? storyPacket(record,fx) : null;
   const cutPlan=record.cutMusicPlan; // Turning the control off keeps the already applied cut and soundtrack.
   // V26 cuts were judged against this prepared soundtrack. Keep its musical
@@ -175,14 +202,16 @@ async function request(root:string,record:ArrangeRecord,fx:FxPlan) {
     const original=packet.beats.filter(p=>p.id===b.id);
     return original.length ? {...b,atS:original[0].atS,endS:original.at(-1)!.endS} : b;
   })} : currentMoments;
-  const source=digest([scope,identity,music.startS,installed]);
+  const oldSource=digest([scope,identity,music.startS,installed]);
+  const source=content ? PIN_FORM+digest([PIN_FORM,content,music.startS,installed]) : oldSource;
   const anchor=(music as Music).pinnedArrangement;
-  const pinned=anchor?.source===source && /^[a-f0-9]{64}$/.test(anchor.key) && Number.isFinite(anchor.durationS) && anchor.durationS>0 && anchor.durationS<=1800;
-  if(pinned && await pinFits(root,file,anchor.durationS,fx.durationS,anchor.key))
-    return {music:music as Music,file,...anchor,scope,installed};
+  const shaped=!!anchor && /^[a-f0-9]{64}$/.test(anchor.key) && Number.isFinite(anchor.durationS) && anchor.durationS>0 && anchor.durationS<=1800;
+  const pinned=!!anchor && shaped && (anchor.source===source || anchor.source===oldSource || !String(anchor.source).startsWith(PIN_FORM) && await movedOldPin(root,file,anchor.key));
+  if(anchor && pinned && await pinFits(root,file,anchor.durationS,fx.durationS,anchor.key))
+    return {music:music as Music,file,...anchor,source,scope,installed};
   // V63: a refit for a new length keeps the pinned story decision (its moments
   // retime onto this edit), so a trim never buys another model call.
-  const storyKey=moments ? pinned && anchor.storyKey ? anchor.storyKey : digest([2,identity,installed,storyIdentity(record,fx)]) : null;
+  const storyKey=moments ? pinned && anchor?.storyKey ? anchor.storyKey : digest([2,identity,installed,storyIdentity(record,fx)]) : null;
   const key=digest([11,installed,scope,identity,Math.round(fx.durationS*48000)/48000,music.startS,!!music.fit,!!music.followStory,packet,storyKey]);
   return {music:music as Music,file,key,source,durationS:fx.durationS,packet,moments,storyKey,scope,installed};
 }
@@ -214,7 +243,19 @@ export async function readMusicArrangement(root:string,record:ArrangeRecord,fx:F
   try {const value=JSON.parse(await fs.readFile(file,'utf8')) as MusicArrangement;
     const outputs=[value.file,...Object.values(value.stems ?? {})];
     if(!value.outputs || value.outputs.length!==outputs.length)return null;
-    for(const [i,f] of outputs.entries())if(path.dirname(f)!==path.join(await fs.realpath(root),'.sidething/finish-cache')||JSON.stringify(await sourceIdentity(f))!==JSON.stringify(value.outputs[i])||(await fs.stat(f)).size<=44)return null;
+    // FIX7: a receipt names its outputs by absolute path. In a moved or copied shoot they are the same files in this
+    // shoot's own cache: same name, size and modified time (a move or copy changes the path and ctime, not those).
+    const cache=path.join(await fs.realpath(root),'.sidething/finish-cache'),here=(f:string)=>path.join(cache,path.basename(f));
+    for(const [i,f] of outputs.entries()){
+      if(path.basename(path.dirname(f))!=='finish-cache')return null;
+      const now=await sourceIdentity(here(f)),was=value.outputs[i];
+      if(!(JSON.stringify(now)===JSON.stringify(was) || now.size===was.size && now.mtime===was.mtime) || now.size<=44)return null;
+    }
+    if(outputs.some(f=>path.dirname(f)!==cache)){
+      value.file=here(value.file);
+      if(value.stems)value.stems=Object.fromEntries(Object.entries(value.stems).map(([k,f])=>[k,here(f as string)])) as unknown as MusicStems;
+      value.outputs=value.outputs.map(o=>({...o,file:here(o.file)}));
+    }
     return withRepeats(value);
   }catch{return null;}
 }

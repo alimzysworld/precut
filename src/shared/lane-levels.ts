@@ -29,9 +29,12 @@ export function heardPiece(plan: LiveSound, original: LiveSoundPiece, base: Live
   return audio.clean === false && base.audio.clean !== false && (!p.clean || p.clean === 'none') && p.rawUrl ? { ...p, url: p.rawUrl, sourceStart: p.rawSourceStart } : p;
 }
 
-/** The mix's output level in dB. PAR1: the export's own master gain once its sound is prepared (plan.master, the
- * loudness pass's gain on the same premix, Auto or not), moved by a previewed target change; until then, or while a
- * preview flips Auto, the estimate: prepared auto voice is matched to -20 LUFS, so Auto lifts the mix to the target. */
+/** The mix's output level in dB. PAR1: the export's own master gain (plan.master, the loudness pass's gain on the same
+ * premix, Auto or not), moved by a previewed target change. AV6: plan.master is there before any export (main measures
+ * the export's own premix, preview.ts draftSoundMaster, and an export's own stage replaces it), so both viewers play at
+ * the export's level from the first play. Only until that measurement lands (seconds after an edit's sound changes),
+ * or while a preview flips Auto, the estimate: prepared auto voice is matched to -20 LUFS, so Auto lifts the mix to
+ * the target; with Auto off it is 0 dB (15.7 dB quiet on his edit). */
 export function mixOutputDb(plan: LiveSound, base: LiveSound = plan): number {
   const audio: Partial<AudioFinish> = plan.audio ?? {};
   const master = base.master ?? plan.master;

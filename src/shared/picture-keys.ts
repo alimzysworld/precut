@@ -44,3 +44,11 @@ export function frameAtTime(piece: DraftPiece, time: number) {
   const a = frames[right - 1], b = frames[right], mix = (time - a.t) / (b.t - a.t || 1);
   return { x: a.x + (b.x - a.x) * mix, y: a.y + (b.y - a.y) * mix, w: a.w + (b.w - a.w) * mix, h: a.h + (b.h - a.h) * mix };
 }
+/** PRO3b: the exposure level the picture is drawn at (stepped: a key holds until the next), 1 when it has none. */
+export function exposureAt(piece: DraftPiece, time: number) {
+  const keys = piece.exposure;
+  if (!keys?.length) return 1;
+  let k = 1;
+  for (const key of keys) if (key.t <= time + 1e-4) k = key.k; else break;
+  return k;
+}

@@ -36,6 +36,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { DEFAULT_CAPTION_STYLE, buildCaptionTrack, followEmphasis, captionWordsForVersion, captionSafeArea, type CaptionSource, type CaptionTrack } from "../../../main/titles/captions";
 import { cachedLiveLut, lookInputTimes, lookBasics, setBasicPreview } from "./LivePlayer";
 import { BackHeader } from "./ui";
+import { presentLiveTitles } from "./liveTimeline";
 import type { AudioFinish, BasicAdjust, CaptionStyle, TitleTrack, Preferences, Api, CutVersion, Grade, Shoot, Skill, LookPreset, SkillFormat } from "../../../shared/schema";
 import type { LiveLook } from "./LivePlayer";
 import { getApi } from "../data";
@@ -297,18 +298,22 @@ export function FinishPanel({ transformMode, onTransformMode, onLookFinish, onLo
     // The saved track is shown only once it carries the chosen style. Between the commit and the new version
     // arriving it is still the old one; showing it then flashed the old style back for a few seconds.
     const savedStyle = (style?: CaptionStyle) => style ? JSON.stringify({ ...style, hook: style.hook ?? "auto" }) : "";
-    if (!captionHover && draft.titles && savedStyle(prior?.captionStyle) === savedStyle(draft.captionStyle) && saved.titles && !correctedShoot) { titleCallback.current(prior ?? null); return; }
+    if (!captionHover && draft.titles && savedStyle(prior?.captionStyle) === savedStyle(draft.captionStyle) && saved.titles && !correctedShoot) { titleCallback.current(presented(prior ?? null)); return; }
     if (draft.titles || captionHover) {
-      titleCallback.current(liveCaptionTrack(captionHover ?? draft.captionStyle));
-    } else titleCallback.current(prior ? { ...prior, cues: prior.cues.filter(c => c.role !== "subtitle" && !c.id.startsWith("kinetic-")) } : null);
-  }, [captionHover, draft.titles, draft.captionStyle, captionWords, version.titles, safePlatform, styleChanged, saved.titles, captionSource, correctedShoot]);
+      titleCallback.current(presented(liveCaptionTrack(captionHover ?? draft.captionStyle)));
+    } else titleCallback.current(presented(prior ? { ...prior, cues: prior.cues.filter(c => c.role !== "subtitle" && !c.id.startsWith("kinetic-")) } : null));
+  }, [captionHover, draft.titles, draft.captionStyle, captionWords, version.titles, safePlatform, styleChanged, saved.titles, captionSource, correctedShoot, timeline, version.bleeps, version.lowerThirds]);
+  // AV4: the viewer draws these as main presents them (a bleeped word masked, the lower thirds on), like the export.
+  function presented(track: TitleTrack): TitleTrack;
+  function presented(track: TitleTrack | null): TitleTrack | null;
+  function presented(track: TitleTrack | null) { return timeline ? presentLiveTitles(track, timeline, version) : track; }
   function liveCaptionTrack(style: CaptionStyle) {
     const prior = version.titles;
     return buildCaptionTrack(captionWords, { ...prior, font: prior?.font ?? "Outfit", cues: prior?.cues ?? [], emphasis: correctedShoot ? [] : followEmphasis(prior, captionWords), prompt: prior?.prompt ?? null, skillIds: prior?.skillIds ?? [], captionSource: captionSource ? { ...captionSource, words: captionWords } : undefined } as CaptionTrack, style, captionSource?.safeArea ?? captionSafeArea(safePlatform), version.bigLines);
   }
   function chooseCaptionStyle(captionStyle: CaptionStyle) {
     // Optimistic: the player draws the new style this frame; the draft, the live track and the save follow.
-    if (JSON.stringify(captionStyle) !== JSON.stringify(draft.captionStyle) || !draft.titles) try { player?.current?.previewTitles?.(liveCaptionTrack(captionStyle)); } catch { /* the render below reports it */ }
+    if (JSON.stringify(captionStyle) !== JSON.stringify(draft.captionStyle) || !draft.titles) try { player?.current?.previewTitles?.(presented(liveCaptionTrack(captionStyle))); } catch { /* the render below reports it */ }
     // 0.7.1: a change that asks the model for what this track lacks says so under its control from this frame
     // (main asks for the opening line when the hook turns on with none designed, and for key words when Emphasis
     // turns on with none chosen). Off and on again while it designs keeps the note: the running design still lands.

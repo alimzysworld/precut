@@ -461,14 +461,19 @@ export function editTargets(edit: CutEdit, record: StoredVersion): string {
       }
       case "overlay": return e.op === "add" ? ["overlays", (record.overlays ?? []).map(o => o.id)] : ["overlay", byId(record.overlays, e.id)];
       case "lowerThird": return e.op === "add" ? ["lowerThirds", (record.lowerThirds ?? []).map(o => o.id)] : ["lowerThird", byId(record.lowerThirds, e.id)];
-      case "sfx": return e.op === "add" ? ["sfx", (record.sfx ?? []).map(o => o.id)] : ["sfx", byId(record.sfx, e.id)];
+      case "sfx": return e.op === "add" ? ["sfx", (record.sfx ?? []).map(o => o.id)] : e.op === "musicShape" ? ["music", record.music?.shape ?? null] : ["sfx", byId(record.sfx, e.id)];  // PRO3a: musicShape
       case "join": return ["join", piece(e.join), piece(e.join + 1)];
+      // PRO1: Less, More and Remove act on whatever the pass holds now; a stale one retries only if the pass is unchanged.
+      case "produce": return e.op === "apply" ? ["produce", record.produce ?? null, spine(), voice()]
+        : ["produce", record.produce ? [record.produce.id, record.produce.removed ?? null, record.produce.groups.map(g => [g.id, g.on])] : null];
       case "clipSound": return e.piece === undefined ? ["clip-sound"] : ["piece", piece(e.piece)];
       case "cutWords": case "bleep": return [...new Set(e.spans.map(s => s.piece))].map(piece);
       case "transform": case "duplicate": return e.pieces.map(piece);
       // SCRIPT1: restoring a whole cut piece depends on that cut piece and the spine it goes back into.
       case "restoreWords": return e.cut ? ["cutPiece", e.cut, (record.cutPieces ?? []).find(t => t.id === e.cut) ?? null, spine()] : ["piece", piece(e.piece)];
-      case "move": case "trim": case "swap": case "remove": case "keepFiller": case "split": case "pieceFx": case "layout": case "replace":
+      // SCRIPT2: moving words splits pieces and lands anywhere on the spine, so it depends on all of it.
+      case "move": if (e.words) return ["spine", spine()]; return ["piece", piece(e.piece)];
+      case "trim": case "swap": case "remove": case "keepFiller": case "split": case "pieceFx": case "layout": case "replace":
         return ["piece", piece(e.piece)];
       // Edits placed by reel time, or that touch everything, depend on the whole spine and voice.
       default: return ["all", spine(), voice()];

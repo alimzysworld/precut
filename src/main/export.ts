@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { checkoutFile } from "./bundle-paths";
 import { pathToFileURL } from "node:url";
 import { effectiveShoot } from "./steps";
 import { planSelects, type SelectsPlan } from "./selects";
@@ -212,11 +213,8 @@ function syncScriptPath(): string | null {
     path.join(process.cwd(), "pipeline", "sync.py"),
     path.join(process.cwd(), "..", "pipeline", "sync.py"),
   ];
-  try {
-    // bundled main lives in out/main; pipeline sits at the repo root
-    candidates.push(path.join(__dirname, "..", "..", "pipeline", "sync.py"));
-    candidates.push(path.join(__dirname, "..", "..", "..", "pipeline", "sync.py"));
-  } catch { /* __dirname unavailable */ }
+  // bundled main lives in out/main; pipeline sits at the repo root
+  candidates.push(checkoutFile("pipeline/sync.py"));
   try {
     const electron = process as unknown as { resourcesPath?: string };
     if (electron.resourcesPath) {

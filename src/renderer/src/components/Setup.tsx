@@ -405,8 +405,8 @@ export function AiStep({ engine, engines, pillOf, busy, note, onChoose, onAction
       </div></li>;
     })}</ul>
     <div data-without-ai className={`flex flex-wrap items-center justify-between gap-3 rounded-2xl px-4 py-3 ${engine === "none" ? "bg-[var(--selection-fill)]" : "bg-surface"}`}>
-      <span className="flex flex-col"><span className="font-semibold">Start without AI</span><span className="text-[13px] text-muted">Edit by hand now. Add an AI any time in Settings.</span></span>
-      <Button variant="secondary" aria-pressed={engine === "none"} disabled={busy} onClick={() => onChoose("none")}>{engine === "none" ? "Chosen" : "Start without AI"}</Button>
+      <span className="flex flex-col"><span className="font-semibold">Start without Claude or Codex</span><span className="text-[13px] text-muted">Edit by hand now. Transcripts and framing still run on your Mac. Add one any time in Settings.</span></span>
+      <Button variant="secondary" aria-label="Start without Claude or Codex" aria-pressed={engine === "none"} disabled={busy} onClick={() => onChoose("none")}>{engine === "none" ? "Chosen" : "Start"}</Button>
     </div>
     {note && <p role="status" className="m-0 text-small text-muted">{note}</p>}
     <p className="m-0 text-micro text-muted">{PRIVACY_COPY}</p>

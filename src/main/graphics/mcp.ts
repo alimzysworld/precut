@@ -1,6 +1,6 @@
 import type { CutEdit, MotionGraphic, OverlayItem } from "../../shared/schema";
 import { GRAPHIC_LIMITS } from "./sanitize";
-import { graphicTemplates, graphicSource, buildFromTemplate } from "./templates";
+import { graphicTemplates, graphicSource, buildFromTemplate, CARD_TEMPLATE } from "./templates";
 import { ICON_NAMES } from "./icons";
 import { defaultPlacement, graphicFromRequest, graphicTheme } from "./edit";
 
@@ -14,7 +14,10 @@ const RULES = [
   `Limits: html ${GRAPHIC_LIMITS.html / 1000} KB, css ${GRAPHIC_LIMITS.css / 1000} KB, js ${GRAPHIC_LIMITS.js / 1000} KB, durations to ${GRAPHIC_LIMITS.durationS} s. A frame that takes more than a second or two to draw stops the graphic.`,
   "frame: overlay = transparent, drawn over or beside the person at x, y, w; full = replaces the picture while it is on. layer behind = the person passes in front (overlay only).",
   "Style: one type family, generous space, one accent, short ease-out moves, no bouncing, nothing flashing. Use var(--accent), var(--ink), var(--surface), var(--on), var(--font) for the edit's look.",
+  "House rules for cards and anything around a picture: no shadow, glow, blur, outline, ring, border or stroke; show emphasis with a soft fill. Sentence case. Real content only: no invented numbers, names, UI or placeholder text or bars.",
+  "A card for something on a screen (a screen recording, a screenshot, a photo from the shoot) is made with add_card, never add_graphic: it uses the real picture and checks its stamp against what the person says.",
 ];
+const CARD_ONLY = "Cards are made with add_card (a real picture from the shoot, a stamp in the person's own words). Change a card's time or place here, or make it again with add_card.";
 
 export async function listGraphicTemplates() {
   return { templates: graphicTemplates(), icons: ICON_NAMES, rules: RULES };
@@ -39,6 +42,7 @@ export async function graphicEdit(root: string, cutId: string, versionNumber: nu
   }
   const last = (record.lengthS ?? 0);
   if (name === "add_graphic") {
+    if (input.template === CARD_TEMPLATE) throw new Error(CARD_ONLY);
     const s = input.s as number, e = input.e as number;
     if (!(e > s)) throw new Error("e must be after s.");
     if (s >= last) throw new Error(`The edit is ${last.toFixed(1)} seconds long. Choose a time inside it.`);
@@ -56,6 +60,7 @@ export async function graphicEdit(root: string, cutId: string, versionNumber: nu
   if (!item?.graphic) throw new Error("That graphic is not in this version.");
   const patch = { ...(input.patch as Record<string, unknown>) };
   const { template, params, composition: next, layer, words: cues, ...place } = patch as Record<string, unknown> & Request;
+  if ((template || params || next) && (template === CARD_TEMPLATE || item.graphic.template === CARD_TEMPLATE)) throw new Error(CARD_ONLY);
   const edit: Partial<OverlayItem> = { ...(place as Partial<OverlayItem>) };
   if (template || params || next || layer || cues) {
     if (next) edit.graphic = graphicFromRequest({ composition: next, layer, words: cues ?? item.graphic.words }, theme);
@@ -71,10 +76,10 @@ export async function graphicEdit(root: string, cutId: string, versionNumber: nu
 }
 
 export async function previewGraphic(args: Record<string, unknown>, resolve: { shoot: (name: string) => Promise<string>; version: (root: string, cutId: string, version?: number) => Promise<number> }) {
-  let graphic: MotionGraphic;
+  let graphic: MotionGraphic, root: string | null = null;
   if (args.id) {
     if (typeof args.shoot !== "string" || typeof args.cut !== "string") throw new Error("Give shoot and cut with the graphic's id.");
-    const root = await resolve.shoot(args.shoot);
+    root = await resolve.shoot(args.shoot);
     const { record } = await frameOf(root, args.cut, await resolve.version(root, args.cut, args.version as number | undefined));
     const found = record.overlays?.find(o => o.id === args.id)?.graphic;
     if (!found) throw new Error("That graphic is not in this version.");
@@ -91,7 +96,7 @@ export async function previewGraphic(args: Record<string, unknown>, resolve: { s
   const { renderGraphicStills, vetGraphic } = await import("./render");
   await vetGraphic(graphic);
   const times = [graphic.durationS * 0.15, graphic.durationS * 0.55, Math.max(0, graphic.durationS - 0.5)].map(t => Math.round(t * 100) / 100);
-  const frames = await renderGraphicStills(graphic, times, { maxWidth: 800, backdrop: "#44444c" });
+  const frames = await renderGraphicStills(graphic, times, { maxWidth: 800, backdrop: "#44444c", root });
   return { content: [
     { type: "text" as const, text: JSON.stringify({ note: "Three frames of the graphic on a grey backdrop (it is transparent in the edit). Times are seconds into the graphic.", times, durationS: graphic.durationS, frame: graphic.frame, template: graphic.template ?? null }) },
     ...frames.map(png => ({ type: "image" as const, mimeType: "image/png", data: png.toString("base64") })),

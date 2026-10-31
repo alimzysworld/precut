@@ -60,3 +60,7 @@
 .script-panel .vo-actions button { min-height:34px; padding:6px 9px; font-size:12.5px; gap:6px; }
 .script-panel .vo-actions button:first-child, .script-panel .vo-actions button.st-button-primary { flex:0 1 auto; }
 .script-panel .vo-actions .vo-record-dot { width:8px; height:8px; }
+/* SCRIPT2: moving words. The words being moved get a soft tint; where they will land is a short soft-filled bar
+   between words. Fills only: no outline, ring or stroke. */
+.script-held { background:color-mix(in srgb, var(--accent) 18%, transparent); color:var(--ink); }
+.script-drop { display:inline-block; width:3px; height:1.15em; margin:0 3px; vertical-align:-0.2em; border-radius:2px; background:color-mix(in srgb, var(--accent) 80%, transparent); pointer-events:none; user-select:none; }

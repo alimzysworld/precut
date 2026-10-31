@@ -1,6 +1,7 @@
 import { Worker } from 'node:worker_threads';
 import { existsSync } from 'node:fs';
 import * as path from 'node:path';
+import { bundledFile } from './bundle-paths';
 import type { BalanceJob } from './balance-worker';
 import type { balanceView, SolvedClip } from './balance-core';
 type View=ReturnType<typeof balanceView>;
@@ -10,7 +11,7 @@ export function balanceWork(job:BalanceJob & {kind:'solve'}):Promise<Record<stri
 export function balanceWork(job:BalanceJob & {kind:'view'}):Promise<View>;
 export function balanceWork(job:BalanceJob):Promise<unknown> {
   if(!worker){
-    const local=path.join(__dirname,'balance-worker.js');
+    const local=bundledFile('balance-worker.js');
     const active=new Worker(process.env.PRECUT_BALANCE_WORKER || (existsSync(local)?local:path.resolve('out/main/balance-worker.js')));worker=active;
     active.on('message',({id,result,error})=>{const p=pending.get(id);if(!p)return;pending.delete(id);if(!pending.size)active.unref();error?p.reject(new Error(error)):p.resolve(result);});
     const fail=(error:Error)=>{if(worker!==active)return;worker=undefined;for(const p of pending.values())p.reject(error);pending.clear();};

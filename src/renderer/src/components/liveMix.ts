@@ -4,6 +4,8 @@ import type { AudioFinish, DraftTimeline } from '../../../shared/schema';
 import type { LiveSound, LiveSoundPiece } from '../../../main/live-sound-types';
 import { VoiceScheduler, FADE_S, VOICE_START_S, type VoicePiece } from './planAudio';
 export type LiveSoundTimeline = DraftTimeline & { liveSound?: LiveSound };
+/** PRO3c: the music plays at its own level only with no duck and no shape; a shape applies with "dip under voice" off. */
+const flatMusic = (music: LiveSound['music'] | undefined) => music?.duck === false && !music.shape?.length;
 export const liveSoundPreviews = new WeakMap<DraftTimeline, Partial<Pick<LiveSound, 'audio' | 'music' | 'pieces' | 'laneLevels' | 'laneMuted'>>>();
 const soundListeners = new WeakMap<DraftTimeline, () => void>();
 export function listenLiveSound(timeline: DraftTimeline, listener: () => void) {
@@ -151,7 +153,7 @@ export class LiveMix {
   private eq: BiquadFilterNode[] = [];
   private slots = new Map<string, Slot>();
   private plan?: LiveSound; private muted = false; private musicMuted = false; private voiceMuted = false;
-  private duckPieces?: LiveSoundPiece[]; private duckDepth?: number; private duckVoiceMuted=false; private duckKeys: DuckKey[] = [];
+  private duckPieces?: LiveSoundPiece[]; private duckDepth?: number; private duckShape?: NonNullable<LiveSound['music']>['shape']; private duckVoiceMuted=false; private duckOff=false; private duckKeys: DuckKey[] = [];
   // VO7-9: placed voice plays through one prewarmed Web Audio schedule on the voice bus, sample-accurate
   // with the export's fades and on past the picture's end. Media elements keep clip sound and music.
   private narration?: GainNode;
@@ -229,7 +231,7 @@ export class LiveMix {
       }
       const musicEnd=Math.min(plan.durationS,plan.music.endS ?? plan.durationS);
       const keys=stemDuckKeys(this.duckKeys,name),fade=(t:number)=>Math.max(0,Math.min(1,(musicEnd-t)/Math.min(plan.music?.arrangementState==='ready' ? .012 : 1.5,musicEnd)));
-      const level=(t:number)=>gain(plan.music!.gainDb ?? -18)*fade(t)*(plan.music!.duck===false ? 1 : duckGainAt(keys,t));
+      const level=(t:number)=>gain(plan.music!.gainDb ?? -18)*fade(t)*(flatMusic(plan.music) ? 1 : duckGainAt(keys,t));
       if(!slot) {
         const source=c.createBufferSource(),node=c.createGain();source.buffer=buffer;source.playbackRate.value=rate;
         source.connect(node);node.connect(this.music!);node.gain.value=level(time);
@@ -306,10 +308,13 @@ export class LiveMix {
     this.analyser!.getFloatTimeDomainData(this.samples!);
     const rms = Math.sqrt(this.samples!.reduce((n, sample) => n + sample * sample, 0) / this.samples!.length);
     const narrationMuted=this.voiceMuted || laneMuted(plan,'voice');
-    if(this.duckPieces!==plan.pieces || this.duckDepth!==plan.music?.duckDepthDb || this.duckVoiceMuted!==narrationMuted) {
-      this.duckPieces=plan.pieces; this.duckDepth=plan.music?.duckDepthDb; this.duckVoiceMuted=narrationMuted;
-      const audible=duckedUnder(plan,narrationMuted);
-      this.duckKeys=musicDuckKeys(audible,plan.durationS,plan.music?.duckDepthDb);
+    // PRO3a: the music's stillnesses and hit dips ride on the duck, as in the export (shared/music-shape.ts).
+    // PRO3c: with "dip under voice" off nothing ducks it, and the shape still applies.
+    const duckOff=plan.music?.duck===false;
+    if(this.duckPieces!==plan.pieces || this.duckDepth!==plan.music?.duckDepthDb || this.duckVoiceMuted!==narrationMuted || this.duckShape!==plan.music?.shape || this.duckOff!==duckOff) {
+      this.duckPieces=plan.pieces; this.duckDepth=plan.music?.duckDepthDb; this.duckVoiceMuted=narrationMuted; this.duckShape=plan.music?.shape; this.duckOff=duckOff;
+      const audible=duckOff ? [] : duckedUnder(plan,narrationMuted);
+      this.duckKeys=musicDuckKeys(audible,plan.durationS,plan.music?.duckDepthDb,plan.music?.shape);
     }
 
     const stemFiles = plan.music?.stemDucking !== false ? plan.music?.stems : undefined;
@@ -318,9 +323,9 @@ export class LiveMix {
     const musicGain=this.music!.gain;
     musicGain.cancelScheduledValues?.(c.currentTime);
     const musicLane = laneMuted(plan,'music') ? 0 : gain(laneDb(plan,'music'));
-    musicGain.value = this.musicMuted ? 0 : musicLane * (stemsReady || plan.music?.duck===false ? 1 : duckGainAt(this.duckKeys,time));
+    musicGain.value = this.musicMuted ? 0 : musicLane * (stemsReady || flatMusic(plan.music) ? 1 : duckGainAt(this.duckKeys,time));
     // Interpolate on the audio clock between animation frames, including a seek.
-    if(playing && !this.musicMuted && !stemsReady && plan.music?.duck!==false) {
+    if(playing && !this.musicMuted && !stemsReady && !flatMusic(plan.music)) {
       musicGain.setValueAtTime?.(musicGain.value,c.currentTime);
       musicGain.linearRampToValueAtTime?.(musicLane*duckGainAt(this.duckKeys,time+.02),c.currentTime+.02/rate);
     }
@@ -447,7 +452,7 @@ export class LiveMix {
         if (stemsReady) for (const name of ['vocals', 'other', 'drums', 'bass'] as const) {
           const keys = stemDuckKeys(this.duckKeys, name), buffer = this.buffers.get(stems![name])!;
           out.push({ id: `music:${name}`, buffer, out: this.music!, startS: 0, endS: end, at: t => ({ offset: music.startS - (music.stemsStartS ?? 0) + t, rate: 1 }),
-            level: t => gain(music.gainDb ?? -18) * fade(t) * (music.duck === false ? 1 : duckGainAt(keys, t)), knots: [end - fadeS, ...keys.map(k => k.t)] });
+            level: t => gain(music.gainDb ?? -18) * fade(t) * (flatMusic(music) ? 1 : duckGainAt(keys, t)), knots: [end - fadeS, ...keys.map(k => k.t)] });
         } else {
           const buffer = this.grainFile(music.url);
           if (buffer) out.push({ id: 'music', url: music.url, buffer, out: this.music!, startS: 0, endS: end, at: t => ({ offset: music.startS + t, rate: 1 }), level: t => gain(music.gainDb ?? -18) * fade(t), knots: [end - fadeS] });

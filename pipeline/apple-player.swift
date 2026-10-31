@@ -124,7 +124,7 @@ enum ApplePlayerCommand {
         let manifest = loadManifest(args[1])
         let times = args.dropFirst(2).compactMap(Double.init)
         do {
-            let built = try buildComposition(Manifest(version: manifest.version, width: manifest.width, height: manifest.height, fps: manifest.fps, durationS: manifest.durationS, video: manifest.video, audio: [], finish: manifest.finish, sound: manifest.sound, shader: manifest.shader))
+            let built = try buildComposition(Manifest(version: manifest.version, width: manifest.width, height: manifest.height, fps: manifest.fps, durationS: manifest.durationS, video: manifest.video, audio: [], finish: manifest.finish, sound: manifest.sound, shader: manifest.shader, gridFps: manifest.gridFps))
             AppleLookState.shared.load(manifest: manifest)
             let item = AVPlayerItem(asset: built.composition)
             guard let screen = built.videoComposition?.mutableCopy() as? AVMutableVideoComposition else { throw CompositionError.message("no pictures") }

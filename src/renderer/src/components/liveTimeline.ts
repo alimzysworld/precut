@@ -32,33 +32,44 @@ export function cutSignature(version: CutVersion) {
     // V63: another track, or fitting turned on, needs main to fit and measure it.
     version.music && [version.music.file,!!version.music.fit,!!version.music.followStory,version.music.pinnedArrangement?.key]]);
 }
-export function finishTimeline(timeline: DraftTimeline, version: CutVersion, root: string): DraftTimeline {
+/** The version's bleeps on the reel clock, through the timeline's own pieces (each keeps its piece number). */
+function liveBleeps(timeline: DraftTimeline, version: CutVersion) {
   const source = timeline as LiveSoundTimeline;
   const soundSpans=source.liveSound?.pieces.filter(p=>(p.layer ?? 0)===0) ?? timeline.pieces.filter(p=>p.layer===0).map(p=>({...p,timeMap:p.timeMap ?? [{t:p.startS,s:p.inS},{t:p.endS,s:p.inS+p.endS-p.startS}]}));
-  const bleeps=(version.bleeps ?? []).flatMap(b=>soundSpans.flatMap(p=>{
+  return (version.bleeps ?? []).flatMap(b=>soundSpans.flatMap(p=>{
     if(p.piece!==b.piece || version.pieceFx?.[b.piece]?.reverse)return [];
     const keys=p.timeMap,s=Math.max(b.s,keys[0].s),e=Math.min(b.e,keys.at(-1)!.s);if(e<=s)return [];
     const time=(s:number)=>{let i=keys.findIndex(k=>k.s>=s);if(i<=0)i=i<0?keys.length-1:1;const a=keys[i-1],z=keys[i];return a.t+(z.t-a.t)*(s-a.s)/(z.s-a.s||1);};
     return [{s:time(s),e:time(e),sound:b.sound,piece:b.piece}];
   }));
+}
+/** AV4: the titles the viewer draws for a caption track, presented as main presents them for the draft and the export
+ * (titles/ul1 presentTitles): every caption word under a bleep masked, the version's lower thirds laid on. The draft
+ * and the saved or live track the Finish panel hands the viewer both go through here. */
+export function presentLiveTitles(titles: TitleTrack | null | undefined, timeline: DraftTimeline, version: CutVersion, bleeps = liveBleeps(timeline, version)): TitleTrack {
+  const track=titles ?? {font:'Outfit',cues:[],prompt:null,skillIds:[]};
+  return {...track,cues:[...maskCues(track.cues.filter(c=>!c.id.startsWith('lower-third:')),bleeps),...lowerThirdCues(version.lowerThirds,track.captionStyle)]};
+}
+export function finishTimeline(timeline: DraftTimeline, version: CutVersion, root: string): DraftTimeline {
+  const source = timeline as LiveSoundTimeline;
+  const bleeps=liveBleeps(timeline,version);
   const soundPieces=source.liveSound?.pieces.map(p=>p.layer===1 ? {...p,gainDb:clipLaneDb(version,version.pieceFx?.[p.piece ?? -1]?.overlaySound?.gainDb ?? 0),muted:!!version.clipSoundMuted || (version.pieceFx?.[p.piece ?? -1]?.overlaySound?.muted ?? !version.clipSoundDefaultOn)} : ({...p,gainDb:p.piece === undefined ? p.gainDb : clipLaneDb(version,version.pieceFx?.[p.piece ?? -1]?.gainDb ?? 0),muted:p.piece === undefined ? p.muted : !!version.clipSoundMuted || !!version.pieceFx?.[p.piece]?.reverse || (version.pieceFx?.[p.piece]?.muted ?? defaultClipMuted(version,version.pieces?.[p.piece]?.kind === "broll"))}));
   const musicUrl=version.music ? `st-media://local/music/${encodeURIComponent(version.music.file.startsWith("/") ? version.music.file : `${root}/${version.music.file}`)}` : null;
   const preparedMusic=source.liveSound?.music?.url===musicUrl ? source.liveSound.music : undefined;
   const originalMusic=source.liveSound?.music?.arrangementSource===version.music?.file ? source.liveSound?.music : preparedMusic;
   const titles=version.titles === undefined ? timeline.titles : version.titles;
-  const track=titles ?? {font:'Outfit',cues:[],prompt:null,skillIds:[]};
   // V63: beat marks measured for another track never stay on this one.
   const otherTrack=!!source.liveSound?.music && source.liveSound.music.arrangementSource!==version.music?.file;
   // V63: the same fitted track keeps its prepared arrangement and clock; only levels follow the version.
   const heard=source.liveSound?.music,fitted=version.music && (version.music.fit || version.music.followStory) && heard?.arrangementSource===version.music.file && heard.arrangementState==='ready' && !!heard.fit===!!version.music.fit && !!heard.followStory===!!version.music.followStory ? heard : undefined;
-  return voiceFromVersion({...timeline,...(otherTrack ? {musicGrid:undefined,musicBeatsS:undefined} : {}),pieces:withClipTransforms(timeline.pieces,version.pieceFx),uniformBalances:version.balances,correctionKey:version.feedback?.startsWith("Auto correct ") ? version.version : undefined,uniformGrade:version.grade,uniformPieceLooks:(version.pieceFx ?? []).map(fx=>fx?.look ?? null),titles:{...track,cues:[...maskCues(track.cues.filter(c=>!c.id.startsWith('lower-third:')),bleeps),...lowerThirdCues(version.lowerThirds,track.captionStyle)]},overlays:(version.overlays ?? []).map(item=>({...item,url:`st-media://local/${encodeURIComponent(root)}/overlays/${encodeURIComponent(item.file)}`})),
+  return voiceFromVersion({...timeline,...(otherTrack ? {musicGrid:undefined,musicBeatsS:undefined} : {}),pieces:withClipTransforms(timeline.pieces,version.pieceFx),uniformBalances:version.balances,correctionKey:version.feedback?.startsWith("Auto correct ") ? version.version : undefined,uniformGrade:version.grade,uniformPieceLooks:(version.pieceFx ?? []).map(fx=>fx?.look ?? null),titles:presentLiveTitles(titles,timeline,version,bleeps),overlays:(version.overlays ?? []).map(item=>({...item,url:`st-media://local/${encodeURIComponent(root)}/overlays/${encodeURIComponent(item.file)}`,...(item.graphic?.media ? {mediaUrl:`st-media://local/${encodeURIComponent(root)}/overlays/${encodeURIComponent(item.graphic.media)}`} : {})})),
     ...(source.liveSound ? {liveSound:{...source.liveSound,laneLevels:version.laneLevels,laneMuted:version.laneMuted,bleeps:bleeps.filter(b=>soundPieces?.some(p=>!p.muted && (p.layer ?? 0)===0 && p.piece===b.piece)).map(({piece,...b})=>b),effects:source.liveSound.effects.map(p=>{
       const item=version.sfx?.find(s=>s.id===p.id);if(!item)return p;
       const length=item.lengthS ?? p.endS-p.startS,delta=item.atS-p.startS;
       return {...p,startS:item.atS,endS:item.atS+length,gainDb:(item.gainDb ?? -12)+(p.normalizeDb ?? 0),timeMap:p.timeMap.map(k=>({...k,t:k.t+delta}))};
     }),audio:version.audio ?? source.liveSound.audio,
       pieces:soundPieces ?? [],
-      music:version.music && fitted ? {...fitted,gainDb:version.music.gainDb,duck:version.music.duck,duckDepthDb:version.music.duckDepthDb,stemDucking:version.music.stemDucking,endS:version.music.endS} : version.music ? {...preparedMusic,...version.music,url:musicUrl!,...(!version.music.fit && !version.music.followStory ? {arrangementState:undefined,sourcePeaks:originalMusic?.sourcePeaks,sourceDurationS:originalMusic?.sourceDurationS,sourceBars:originalMusic?.sourceBars,peaks:originalMusic?.sourcePeaks ?? originalMusic?.peaks,waveformDurationS:originalMusic?.sourceDurationS ?? originalMusic?.waveformDurationS} : {})} : null}} : {})} as DraftTimeline,version,root);
+      music:version.music && fitted ? {...fitted,gainDb:version.music.gainDb,duck:version.music.duck,duckDepthDb:version.music.duckDepthDb,stemDucking:version.music.stemDucking,endS:version.music.endS,shape:version.music.shape} : version.music ? {...preparedMusic,...version.music,url:musicUrl!,...(!version.music.fit && !version.music.followStory ? {arrangementState:undefined,sourcePeaks:originalMusic?.sourcePeaks,sourceDurationS:originalMusic?.sourceDurationS,sourceBars:originalMusic?.sourceBars,peaks:originalMusic?.sourcePeaks ?? originalMusic?.peaks,waveformDurationS:originalMusic?.sourceDurationS ?? originalMusic?.waveformDurationS} : {})} : null}} : {})} as DraftTimeline,version,root);
 }
 // ---- VO7-3: one synchronous local reducer for hand edits, so an edit shows in the frame it was made.
 const voiceGeometry = (lines?: VoiceoverLine[]) => JSON.stringify((lines ?? []).map(l => [l.id, l.s, l.take?.file ?? null, l.take?.s ?? null, l.take?.e ?? null]));
@@ -176,7 +187,7 @@ export function optimisticVersion(version: CutVersion, edit: CutEdit, plan: Draf
   return version;
 }
 function shift(piece: DraftPiece, delta: number): DraftPiece {
-  return {...piece,startS:piece.startS+delta,endS:piece.endS+delta,timeMap:piece.timeMap?.map(k=>({...k,t:k.t+delta})),frame:piece.frame?.map(k=>({...k,t:k.t+delta})) ?? null,opacity:piece.opacity?.map(k=>({...k,t:k.t+delta})),blur:piece.blur?.map(k=>({...k,t:k.t+delta}))};
+  return {...piece,startS:piece.startS+delta,endS:piece.endS+delta,timeMap:piece.timeMap?.map(k=>({...k,t:k.t+delta})),frame:piece.frame?.map(k=>({...k,t:k.t+delta})) ?? null,opacity:piece.opacity?.map(k=>({...k,t:k.t+delta})),blur:piece.blur?.map(k=>({...k,t:k.t+delta})),...(piece.exposure?{exposure:piece.exposure.map(k=>({...k,t:k.t+delta}))}:{})};
 }
 /** Immediate picture plan while main validates/snaps/saves. Existing spans retain
  * proxies and LUTs; the server's confirmed timing replaces this plan in place. */

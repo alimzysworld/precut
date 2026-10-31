@@ -233,7 +233,7 @@ export async function checkSetup(): Promise<SetupCheck[]> {
   const status = installer.status();
   return [
     { id: "ffmpeg", name: "precut tools", ok: true, required: true, detail: "Included with the app", fix: null },
-    none ? { id: "engine", name: "AI", ok: false, required: false, detail: "No AI chosen. precut works without one.", fix: "none" } :
+    none ? { id: "engine", name: "Claude or Codex", ok: false, required: false, detail: "Not chosen. precut works without them.", fix: "none" } :
     { id: "engine", name: `AI · ${label}`, ok: installed && signedIn, required: true,
       detail: !installed ? `${label} isn't installed` : signedIn ? (engine === "muse" ? "Installed" : "Signed in") : `${label} isn't signed in`,
       fix: !installed ? "install" : signedIn ? null : "login" },

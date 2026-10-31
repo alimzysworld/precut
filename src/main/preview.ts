@@ -1,8 +1,8 @@
 import { clipTransformGraph, clipTransformMorphGraph, transformAspects } from './transform-render';
 import { canVideoToolboxDecode } from './video-decode';
-import { finishingRaster } from './finish-raster';
+import { finishingRaster, morphRaster, rasterFilter, regionFraming } from './finish-raster';
 import { musicStems, pieceSoundSettings, STEM_NAMES } from './stem-mix';
-import { stemDuckKeys } from '../shared/music-duck';
+import { musicDuckKeys, stemDuckKeys } from '../shared/music-duck';
 import { balancedLook } from "../shared/clip-balance";
 import { clipDuckDb, cutMusicKeys } from './music-duck';
 import { musicDuckFilter } from '../shared/music-duck';
@@ -26,6 +26,7 @@ import { grainGraph } from "../renderer/src/components/finish/grainMath";
 import { reverseVideoFilter } from './reverse';
 import { tempoChain } from "./music-space";
 import { tool } from "./tools";
+import { cutFrame } from "../shared/frame-rate";
 import { playableMusic } from "./music-file";
 // Draft pictures decode lifted proxies; matched voice uses the recorder WAV.
 import { execFile, spawn } from "node:child_process";
@@ -35,6 +36,7 @@ import { pipeline } from "node:stream/promises";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { bundledFile, checkoutFile } from "./bundle-paths";
 import { createHash, randomUUID } from "node:crypto";
 import { renderNotes } from "./render-notes";
 import { app, BrowserWindow } from "electron";
@@ -385,6 +387,11 @@ export interface FinishingPreviewOptions {
   reel?: ReelAssembly;
   full?: boolean;
   still?: { t: number }; // N9: one finished picture, no sound
+  /** PRO2b: a draft's output frames from..to (end exclusive) on the edit's frame clock, picture only. Cuts that reach
+   * none of them stand in as black for their frames (joinFxVideo holds each piece to its frames on the edit's grid) and
+   * nothing after them renders, so each frame in the window is the frame the whole draft has there. The file holds
+   * just those frames, from zero. */
+  window?: { from: number; to: number };
   /** VO7-11: the whole edit a partial render belongs to. Exposure matching reads its neighbours, so a span
    * rendered alone (the held last shot) grades exactly as it does inside the edit. */
   exposureCuts?: CutItem[];
@@ -407,7 +414,7 @@ async function fingerprint(file: string) {
   return { file: await fs.realpath(file), size: stat.size, mtime: stat.mtimeMs, ctime: stat.ctimeMs };
 }
 async function resource(relative: string): Promise<string> {
-  for (const base of [process.cwd(), app.getAppPath(), process.resourcesPath ?? "", path.resolve(__dirname, "../..")]) {
+  for (const base of [process.cwd(), app.getAppPath(), process.resourcesPath ?? "", checkoutFile(".")]) {
     const file = path.join(base, relative);
     try { await fs.access(file); return file; } catch { /* next */ }
   }
@@ -463,6 +470,14 @@ export async function clipGradeFilter(clip: Clip, grade: Grade, cacheDir: string
 // PAR1: `delivered` also receives the master stage this file was given (gain on the premix, limiter ceiling), so the
 // live mix plays the edit at the export's own level (live-sound.ts reads it from the manifest).
 type MasterReceipt = { value?: LoudnessMeasurement | null; gainDb?: number; ceiling?: number; dynamic?: boolean };
+/** AV6: the master stage normaliseFinished gives a premix measured as `measured` (its `reference` when the faders
+ * keep a baseline's level): gain on the premix, limiter ceiling, and whether loudnorm runs dynamic. A sound design
+ * mix with Audio Auto and no baseline starts here and is corrected after its encode (within 0.8 LU of the target). */
+export function masterStage(targetLUFS: number, measured: LoudnessMeasurement, auto: boolean, reference: boolean, soundDesign: boolean): { gainDb: number; ceiling: number; dynamic: boolean } {
+  if (soundDesign && auto && !reference) return { gainDb: targetLUFS - measured.input_i, ceiling: 10 ** (-2 / 20), dynamic: false };
+  const linear = auto && !reference, gainDb = linear ? targetLUFS - measured.input_i : targetLUFS - measured.input_i + measured.target_offset;
+  return { gainDb, ceiling: 0.841395, dynamic: linear && measured.input_tp + gainDb > -1.5 };
+}
 async function normaliseFinished(file: string, targetLUFS: number, bitrate: string, duration: number, progress: () => void, audioOnly = false, reference?: LoudnessMeasurement, auto = false, delivered?: MasterReceipt, soundDesign = false): Promise<LoudnessMeasurement | undefined> {
   // Keep the first loudness pass on the same abortable process path as encoding.
   const stderr = reference ? "" : await finishProcess(tool("ffmpeg"), ["-hide_banner", "-nostdin", "-nostats", "-i", file,
@@ -505,8 +520,8 @@ async function normaliseFinished(file: string, targetLUFS: number, bitrate: stri
       ...(audioOnly ? ["-vn", "-map", "0:a:0"] : ["-map", "0:v:0", "-map", "0:a:0", "-c:v", "copy"]), "-af", filter, "-ar", "48000",
       "-c:a", "aac", "-b:a", bitrate, "-t", `${duration}`, "-movflags", "+faststart", temporary]);
     // loudnorm's linear pass is the gain target - measured (dynamic only when that gain would pass the peak target).
-    const linear = auto && !reference, gainDb = linear ? targetLUFS - measured.input_i : targetLUFS - measured.input_i + measured.target_offset;
-    if (delivered) Object.assign(delivered, { gainDb, ceiling: 0.841395, dynamic: linear && measured.input_tp + gainDb > -1.5 });
+    const stage = masterStage(targetLUFS, measured, auto, !!reference, false), gainDb = stage.gainDb;
+    if (delivered) Object.assign(delivered, stage);
     if (auto) {
       const safety = { db: 0 };
       const decoded = await verifyEncodedPeaks(temporary, targetLUFS, bitrate, duration, audioOnly, safety);
@@ -637,10 +652,12 @@ export function appendSoundMix(root: string, cuts: CutItem[], fps: number, durat
     const musicEnd = Math.min(duration,music.endS ?? duration);
     const names = stems ? STEM_NAMES : ['mix'] as const, fade = Math.min(music.fit || music.followStory ? .012 : 1.5,musicEnd);
     const fallback = plan ?? planFx(cuts,fps,{});
-    const keys = cutMusicKeys(cuts,fallback,{music,voiceover,laneMuted:lanes.laneMuted},attached);
+    // PRO3c: the music shape is the director's, not the duck's: with "dip under voice" off it still applies, alone.
+    const shapeOnly = music.duck === false, flat = shapeOnly && !music.shape?.length;
+    const keys = shapeOnly ? musicDuckKeys([],fallback.durationS,undefined,music.shape) : cutMusicKeys(cuts,fallback,{music,voiceover,laneMuted:lanes.laneMuted},attached);
     for (const name of names) {
       const i = input(stems && name !== 'mix' ? stems[name] : path.resolve(root,music.file),stems ? 0 : music.startS,duration);
-      const envelope = music.duck === false ? '' : musicDuckFilter(name === 'mix' ? keys : stemDuckKeys(keys,name))+',';
+      const envelope = flat ? '' : musicDuckFilter(name === 'mix' ? keys : stemDuckKeys(keys,name))+',';
       filters.push(`[${i}:a]asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo,volume=${laneMuted(lanes,'music') ? '0' : `${music.gainDb!+laneDb(lanes,'music')}dB`},apad,atrim=duration=${musicEnd},${envelope}afade=t=out:st=${musicEnd-fade}:d=${fade},apad,atrim=duration=${duration}[music${name}]`);
     }
     filters.push(`[voice]${names.map(name=>`[music${name}]`).join('')}amix=inputs=${names.length+1}:duration=first:normalize=0,alimiter=limit=0.95:latency=1[mix]`);
@@ -714,7 +731,17 @@ export async function cachedDraftSound(root: string, cuts: CutItem[], opts: Fini
   return noteArrangement(file);
 }
 
-async function prepareDraftSound(root: string, cuts: CutItem[], opts: FinishingPreviewOptions, voiceOnly = false, referencePass = false): Promise<string> {
+/** AV6: a measuring pass of the export's sound (`prepareDraftSound` with `measure`): the same request, sources and
+ * graph, measured instead of written. `stage` is the master stage the export of this sound gives it (masterStage). */
+type SoundMeasure = { measured?: LoudnessMeasurement | null; stage?: NonNullable<import('../shared/schema').LiveSound['master']> | null };
+/** AV6: the master stage the export of this sound will give it, before any export: the export's own request and graph,
+ * its premix (or, with faders, its baseline) measured and never written. Null for a silent mix. */
+export async function draftSoundMaster(root: string, cuts: CutItem[], opts: FinishingPreviewOptions): Promise<SoundMeasure['stage']> {
+  const measure: SoundMeasure = {};
+  await prepareDraftSound(root, cuts, opts, false, false, measure);
+  return measure.stage ?? null;
+}
+async function prepareDraftSound(root: string, cuts: CutItem[], opts: FinishingPreviewOptions, voiceOnly = false, referencePass = false, measure?: SoundMeasure): Promise<string> {
   currentActivity()?.signal.throwIfAborted();
   const fps = opts.template.fps, fx = planFx(cuts, fps, opts.version), duration = fx.durationS;
   const effects = voiceOnly ? [] : await prepareDesignSounds(root, fx, opts.version);
@@ -727,19 +754,27 @@ async function prepareDraftSound(root: string, cuts: CutItem[], opts: FinishingP
     const baselineOpts = {...opts,version:{...opts.version,bleeps:[],clipSoundMuted:false,laneLevels:{},laneMuted:{},
       ...(chosenMusic ? {music:{...chosenMusic,gainDb:-18}} : {}),
       pieceFx:opts.version.pieceFx?.map(p=>p ? {...p,...(p.gainDb===undefined ? {} : {gainDb:0}),muted:undefined,overlaySound:p.overlaySound ? {...p.overlaySound,...(p.overlaySound.gainDb===undefined ? {} : {gainDb:0}),muted:undefined} : undefined} : p)}};
-    const baseline=await prepareDraftSound(root,cuts,baselineOpts,voiceOnly,true);
-    reference=JSON.parse(await fs.readFile(`${baseline}.json`,"utf8")).measurement;
+    // AV6: measuring, the baseline is measured too (never written): the same numbers the export's baseline file holds.
+    const measuredRef = async (o: FinishingPreviewOptions) => { const m: SoundMeasure = {}; await prepareDraftSound(root,cuts,o,voiceOnly,true,m); return m.measured ?? undefined; };
+    const baseline=measure ? '' : await prepareDraftSound(root,cuts,baselineOpts,voiceOnly,true);
+    reference=measure ? await measuredRef(baselineOpts) : JSON.parse(await fs.readFile(`${baseline}.json`,"utf8")).measurement;
     if (!reference || reference.input_i<=-60) {
       // A b-roll-only edit can default to silence. Its audible sources provide
       // one stable calibration, independent of which clips the person mutes.
       const count=Math.max(baselineOpts.version.pieceFx?.length ?? 0,...cuts.map((c,i)=>(c.piece ?? i)+1));
-      const calibration=await prepareDraftSound(root,cuts,{...baselineOpts,version:{...baselineOpts.version,
-        pieceFx:Array.from({length:count},(_,i)=>({...baselineOpts.version.pieceFx?.[i],muted:false,overlaySound:{...baselineOpts.version.pieceFx?.[i]?.overlaySound,muted:false}}))}},voiceOnly,true);
+      const calibrationOpts={...baselineOpts,version:{...baselineOpts.version,
+        pieceFx:Array.from({length:count},(_,i)=>({...baselineOpts.version.pieceFx?.[i],muted:false,overlaySound:{...baselineOpts.version.pieceFx?.[i]?.overlaySound,muted:false}}))}};
+      if (measure) reference=await measuredRef(calibrationOpts);
+      else {
+      const calibration=await prepareDraftSound(root,cuts,calibrationOpts,voiceOnly,true);
       reference=JSON.parse(await fs.readFile(`${calibration}.json`,"utf8")).measurement;
+      }
     }
   }
   if (!cuts.length || !(fps > 0) || !Number.isFinite(fps) || !(duration > 0) || !Number.isFinite(duration)) throw new Error("Invalid draft sound duration.");
   const audio = normalizeAudio({ ...DEFAULT_AUDIO_FINISH, ...(opts.version.audio?.auto === false ? { loudnessLUFS: -16 } : {}), ...opts.version.audio });
+  // AV6: with a baseline, the export's master stage is the baseline's (normaliseFinished with `reference`): nothing to render.
+  if (measure && reference) { measure.measured = reference; measure.stage = masterStage(audio.loudnessLUFS, reference, audio.auto !== false, true, !!opts.version.sfx?.length); return ''; }
   const prepared = new Map<number, PreparedVoice>();
   for (const [i, cut] of cuts.entries()) {
     const clip = cut.seg?.clip;
@@ -813,6 +848,26 @@ async function prepareDraftSound(root: string, cuts: CutItem[], opts: FinishingP
       return Object.hasOwn(saved, "loudness") && JSON.stringify(saved.output) === JSON.stringify(await fingerprint(output)) && await nonempty(output);
     } catch { return false; } // missing, partial or replaced audio
   };
+  if (measure) {
+    // AV6: the premix measured (the loudness pass normaliseFinished starts with), into its own receipt beside the
+    // export's cache: nothing the export reads or writes is touched, so an export running alongside is never disturbed.
+    const receipt = path.join(cache, `sound-measure-${key}.json`);
+    let measured: LoudnessMeasurement | null | undefined;
+    try { measured = JSON.parse(await fs.readFile(receipt, "utf8")).measured; } catch { /* measure it */ }
+    if (measured === undefined) {
+      // The graph's arguments ask for errors only; loudnorm prints its measurement at info level (normaliseFinished's pass).
+      const stderr = await finishProcess(tool("ffmpeg"), [...args, "-loglevel", "info", "-nostats", "-filter_complex", `${filters.join(";")};[mix]atrim=duration=${duration},loudnorm=I=${audio.loudnessLUFS}:TP=-1.5:LRA=11:print_format=json[measured]`,
+        "-vn", "-map", "[measured]", "-ar", "48000", "-f", "null", "-"]);
+      const report = JSON.parse(stderr.slice(stderr.lastIndexOf("{"), stderr.lastIndexOf("}") + 1)) as Record<string, string>;
+      measured = report.input_i === "-inf" ? null : Object.fromEntries(["input_i", "input_tp", "input_lra", "input_thresh", "target_offset"].map(k => [k, Number(report[k])])) as unknown as LoudnessMeasurement;
+      if (measured && !Object.values(measured).every(Number.isFinite)) throw new Error("Invalid mix loudness measurement.");
+      const temporary = `${receipt}.${randomUUID()}.tmp`;
+      try { await fs.writeFile(temporary, JSON.stringify({ measured })); await fs.rename(temporary, receipt); } finally { await fs.rm(temporary, { force: true }); }
+    }
+    measure.measured = measured;
+    measure.stage = measured ? masterStage(audio.loudnessLUFS, measured, audio.auto !== false, false, !!opts.version.sfx?.length) : null;
+    return '';
+  }
   if (await cached()) return output;
   return runActivity({ kind: "render", root, target: null, label: "Preparing sound", cancelable: true }, async () => {
     // Another caller may have built this key while we waited for the media slot.
@@ -875,12 +930,22 @@ export async function draftVoice(root: string, cuts: CutItem[], opts: FinishingP
 }
 
 /** Shared temporal video assembly, including shortened dissolve overlaps. */
-export function joinFxVideo(plan: FxPlan, filters: string[], prefix: string, output: string): void {
-  filters.push(`[${prefix}0]settb=AVTB,setpts=PTS-STARTPTS[${prefix}join0]`);
+/** AV6: every piece is held to exactly its frames on the edit's grid (shared/frame-rate.ts cutFrame: from its start's
+ * frame to its end's), so each cut lands on the frame nearest its time, where its sound is. A piece used to run to the
+ * end of its last source frame, and the cuts after it drifted by up to two frames (26.7 ms of picture after sound).
+ * `base` is where the plan's clock starts on the edit's (an EXP2 part's items are on its own clock from zero). */
+export function joinFxVideo(plan: FxPlan, filters: string[], prefix: string, output: string, fps: number, base = 0): void {
+  const first = cutFrame((plan.items[0]?.startS ?? 0) + base, fps, plan.durationS), at = (t: number) => cutFrame(t + base, fps, plan.durationS) - first;
+  // A piece short of its frames repeats its last one (tpad), then all of them are cut to length (trim).
+  const exact = (i: number) => { const item = plan.items[i], frames = Math.max(1, at(item.endS) - at(item.startS));
+    return `settb=AVTB,setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop=${frames},trim=end_frame=${frames},setpts=PTS-STARTPTS`; };
+  filters.push(`[${prefix}0]${exact(0)}[${prefix}join0]`);
   for (let i = 1; i < plan.items.length; i++) {
     const item = plan.items[i];
-    filters.push(`[${prefix}${i}]settb=AVTB,setpts=PTS-STARTPTS[${prefix}next${i}]`);
-    filters.push(`[${prefix}join${i - 1}][${prefix}next${i}]${item.overlap ? `xfade=transition=fade:duration=${item.overlap}:offset=${item.startS}` : 'concat=n=2:v=1:a=0'}[${prefix}join${i}]`);
+    filters.push(`[${prefix}${i}]${exact(i)}[${prefix}next${i}]`);
+    // A dissolve starts on its start's frame and lasts the frames the outgoing piece runs past it.
+    const overlap = (at(plan.items[i - 1].endS) - at(item.startS)) / fps;
+    filters.push(`[${prefix}join${i - 1}][${prefix}next${i}]${item.overlap && overlap > 0 ? `xfade=transition=fade:duration=${overlap}:offset=${at(item.startS) / fps}` : 'concat=n=2:v=1:a=0'}[${prefix}join${i}]`);
   }
   filters.push(`[${prefix}join${plan.items.length - 1}]null[${output}]`);
 }
@@ -934,6 +999,26 @@ export function fxBlurFilter(keys: NonNullable<import('../shared/schema').DraftP
   return `sendcmd=c='${commands}',dblur@${name}=radius=${radius(keys[0].amount)}:angle=${keys[0].angle * 180 / Math.PI}`;
 }
 
+/** PRO3b: a piece's exposure keys as ffmpeg: one lut1d per level (shared/look-scalar.ts exposureKey sampled to a .cube),
+ * each enabled on exactly its frames of the piece's clock (t = 0 at the piece's start). Frames outside pass untouched. */
+export async function exposureFilter(keys: { t: number; k: number }[], startS: number, fps: number, cacheDir: string): Promise<string> {
+  const { exposureCube } = await import('../shared/look-scalar');
+  const spans = new Map<number, string[]>();
+  keys.forEach((key, i) => {
+    if (key.k === 1) return;
+    const from = Math.round((key.t - startS) * fps), to = i + 1 < keys.length ? Math.round((keys[i + 1].t - startS) * fps) : from + 1;
+    spans.set(key.k, [...spans.get(key.k) ?? [], `between(t,${((from - .5) / fps).toFixed(6)},${((to - .5) / fps).toFixed(6)})`]);
+  });
+  const filters: string[] = [];
+  for (const [k, windows] of spans) {
+    const file = path.join(cacheDir, `exposure-${k.toFixed(4)}.cube`);
+    if (!await fs.stat(file).then(s => s.size > 0, () => false)) { const temporary = `${file}.${randomUUID()}.tmp`; await fs.writeFile(temporary, exposureCube(k)); await fs.rename(temporary, file); }
+    // Escaped for ffmpeg's option parser, then its filtergraph parser (as grade.ts filterValue does).
+    const value = file.replace(/[\\':]/g, "\\$&").replace(/[\\'[\],;]/g, "\\$&");
+    filters.push(`lut1d=file=${value}:interp=linear:enable='${windows.join('+')}'`);
+  }
+  return filters.join(',');
+}
 /** Shared draft/full compositor. All picture edits remain frame-exact. */
 export async function renderFinishingPreview(root: string, cuts: CutItem[], opts: FinishingPreviewOptions): Promise<string> {
   cuts = cuts.map(c => c.seg ? { ...c, seg: { ...c.seg, clip: displayedClip(c.seg.clip) } } : c);
@@ -961,7 +1046,11 @@ export async function renderFinishingPreview(root: string, cuts: CutItem[], opts
   // EXP2: the sound mix and the picture preparation are independent. Start the mix now
   // and let framing, measurement and LUT building run alongside it; the encode still
   // waits for both. Stages keep their order (sound is named first).
-  const soundPromise: Promise<string> | null = opts.still ? null : renderDraftSound(root, cuts, opts);
+  // PRO2b: a draft window (opts.window), as seconds on the edit's clock; the last cut that reaches it.
+  const windowS = opts.window && !opts.full && !opts.still && opts.window.to > opts.window.from ? { s: opts.window.from / fps, e: opts.window.to / fps } : null;
+  const reachesWindow = (i: number) => !!windowS && i >= 0 && i < fx.items.length && fx.items[i].startS < windowS.e - 1e-9 && fx.items[i].endS > windowS.s + 1e-9;
+  const windowLast = windowS ? fx.items.reduce((last, item, i) => item.startS < windowS.e - 1e-9 ? i : last, 0) : -1;
+  const soundPromise: Promise<string> | null = opts.still || windowS ? null : renderDraftSound(root, cuts, opts);
   if (soundPromise) soundPromise.catch(() => { /* surfaced where it is awaited */ });
   mark("soundMs");
   if (!opts.still) currentActivity()?.stage?.("picture", 0, { doneS: 0, lengthS: duration });
@@ -975,7 +1064,10 @@ export async function renderFinishingPreview(root: string, cuts: CutItem[], opts
   })) : [];
   const fxPlans = plans.map((plan, i) => {
     const picture = fxPictures[i], clip = cuts[i].seg?.clip;
-    const changed = fx.items[i].reverse || picture.blur || fx.craft?.scales[i] !== 1 || fx.craft?.punches.length || Math.abs(picture.endS - picture.startS - cuts[i].durTimelineFrames / fps) > 1e-7;
+    const moving = !!fx.craft?.motions?.some(m => m.item === i);   // PRO3b: an authored punch on this cut
+    const changed = fx.items[i].reverse || picture.blur || fx.craft?.scales[i] !== 1 || fx.craft?.punches.length || moving || Math.abs(picture.endS - picture.startS - cuts[i].durTimelineFrames / fps) > 1e-7;
+    // A clip that fills the frame as shot has no framing plan; its punch still needs the rects, from a whole-frame plan.
+    if (!plan && moving && clip?.meta && picture.frame) plan = { scale: 1, push: 0, x: .5, y: .5, elapsed: 0, duration: picture.endS - picture.startS, crop: null } as CutFraming;
     return plan && clip && picture.frame && changed ? { ...plan, rects: picture.frame.map(k => ({ t: k.t - picture.startS, x: k.x * clip.meta!.width, y: k.y * clip.meta!.height, w: k.w * clip.meta!.width, h: k.h * clip.meta!.height })) } : plan;
   });
   const audio = normalizeAudio({ ...DEFAULT_AUDIO_FINISH, ...opts.version.audio });
@@ -1054,7 +1146,7 @@ export async function renderFinishingPreview(root: string, cuts: CutItem[], opts
   }
   for (const item of opts.version.overlays ?? []) files.add((await import("./overlays")).overlayPath(root, item.file));
   if (opts.version.titles?.cues.length || opts.version.overlays?.length) {
-    files.add(path.join(__dirname, "titles/template.html"));
+    files.add(bundledFile("titles/template.html"));
     // Font/template files are copied by the build. Include nested font files.
     const addTree = async (dir: string) => {
       for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
@@ -1062,7 +1154,7 @@ export async function renderFinishingPreview(root: string, cuts: CutItem[], opts
         if (entry.isDirectory()) await addTree(file); else files.add(file);
       }
     };
-    await addTree(path.join(__dirname, "titles"));
+    await addTree(bundledFile("titles"));
   }
   // Source metadata, subject paths, matched mic offsets, source stats, frame
   // shape, layers and the renderer revision all participate in invalidation.
@@ -1074,7 +1166,8 @@ export async function renderFinishingPreview(root: string, cuts: CutItem[], opts
     angleCuts: opts.version.angleCuts ?? [], angleFrames, layouts: opts.version.layouts ?? [], layoutRevision: 7, layoutFrames, overlays: opts.version.overlays ?? [], titles: opts.version.titles ?? null, grade, audio, files: await Promise.all([...files].sort().map(fingerprint)),
     // VO7-11: titles and images are now laid on in bt709 (renders made before are 1.7 levels darker).
     ...(opts.version.titles?.cues.length || opts.version.overlays?.length ? { titleColourRevision: 2 } : {}),
-    ...(opts.exposureCuts ? { exposureCuts: opts.exposureCuts.map(c => [c.piece, c.seg?.clip.id, c.inFrames, c.durTimelineFrames, c.offsetFrames]) } : {}) };
+    ...(opts.exposureCuts ? { exposureCuts: opts.exposureCuts.map(c => [c.piece, c.seg?.clip.id, c.inFrames, c.durTimelineFrames, c.offsetFrames]) } : {}),
+    ...(windowS ? { window: opts.window, windowRevision: 1 } : {}) };
   const keyOf = async () => {
     const soundFile = await sound();
     return digest(soundFile ? { ...inputs, files: await Promise.all([...files, soundFile].sort().map(fingerprint)) } : inputs);
@@ -1162,6 +1255,9 @@ export async function renderFinishingPreview(root: string, cuts: CutItem[], opts
       const colourOptions={root,s:start,e:start+length,neighbours:(await import('./grade')).exposureSpans(opts.exposureCuts ?? cuts,overlays,fps)};
       const layoutColour=region?.layoutScene?await layoutGradeFilters(gradingClip,pieceGrade,cache,colourOptions):undefined;
       let filter=layoutColour?`${layoutColour.conversion},${layoutColour.colour}`:await (await import('./grade')).pieceGradeFilter(gradingClip,pieceGrade,cache,colourOptions);
+      // PRO3b: exposure keys act on the graded picture, before it is framed, on the piece's own frame clock.
+      const exposure = timing?.exposure?.length ? await exposureFilter(timing.exposure, timing.startS, fps, cache) : '';
+      if (exposure) filter += `,${exposure}`;
       // Cached backgrounds are already camera-converted Rec.709; keep the same
       // neutral base and editable piece LUT as live, without converting twice.
       const conversion=await cameraConversionFilter(gradingClip,cache),cachedConversion='scale=in_color_matrix=bt709:out_range=full,format=gbrp16le';
@@ -1176,7 +1272,7 @@ export async function renderFinishingPreview(root: string, cuts: CutItem[], opts
       // Duplicating 25 fps originals to 60 before the pointwise camera/look LUTs
       // grades identical pixels more than twice. Keep that conversion immediately
       // before animated framing instead; temporal crops retain the old ordering.
-      const lateRate = !region && !prepared && !timing?.reverse && !planned?.match && !planned?.crop?.keyframes?.length
+      const lateRate = !region && !prepared && !timing?.reverse && !planned?.match && !planned?.crop?.keyframes?.length && !timing?.exposure?.length
         && !!clip.meta?.fps && clip.meta.fps * Math.max(1, ...sourceRates) < fps - .01;
       filters.push(`[${sourceLabel}]trim=${group?`start=${Math.max(0,sourceStart-decodeStart)}:`:''}duration=${length},setpts=PTS-STARTPTS,${prepared || !original ? "" : clipRotationFilter(clip)}${prepared ? `scale=${clip.meta!.width}:${clip.meta!.height},` : ""}${reverseVideoFilter(timing)}${timing ? fxSetpts(timing) + "," : ""}${lateRate ? 'null' : `fps=${fps}`}[${outputLabel}picture]`);
       const morph=region?.layoutScene&&(region.layoutRegionKeys?.some(k=>['x','y','w','h'].some(key=>Math.abs(k[key as 'x']-region.layoutRegionKeys![0][key as 'x'])>1e-7))||region.layoutShapeKeys?.some(k=>Math.abs(k.radius-region.layoutShapeKeys![0].radius)>1e-7||Math.abs(k.opacity-region.layoutShapeKeys![0].opacity)>1e-7));
@@ -1184,32 +1280,32 @@ export async function renderFinishingPreview(root: string, cuts: CutItem[], opts
         // Crop each output frame before a fixed-size scale. Only the source crop
         // changes dimensions; everything downstream keeps a stable raster.
         region.layoutRaster={w:Math.max(1,...region.layoutRegionKeys!.map(k=>Math.round(k.w*w))),h:Math.max(1,...region.layoutRegionKeys!.map(k=>Math.round(k.h*h))),cropped:true};
-        const cropAt=(n:number)=>{
-          const c=motionRectAt(region.frame!,Math.min(region.endS,region.startS+n/fps)),mw=clip.meta!.width,mh=clip.meta!.height;
+        const steps=Math.ceil((region.endS-region.startS)*fps-1e-7);
+        const cropOn=(n:number,{width:mw,height:mh}:{width:number;height:number})=>{
+          const c=motionRectAt(region.frame!,Math.min(region.endS,region.startS+n/fps));
           const cw=Math.max(1,Math.min(mw,Math.round(c.w*mw))),ch=Math.max(1,Math.min(mh,Math.round(c.h*mh)));
           return {w:cw,h:ch,x:Math.max(0,Math.min(mw-cw,Math.round(c.x*mw))),y:Math.max(0,Math.min(mh-ch,Math.round(c.y*mh)))};
         };
-        const cropName=`crop@${outputLabel}layout`,first=cropAt(0),commands=Array.from({length:Math.ceil((region.endS-region.startS)*fps-1e-7)},(_,n)=>Object.entries(cropAt(n)).map(([key,value])=>`${Number((n/fps).toFixed(9))} ${cropName} ${key} ${value}`).join(';')).join(';');
-        filters.push(`[${outputLabel}picture]${sceneConversion},sendcmd=commands='${commands}',${cropName}=w=${first.w}:h=${first.h}:x=${first.x}:y=${first.y}:exact=1,scale=${region.layoutRaster.w}:${region.layoutRaster.h}:flags=lanczos,setsar=1,${sceneColour},format=rgba[${outputLabel}]`);
+        // EXP4 B: crop, then the camera LUT (pointwise, so after the crop is the same pixels), then the fixed-size
+        // scale, then the look. The conversion ahead of the crop runs on a source raster bounded by the smallest crop.
+        const raster=prepared?{clip,scale:1}:morphRaster(clip,Array.from({length:Math.max(1,steps)},(_,n)=>cropOn(n,clip.meta!)),region.layoutRaster);
+        const cropAt=(n:number)=>cropOn(n,raster.clip.meta!),lut=sceneConversion.indexOf(',lut3d=');
+        const beforeCrop=rasterFilter(lut<0?sceneConversion:sceneConversion.slice(0,lut),raster),afterCrop=lut<0?'':`${sceneConversion.slice(lut+1)},`;
+        const cropName=`crop@${outputLabel}layout`,first=cropAt(0),commands=Array.from({length:steps},(_,n)=>Object.entries(cropAt(n)).map(([key,value])=>`${Number((n/fps).toFixed(9))} ${cropName} ${key} ${value}`).join(';')).join(';');
+        filters.push(`[${outputLabel}picture]${beforeCrop},sendcmd=commands='${commands}',${cropName}=w=${first.w}:h=${first.h}:x=${first.x}:y=${first.y}:exact=1,${afterCrop}scale=${region.layoutRaster.w}:${region.layoutRaster.h}:flags=lanczos,setsar=1,${sceneColour},format=rgba[${outputLabel}]`);
         finishTransform(region.layoutRaster,Array.from({length:Math.ceil((region.endS-region.startS)*fps)},(_,n)=>{const box=motionRectAt(region.layoutRegionKeys!,region.startS+n/fps);return box.w*w/(box.h*h);}));
         return index;
       }
       const shape = region?.layoutRegion ? { w: Math.round(w*region.layoutRegion.w), h: Math.round(h*region.layoutRegion.h) } : out;
-      if (region?.frame?.length) planned = { scale:1,push:0,x:.5,y:.5,elapsed:0,duration:length,crop:null,rects:region.frame.map(k => ({t:k.t-region.startS,x:k.x*clip.meta!.width,y:k.y*clip.meta!.height,w:k.w*clip.meta!.width,h:k.h*clip.meta!.height})) };
-      if(region?.layoutScene&&planned?.rects?.length){
-        const first=planned.rects[0];
-        if(planned.rects.every(k=>['x','y','w','h'].every(key=>Math.abs(k[key as 'x']-first[key as 'x'])<1e-6))){
-          planned={...planned,rects:undefined,crop:{x:first.x,y:first.y,w:first.w,h:first.h}};
-        }
-      }
+      if (region) planned = regionFraming(clip, region, length, planned);
       const localDiffusion = !region?.layoutRegion && opts.version.pieceFx?.some(fx => fx?.look?.diffusion !== undefined) ? pieceGrade.detail?.diffusion ?? 0 : 0;
       const framedLabel = localDiffusion ? `${outputLabel}undiffused` : outputLabel;
       const cropLabel=blur?`${outputLabel}sharp`:framedLabel,geometryLabel=region?.layoutScene?`${cropLabel}ungraded`:cropLabel;
-      const raster = !region && !prepared ? finishingRaster(clip, planned, shape) : { clip, plan: planned, scale: 1 };
+      // EXP4 B: layout pieces too take only the raster their region needs (its shape, not the whole output).
+      const raster = !prepared ? finishingRaster(clip, planned, shape) : { clip, plan: planned, scale: 1 };
       // Fuse resize with YCbCr conversion, before the pointwise LUTs, just as
       // previews do. Detail, grain and transforms still run at output resolution.
-      const rasterFilter = raster.scale < 1 && filter.startsWith('scale=') ? `scale=w=${raster.clip.meta!.width}:h=${raster.clip.meta!.height}:flags=bicubic:${filter.slice(6)}` : filter;
-      let framed=previewFraming(raster.clip,start,start+length,shape,`${outputLabel}picture`,geometryLabel,energy,beat,fps,region?.layoutScene?sceneConversion:rasterFilter,raster.plan);
+      let framed=previewFraming(raster.clip,start,start+length,shape,`${outputLabel}picture`,geometryLabel,energy,beat,fps,rasterFilter(region?.layoutScene?sceneConversion:filter,raster),raster.plan);
       if (lateRate) framed = framed.map(f => f.includes('zoompan=') ? f.replace('zoompan=', `fps=${fps},zoompan=`) : f.replace(/\[([^\]]+)\]$/, `,fps=${fps}[$1]`));
       filters.push(...(region?.layoutScene?framed.map(f=>f.replace(/format=yuv420p(?=\[)/g,'format=gbrp16le')):framed));
       if(region?.layoutScene)filters.push(`[${geometryLabel}]${sceneColour},format=rgba[${cropLabel}]`);
@@ -1254,11 +1350,23 @@ export async function renderFinishingPreview(root: string, cuts: CutItem[], opts
     for (const [i, cut] of cuts.entries()) {
       if (part && (i < part.first || i > part.last)) continue; // EXP2: another part renders this cut
       if (opts.still && i > stillIdx) break; // EXP2: nothing after the still's piece can reach its frame
+      if (windowS && i > windowLast) break; // PRO2b: nor after a window's last cut
       const length = fx.items[i].endS - fx.items[i].startS;
       const sourceLength = (cut.outFrames - cut.inFrames) / (cut.clipFpsR.num / cut.clipFpsR.den);
       at = fx.items[i].startS;
       if (!(length > 0) || !Number.isFinite(length)) throw new Error("Invalid finishing piece length.");
-      if (opts.still && cut.seg && i < stillIdx - 1 && !angleFrames.length && !opts.version.layouts?.some(Boolean) && !activeBackground(opts.version.pieceFx?.[cut.piece ?? i]?.background) && !opts.version.pieceFx?.[fx.items[i].piece]?.transform) {
+      if (windowS && !reachesWindow(i) && !reachesWindow(i + 1)) {
+        // PRO2b: a cut no frame of the window needs stands in as black for its frames on the edit's grid (joinFxVideo
+        // holds every piece to exactly those), so nothing is decoded or graded for it and later frames land as they do.
+        const frames = Math.max(1, cutFrame(fx.items[i].endS, fps, fx.durationS) - cutFrame(fx.items[i].startS, fps, fx.durationS));
+        filters.push(`color=c=black:s=${w}x${h}:r=${fps},trim=end_frame=${frames},setsar=1,format=yuv420p[v${i}]`);
+        if (behind) filters.push(`color=c=black:s=${w}x${h}:r=${fps},trim=end_frame=${frames},format=gray[m${i}]`);
+        // Its camera input would have taken one of the four hardware decoders, as in the whole draft: the window's own
+        // cuts decode on the same decoder (hardware or software) they do there, so their pixels match.
+        if (cut.seg && canVideoToolboxDecode(displayedClip(cut.seg.clip).meta?.codec)) hardwareInputs++;
+        continue;
+      }
+      if (opts.still && i < stillIdx - 1 && cut.seg && !angleFrames.length && !opts.version.layouts?.some(Boolean) && !activeBackground(opts.version.pieceFx?.[cut.piece ?? i]?.background) && !opts.version.pieceFx?.[fx.items[i].piece]?.transform) {
         // EXP2: a still needs real picture only from the cut holding it and the one before (a dissolve into it).
         // Earlier cuts decode for their timing alone, so every later frame lands where it does in the edit.
         await frame(cut.seg.clip, cut.inFrames / (cut.clipFpsR.num / cut.clipFpsR.den), sourceLength, `v${i}`, undefined, undefined, fx.items[i], undefined, undefined, undefined, false, true);
@@ -1325,11 +1433,11 @@ export async function renderFinishingPreview(root: string, cuts: CutItem[], opts
     }
     // EXP2: a part joins only its own cuts (parts start at hard cuts), renumbered from zero.
     const joinPlan = part ? { ...fx, items: fx.items.slice(part.first, part.last + 1).map(item => ({ ...item, startS: item.startS - part.base, endS: item.endS - part.base })) }
-      : opts.still ? { ...fx, items: fx.items.slice(0, stillIdx + 1) } : fx; // EXP2: truncated still spine
+      : opts.still ? { ...fx, items: fx.items.slice(0, stillIdx + 1) } : windowS ? { ...fx, items: fx.items.slice(0, windowLast + 1) } : fx; // EXP2: truncated still spine
     const [pv, pm] = part ? ["pv", "pm"] : ["v", "m"];
     if (part) for (let i = part.first; i <= part.last; i++) filters.push(`[v${i}]null[pv${i - part.first}]`, ...(behind ? [`[m${i}]null[pm${i - part.first}]`] : []));
-    joinFxVideo(joinPlan, filters, pv, "spine");
-    if (behind) joinFxVideo(joinPlan, filters, pm, "matteSpine");
+    joinFxVideo(joinPlan, filters, pv, "spine", fps, part?.base ?? 0);
+    if (behind) joinFxVideo(joinPlan, filters, pm, "matteSpine", fps, part?.base ?? 0);
     let picture = "spine", mask = "matteSpine";
     for (const [i, overlay] of overlays.entries()) {
       // Cuts saved before sub-items existed carry no piece index: their position is the piece.
@@ -1339,6 +1447,7 @@ export async function renderFinishingPreview(root: string, cuts: CutItem[], opts
       const start = Math.ceil(overlay.seg.s * sourceFps) / sourceFps;
       const length = Math.min(Math.floor(overlay.seg.e * sourceFps) / sourceFps - start, fx.items[cuts.indexOf(piece.at(-1)!)].endS - offset);
       if (opts.still && (opts.still.t < offset || opts.still.t >= offset + length)) continue; // EXP2: cannot reach the still's frame
+      if (windowS && (offset >= windowS.e - 1e-9 || offset + length <= windowS.s + 1e-9)) continue; // PRO2b: nor the window's
       // EXP2: a part lays on only the B-roll that starts in it (parts never split one), on the part's clock.
       if (part && (cuts.indexOf(piece[0]) < part.first || cuts.indexOf(piece[0]) > part.last)) continue;
       const placed = offset - (part?.base ?? 0);
@@ -1540,7 +1649,11 @@ export async function renderFinishingPreview(root: string, cuts: CutItem[], opts
       // EXP2: a still drops the frames more than a second before its moment ahead of detail and grain. Both work
       // frame by frame (grain keeps its own sample count and timestamps), so the kept frame is the same.
       if (opts.still && !behind) filters.push(`[${spine.picture}]trim=start=${Math.max(0, opts.still.t - 1)}[stillWindow]`);
-      const finished = await buildFinish(args, filters, spine.input, opts.still && !behind ? "stillWindow" : spine.picture, spine.mask);
+      // PRO2b: a window's frames go on to the finish on the edit's frame clock, as an export part's do (renderParts).
+      const windowed = (label: string, out: string) => `[${label}]trim=start_frame=${opts.window!.from}:end_frame=${opts.window!.to},setpts=PTS-STARTPTS,settb=AVTB,setpts=(N+${opts.window!.from})/${fps}/TB,tpad=stop=8:stop_mode=clone[${out}]`;
+      if (windowS) filters.push(windowed(spine.picture, "windowPicture"), ...(behind ? [windowed(spine.mask, "windowMask")] : []));
+      const finished = windowS ? await buildFinish(args, filters, spine.input, "windowPicture", behind ? "windowMask" : spine.mask, { from: opts.window!.from, to: opts.window!.to })
+        : await buildFinish(args, filters, spine.input, opts.still && !behind ? "stillWindow" : spine.picture, spine.mask);
       const titleStreams = finished.titleStreams;
       titleProfiles.push(...titleStreams);
       let input = finished.input, picture = finished.picture;
@@ -1553,8 +1666,11 @@ export async function renderFinishingPreview(root: string, cuts: CutItem[], opts
       // and changes the first decoded samples despite copying every later packet.
       const audioInput = soundFile ? input++ : null;
       if (soundFile) args.push("-i", soundFile);
-      filters.push(`[${picture}]scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv[finishedPicture]`);
-      if (opts.still) args.push("-filter_complex", filters.join(";"), "-map", "[finishedPicture]", "-ss", `${opts.still.t}`, "-frames:v", "1", "-an", "-q:v", "2", temporary);
+      filters.push(`[${picture}]scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv${windowS ? `,trim=end_frame=${opts.window!.to - opts.window!.from},setpts=PTS-STARTPTS` : ""}[finishedPicture]`);
+      // A window is a few seconds read for stills: the finished export's constant quality, not the draft's bit rate.
+      if (windowS) args.push("-filter_complex", filters.join(";"), "-map", "[finishedPicture]", ...videoEncodeArgs(true), "-pix_fmt", "yuv420p",
+        "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv", "-an", "-movflags", "+faststart+write_colr", temporary);
+      else if (opts.still) args.push("-filter_complex", filters.join(";"), "-map", "[finishedPicture]", "-ss", `${opts.still.t}`, "-frames:v", "1", "-an", "-q:v", "2", temporary);
       else args.push("-filter_complex", filters.join(";"), "-map", "[finishedPicture]", "-map", `${audioInput}:a:0`, "-t", `${duration}`,
         ...videoEncodeArgs(!!opts.full), "-pix_fmt", "yuv420p",
         "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv", "-ar", "48000",
@@ -1581,7 +1697,7 @@ export async function renderFinishingPreview(root: string, cuts: CutItem[], opts
     }
     mark("encodeMs");
     reportProgress(88);
-    if (!opts.still && audio.auto !== false) await verifyEncodedPeaks(temporary, audio.loudnessLUFS, opts.full ? "320k" : "128k", duration, false);
+    if (!opts.still && !windowS && audio.auto !== false) await verifyEncodedPeaks(temporary, audio.loudnessLUFS, opts.full ? "320k" : "128k", duration, false);
     currentActivity()?.signal.throwIfAborted();
     mark("verificationMs");
     await fs.rename(temporary, output);

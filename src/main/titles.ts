@@ -15,6 +15,7 @@ import { promises as fs } from "node:fs";
 import { spawn } from "node:child_process";
 import { tool } from "./tools";
 import * as path from "node:path";
+import { bundledFile } from "./bundle-paths";
 import type { CaptionsPending, Clip, CutVersion, Preferences, Shoot, SubjectSample, Template, TitleCue, TitleTrack, VoiceoverCaptions } from "../shared/schema";
 import { heardVoiceWords, voiceAddedOf, voiceCorrectionsOf as sharedVoiceCorrections, type VoiceAddedWord, type VoiceCorrections } from "../shared/caption-words";
 import { runModel, parseModelJson } from "./ai";
@@ -557,7 +558,7 @@ export async function validateTitleLayout(track: DesignedTitleTrack, input: Titl
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   const warn = (message: string) => { (track.warnings ??= []).push(message); console.warn(message); };
   try {
-    await window.loadFile(path.join(__dirname, "titles/template.html"));
+    await window.loadFile(bundledFile("titles/template.html"));
     const measure = async (): Promise<MeasuredTitleBox[]> => {
       await window.webContents.executeJavaScript(`window.titleRenderer.init(...${JSON.stringify([track, { ...input.frame, layer: "all" }])})`);
       const boxes: MeasuredTitleBox[] = await window.webContents.executeJavaScript("window.titleRenderer.measureLayout()");

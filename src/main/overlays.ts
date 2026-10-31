@@ -8,6 +8,7 @@ import type { CutEdit, OverlayItem } from "../shared/schema";
 import { finishStoredVersion, renderStoredPreview } from "./sidekick";
 import { runActivity, withRenderSlot, currentActivity } from "./activity";
 import { tool } from "./tools";
+import { CARD_MEDIA } from "./graphics/templates";
 
 type OverlayEdit = Extract<CutEdit, { kind: "overlay" }>;
 const limit = 50 * 1024 * 1024;
@@ -37,8 +38,34 @@ export function overlayUrl(root: string, file: string): string {
   overlayPath(root, file);
   return `st-media://local/${encodeURIComponent(root)}/overlays/${encodeURIComponent(file)}`;
 }
-export function overlayMedia(root: string, items: OverlayItem[] = []): (OverlayItem & { url: string })[] {
-  return items.map(item => ({ ...item, url: overlayUrl(root, item.file) }));
+/** PRO4b: a card's picture (graphics/sanitize.ts CARD_MEDIA) as the shoot cache serves it, for the title page to draw in. */
+export function cardMediaUrl(root: string, media: string): string {
+  if (!CARD_MEDIA.test(media)) throw new Error("That picture is not in this shoot's card cache.");
+  return `st-media://local/${encodeURIComponent(root)}/overlays/${encodeURIComponent(media)}`;
+}
+/** PRO4b: a card's picture as a data image, read by main from that shoot's card cache, for the title pages main draws
+ * (export, stills, posters): they never depend on the media protocol (the CLI and MCP don't register it). */
+export async function cardMediaData(root: string, media: string): Promise<string> {
+  if (!CARD_MEDIA.test(media)) throw new Error("That picture is not in this shoot's card cache.");
+  const folder = path.join(root, ".sidething", "overlays"), file = path.join(folder, media);
+  const real = await fs.realpath(file).catch(() => null), realFolder = await fs.realpath(folder).catch(() => null);
+  if (!real || !realFolder || path.dirname(real) !== realFolder) throw new Error("That card's picture isn't in this shoot. Make the card again with add_card.");
+  const bytes = await fs.readFile(real);
+  if (bytes.toString("ascii", 0, 4) !== "RIFF" || bytes.toString("ascii", 8, 12) !== "WEBP") throw new Error("That card's picture couldn't be read. Make the card again with add_card.");
+  return `data:image/webp;base64,${bytes.toString("base64")}`;
+}
+/** PRO4b: the same, for an overlay main has already given its media URL (overlayMedia). */
+export async function withCardData<T extends { graphic?: OverlayItem["graphic"]; mediaUrl?: string }>(items: T[]): Promise<(T & { mediaData?: string })[]> {
+  return Promise.all(items.map(async item => {
+    const media = item.graphic?.media, prefix = "st-media://local/", url = item.mediaUrl ?? "";
+    if (!media) return item;
+    const tail = `/overlays/${encodeURIComponent(media)}`;
+    if (!url.startsWith(prefix) || !url.endsWith(tail)) throw new Error("That card's picture isn't in this shoot. Make the card again with add_card.");
+    return { ...item, mediaData: await cardMediaData(decodeURIComponent(url.slice(prefix.length, -tail.length)), media) };
+  }));
+}
+export function overlayMedia(root: string, items: OverlayItem[] = []): (OverlayItem & { url: string; mediaUrl?: string })[] {
+  return items.map(item => ({ ...item, url: overlayUrl(root, item.file), ...(item.graphic?.media ? { mediaUrl: cardMediaUrl(root, item.graphic.media) } : {}) }));
 }
 
 export async function copyOverlay(root: string, source: string): Promise<string> {

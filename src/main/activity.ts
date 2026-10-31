@@ -252,6 +252,9 @@ export function restBetweenClips(signal?: AbortSignal): Promise<void> {
 }
 const groupedActivity = new AsyncLocalStorage<boolean>();
 export function currentActivity(): ActivityHandle | undefined { return current.getStore(); }
+/** PRO2b: run helper work with a stand-in as its current activity (the stand-in carries the task's own signal), so a
+ * helper's own progress reports (a window render's 0 to 100) reach the stand-in, which folds them into the task's. */
+export function asActivity<T>(handle: ActivityHandle, work: () => Promise<T>): Promise<T> { return current.run(handle, work); }
 /** Shared immutable measurements belong to their own activity, regardless of
  * which playback request first imports this module or starts the work. */
 export function independentPreparation<T>(work: () => Promise<T>): Promise<T> {

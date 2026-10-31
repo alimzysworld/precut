@@ -77,7 +77,7 @@ async function open(owner: number, input: TerminalRequest): Promise<TerminalSnap
   }
   await stop(owner);
   // ONB2: "Start without AI" opens no engine, Ask included.
-  if (((await import("./settings")) as { aiOff?: () => boolean }).aiOff?.()) throw new Error("No AI chosen. Add one in Settings to use Ask.");
+  if (((await import("./settings")) as { aiOff?: () => boolean }).aiOff?.()) throw new Error("Choose Claude Code or Codex in Settings to use Ask.");
   const engine = await getEngine();
   if (!engine) throw new Error("Choose Claude Code, Codex or Muse in Settings.");
   if (process.platform !== "darwin") throw new Error("Ask needs this Mac's protected terminal.");

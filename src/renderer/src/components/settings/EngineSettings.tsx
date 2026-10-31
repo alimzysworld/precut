@@ -97,8 +97,8 @@ export function EngineSettings() {
         </div>;
       })}
       {/* ONB2: Start without AI, remembered. precut then makes no model calls at all. */}
-      <div className="rounded-xl bg-ink/[0.035] p-3"><Row className="settings-row"><label className="flex min-w-0 items-center gap-2 text-small"><input type="radio" name="settings-engine" aria-label="No AI" checked={engine === "none"} onChange={() => void choose("none")} />No AI</label>
-        <span className="text-micro text-muted">Edit by hand. No model calls.</span></Row></div>
+      <div className="rounded-xl bg-ink/[0.035] p-3"><Row className="settings-row"><label className="flex min-w-0 items-center gap-2 text-small"><input type="radio" name="settings-engine" aria-label="Without Claude or Codex" checked={engine === "none"} onChange={() => void choose("none")} />Without Claude or Codex</label>
+        <span className="text-micro text-muted">Edit by hand. Nothing goes to Claude or Codex.</span></Row></div>
     </fieldset>
     <div className="mt-5">
       {engine === "claude" && Object.hasOwn(models, "claude") && <Row as="label" className="settings-row"><span className="text-small">Claude model</span><select aria-label="Claude model" className={settingInput} value={models.claude ?? ""} onChange={event => void saveModel("claude", event.target.value || null)}><option value="">Your Claude Code default</option><option value="opus">Opus</option><option value="sonnet">Sonnet</option></select></Row>}

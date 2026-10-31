@@ -4,7 +4,7 @@ import * as fs from "node:fs/promises";
 import { remapLayoutRanges, sourceStart as layoutSourceStart, type LayoutSourceAdvance } from '../shared/layout-presets';
 import { prepareLookSave } from "./look-saves";
 import { planAudioHandles, type AudioHandle } from './join-audio';
-import { planCraft, craftRect, type CraftVersion, type CraftPlan } from './emphasis-framing';
+import { planCraft, craftRect, motionScale, zoomAbout, type CraftVersion, type CraftPlan } from './emphasis-framing';
 import { retimeKinetic } from "./titles/captions";
 import type { CutEdit, CutVersion, DraftPiece, DraftTimeline, JoinChoice, PieceFx, Word } from '../shared/schema';
 import type { CutItem } from './export';
@@ -13,7 +13,7 @@ import type { StoredVersion } from './sidekick';
 import { clipLaneDb, defaultClipMuted } from '../shared/lane-levels';
 export type FxVersion = Pick<CutVersion, 'faceMatch' | 'transition' | 'joins' | 'pieceFx' | 'clipSoundMuted' | 'voiceover' | 'laneLevels' | 'laneMuted' | 'clipSoundDefaultOn'> & CraftVersion;
 export type TimeKey = { t: number; s: number };
-export type FxItem = { piece: number; startS: number; endS: number; timeMap: TimeKey[]; overlap: number; gainDb: number; muted?: boolean; soundEnabled?: boolean; reverse?: boolean; audio?: AudioHandle };
+export type FxItem = { piece: number; startS: number; endS: number; timeMap: TimeKey[]; overlap: number; gainDb: number; muted?: boolean; soundEnabled?: boolean; reverse?: boolean; audio?: AudioHandle; exposure?: { t: number; k: number }[] };
 export type FxPlan = { items: FxItem[]; joins: NonNullable<DraftTimeline['joins']>; durationS: number; craft?: CraftPlan };
 const kinds = ['cut', 'snap', 'ease', 'zoom', 'whip', 'dissolve', 'ramp'];
 const sounds = ['whoosh', 'hit', 'pop', 'riser'];
@@ -37,7 +37,20 @@ export function validPieceFx(value: unknown): value is PieceFx {
     (v.reverse === undefined || typeof v.reverse === 'boolean') &&
     (v.speed === undefined || Number.isFinite(v.speed) && v.speed >= .1 && v.speed <= 10) &&
     (v.gainDb === undefined || Number.isFinite(v.gainDb) && v.gainDb >= -12 && v.gainDb <= 12) &&
-    (v.framing === undefined || !!v.framing && ['off', 'steady', 'face'].includes(v.framing.mode) && (v.framing.tight === undefined || Number.isFinite(v.framing.tight) && v.framing.tight >= 0 && v.framing.tight <= 1));
+    (v.framing === undefined || !!v.framing && ['off', 'steady', 'face'].includes(v.framing.mode) && (v.framing.tight === undefined || Number.isFinite(v.framing.tight) && v.framing.tight >= 0 && v.framing.tight <= 1)) &&
+    (v.punches === undefined || validPunches(v.punches)) && (v.exposure === undefined || validExposure(v.exposure));
+}
+const finite = (n: unknown, lo: number, hi: number) => typeof n === 'number' && Number.isFinite(n) && n >= lo && n <= hi;
+/** PRO3b: a punch scales 1 to 1.3, settles over 1 to 60 frames, creeps under 0.5% a frame. */
+export function validPunches(value: unknown): value is NonNullable<PieceFx['punches']> {
+  return Array.isArray(value) && value.length <= 32 && value.every(p => !!p && typeof p === 'object' && finite(p.sourceS, 0, 1e6) && finite(p.scale, 1, 1.3) &&
+    (p.style === undefined || p.style === 'settle' || p.style === 'hold') && (p.frames === undefined || Number.isInteger(p.frames) && p.frames >= 1 && p.frames <= 60) &&
+    (p.creep === undefined || finite(p.creep, 0, .005)) && (p.lengthS === undefined || finite(p.lengthS, .01, 600)));
+}
+/** PRO3b: an exposure key holds 1 to 30 levels, each 0.25 to 4 (1 = as graded). */
+export function validExposure(value: unknown): value is NonNullable<PieceFx['exposure']> {
+  return Array.isArray(value) && value.length <= 32 && value.every(e => !!e && typeof e === 'object' && finite(e.sourceS, 0, 1e6) &&
+    Array.isArray(e.levels) && e.levels.length >= 1 && e.levels.length <= 30 && e.levels.every((k: unknown) => finite(k, .25, 4)));
 }
 const sourceRate = (c: CutItem) => c.clipFpsR.num / c.clipFpsR.den;
 const sourceStart = (c: CutItem) => c.inFrames / sourceRate(c);
@@ -119,9 +132,28 @@ export function planFx(cuts: CutItem[], fps: number, version: FxVersion = {}): F
     return { piece, startS, endS: at, timeMap, overlap, gainDb: clipLaneDb(version, fx?.gainDb ?? 0), muted: !!version.clipSoundMuted || (fx?.muted ?? defaultClipMuted(version,kindOf(c) === 'broll')), soundEnabled: fx?.muted === false || !!version.clipSoundDefaultOn || kindOf(c) !== 'broll', ...(fx?.reverse ? { reverse: true } : {}) };
   });
   const plan: FxPlan = { items, joins, durationS: at };
+  items.forEach(item => { const keys = exposureKeys(item, fps, version.pieceFx?.[item.piece]?.exposure); if (keys) item.exposure = keys; });
   planAudioHandles(cuts, plan);
   plan.craft = planCraft(cuts, plan, fps, version);
   return plan;
+}
+/** PRO3b: a clip's exposure keys on its item's own frame clock (the frames the export draws): each level holds one
+ * frame from the frame showing its source second, then back to 1. Keys trimmed away or on a backwards clip are left out. */
+function exposureKeys(item: FxItem, fps: number, keys: PieceFx['exposure']): FxItem['exposure'] {
+  if (!keys?.length || item.reverse) return undefined;
+  const levels = new Map<number, number>(), first = item.timeMap[0].s, last = item.timeMap.at(-1)!.s, frames = Math.round((item.endS - item.startS) * fps);
+  for (const key of keys) {
+    if (!(key.sourceS >= first - 1e-6 && key.sourceS < last - 1e-6)) continue;
+    const at = Math.max(0, Math.round((mapTime(item.timeMap, key.sourceS) - item.startS) * fps));
+    key.levels.forEach((k, n) => { if (at + n < frames) levels.set(at + n, k); });
+  }
+  if (![...levels.values()].some(k => k !== 1)) return undefined;
+  const frameList = [...levels.keys()].sort((a, b) => a - b), out: { t: number; k: number }[] = [];
+  for (let n = frameList[0], current = 1; n <= frameList.at(-1)! + 1 && n < frames; n++) {
+    const k = levels.get(n) ?? 1;
+    if (k !== current) { out.push({ t: item.startS + n / fps, k }); current = k; }
+  }
+  return out;
 }
 function sampleFrame(frame: NonNullable<DraftPiece['frame']>, t: number) {
   let i = frame.findIndex(k => k.t >= t); if (i < 0) i = frame.length - 1;
@@ -142,7 +174,8 @@ export function fxPictures(pictures: DraftPiece[], cuts: CutItem[], fps: number,
     const incoming = plan.joins.find(j => Math.abs(j.atS - start) < 1e-7);
     const outgoing = plan.joins.find(j => Math.abs(j.atS - (end - (plan.items[i + 1]?.overlap ?? 0))) < 1e-7);
     const effect = incoming?.choice.kind === 'zoom' || incoming?.choice.kind === 'whip' || outgoing?.choice.kind === 'zoom' || outgoing?.choice.kind === 'whip';
-    const craft = plan.craft, crafted = !!craft && (craft.scales[i] > 1 || craft.punches.some(p => p.atS < end && p.endS > start));
+    const craft = plan.craft, moving = !!craft?.motions?.some(m => m.item === i);
+    const crafted = !!craft && (craft.scales[i] > 1 || craft.punches.some(p => p.atS < end && p.endS > start) || moving);
     const times = new Set([start, end, ...item.timeMap.map(k => k.t)]);
     if (effect || crafted) for (let t = start; t < end; t += 1 / fps) times.add(t);
     else if (item.reverse) for (let t = start; t < end; t += 1 / fps) times.add(t);
@@ -157,6 +190,7 @@ export function fxPictures(pictures: DraftPiece[], cuts: CutItem[], fps: number,
         const punch = craft.punches.some(p => t >= p.atS - 1e-8 && t < p.endS);
         base = craftRect(base, cuts[i], source, craft.scales[i] * (punch ? craft.punchScale : 1));
       }
+      if (moving && craft?.motions) base = zoomAbout(base, cuts[i], source, motionScale(craft.motions, i, t, fps));   // PRO3b
       let amount = 0, whip = false, direction = 0;
       for (const [join, distance, sign] of [[incoming, t - start, 1], [outgoing, end - t, -1]] as const) {
         if (!join || !['zoom', 'whip'].includes(join.choice.kind) || distance > .125) continue;
@@ -168,7 +202,7 @@ export function fxPictures(pictures: DraftPiece[], cuts: CutItem[], fps: number,
     });
     const unchanged = !crafted && !item.reverse && !effect && Math.abs(start - p.startS) < 1e-10 && Math.abs(end - p.endS) < 1e-10 && item.timeMap.length === 2;
     const opacity = item.overlap ? [{ t: start, a: 0 }, { t: start + item.overlap, a: 1 }, { t: end, a: 1 }] : undefined;
-    return { ...p, startS: start, endS: end, timeMap: item.timeMap, frame: unchanged ? p.frame : p.frame || effect || crafted ? frame : null, ...(effect ? { blur } : {}), ...(opacity ? { opacity } : {}) };
+    return { ...p, startS: start, endS: end, timeMap: item.timeMap, frame: unchanged ? p.frame : p.frame || effect || crafted ? frame : null, ...(effect ? { blur } : {}), ...(opacity ? { opacity } : {}), ...(item.exposure ? { exposure: item.exposure } : {}) };
   });
 }
 /** Invert a source-time map into ffmpeg setpts (seconds -> seconds). */
@@ -268,6 +302,8 @@ export function carryJoinCraft(previous: StoredVersion, record: StoredVersion, o
   if(previous.balances && !record.balances)record.balances=structuredClone(previous.balances);
   if(previous.balanceReference!==undefined && record.balanceReference===undefined)record.balanceReference=previous.balanceReference;
   if(previous.balanceUndo!==undefined && record.balanceUndo===undefined)record.balanceUndo=previous.balanceUndo;
+  // PRO1: the edit's produced pass outlives structural edits (trim, remove, split, swap), which build their version field by field.
+  if(previous.produce!==undefined && record.produce===undefined)record.produce=structuredClone(previous.produce);
   carryClipSound(previous,record,oldIndexes);
   if (previous.angleCuts) record.angleCuts = previous.angleCuts.filter(c => c.atS < record.lengthS).map(c => ({...c}));
   const media = (previous.assembly as import('./layout-media').LayoutAssembly).layoutMedia;
@@ -346,8 +382,11 @@ export async function editFx(root: string, cutId: string, version: number, edit:
       return { cutId, version: record.version, baseVersion };
     }, lookOnly || soundOnly));
   // The Look panel sends the existing clip effects plus its changed look.
-  const { cutFile } = await import('./sidekick');
-  const source = await (await import('./cut-storage')).readStoredVersion(cutFile(root, cutId), version) as unknown as import('./sidekick').StoredVersion | undefined;  // ARCH2: one line of the log
+  const { cutFile, stagedDraft, loadDraftVersion } = await import('./sidekick');
+  // PRO1: inside a batch the version is the staged draft's number, which is not on disk (or is another, undone snapshot):
+  // compare against the draft itself, or a sound-only change merges onto the wrong clip settings.
+  const source = stagedDraft() ? await loadDraftVersion(root, cutId, version)
+    : await (await import('./cut-storage')).readStoredVersion(cutFile(root, cutId), version) as unknown as import('./sidekick').StoredVersion | undefined;  // ARCH2: one line of the log
   if(edit.kind==='pieceFx') {
     const previous=source?.pieceFx?.[edit.piece];
     if(edit.fx?.clean && edit.fx.clean!=='none' && edit.fx.clean!==previous?.clean || edit.fx?.overlaySound?.clean && edit.fx.overlaySound.clean!=='none' && edit.fx.overlaySound.clean!==previous?.overlaySound?.clean) await (await import('./stem-mix')).requireSoundSeparation();

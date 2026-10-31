@@ -1,12 +1,12 @@
 import { transformGLSL, paintTransform } from './transformGpu';
 import { layerMainGLSL, layerUniformsGLSL } from "../../../shared/layer-glsl";
 import { visualTransform } from './transformPreview';
-import { sourceTime, sourceRate, opacityAt, blurAt, frameAtTime } from "../../../shared/picture-keys";
+import { sourceTime, sourceRate, opacityAt, blurAt, frameAtTime, exposureAt } from "../../../shared/picture-keys";
 import { correctionArrival } from "../motion";
 import { LayoutHandles } from './LayoutHandles';
 import { visualLayout } from './layoutPreview';
 import { LayoutBackdropPass } from './layoutBackdropGpu';
-import { GRADE_VERTEX_GLSL, TABLE_AT_GLSL, lookGLSL } from "../../../shared/look-scalar";
+import { GRADE_VERTEX_GLSL, TABLE_AT_GLSL, lookGLSL, exposureGLSL } from "../../../shared/look-scalar";
 import { gradeForPiece, lookParameters, type UniformTimeline } from "./finish/uniformGrade";
 import { desiredRotation, observeRotationShoot, rotationClip, subscribeRotation } from "./clipRotation";
 import { proxyRotation, quarterTurn, mediaUrl } from "../../../shared/media";
@@ -643,6 +643,8 @@ uniform float mixerDeltaValues[24]; uniform sampler3D neutralLut; uniform float 
 ${basicsGLSL()}
 ${mixerPreviewGLSL}
 ${lookGLSL()}
+${exposureGLSL()}
+uniform float pictureExposure; // PRO3b: the piece's exposure key at this moment (0, never set, and 1 leave the grade as it is)
 uniform bool uniformGrade; uniform float lookParams[18];
 uniform vec4 exposureGain;
 ${TABLE_AT_GLSL}
@@ -700,6 +702,7 @@ vec3 pictureAt(vec2 at){
     else { rgb=vec3(0.);
     }
   }
+  if(pictureExposure>0.&&pictureExposure!=1.) rgb=vec3(exposureKey(rgb.r,pictureExposure),exposureKey(rgb.g,pictureExposure),exposureKey(rgb.b,pictureExposure));
   return rgb;
 }
 ${layerMainGLSL}`;
@@ -1111,6 +1114,7 @@ void main(){color=vec4(texture(scene,vec2(uv.x,1.-uv.y)).rgb,opacity);}`]] as co
       gl.uniform3f(uniform('layoutColour'), ...([1,3,5].map(i => parseInt(cardColour.slice(i,i+2),16)/255) as [number,number,number]));
       gl.uniform2f(uniform('layoutPixels'),layout.layoutScene ? Math.round(width*(region?.w ?? 1)) : 960*(region?.w ?? 1),layout.layoutScene ? Math.round(height*(region?.h ?? 1)) : 960*height/width*(region?.h ?? 1));
       gl.uniform1f(uniform("opacity"), opacity);
+      gl.uniform1f(uniform("pictureExposure"), exposureAt(layer.piece, time));
       gl.uniform2f(uniform("blurVector"), Math.cos(blur.angle) * blur.amount, Math.sin(blur.angle) * blur.amount * width / height);
       const rotation = pictureTurn(content);
       gl.uniform1i(uniform("pictureTurn"), rotation.turn);

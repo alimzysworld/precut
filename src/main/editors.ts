@@ -17,6 +17,7 @@ import { runActivity, currentActivity, type ActivityHandle, threads } from "./ac
 import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { checkoutFile } from "./bundle-paths";
 import { pathToFileURL } from "node:url";
 import type { CutItem, ExportFinishing, exportCutList } from "./export";
 import type { SelectsPlan } from "./selects";
@@ -214,7 +215,7 @@ function overlays(i: EditorInput): Placed[] {
 
 async function pipelineFile(name: string): Promise<string> {
   const resources = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
-  for (const base of [resources, process.cwd(), path.resolve(__dirname, "../..")]) {
+  for (const base of [resources, process.cwd(), checkoutFile(".")]) {
     if (!base) continue;
     const file = path.join(base, "pipeline", name);
     if (await fs.stat(file).then(s => s.isFile(), () => false)) return file;
@@ -356,7 +357,8 @@ export async function prepareEditorLayers(i: EditorInput, folder: string): Promi
   for (const [n, o] of graphics.entries()) {
     const g = o.graphic!, d = o.e - o.s;
     if (![o.s, o.e].every(Number.isFinite) || o.s < 0 || d <= 0 || o.e > duration(i) + 1e-6) throw new Error(`Graphic outside the cut: ${o.id}`);
-    const local = { ...o, s: 0, e: d };
+    // PRO4b: a card's picture is drawn in from the shoot's card cache.
+    const local = { ...o, s: 0, e: d, ...(g.media ? { mediaUrl: (await import("./overlays")).cardMediaUrl(i.root, g.media) } : {}) };
     const options = { width: i.template.width, height: i.template.height, fps: i.template.fps, durationS: d, layer: "all" as const, overlays: [local as typeof local & { url: string }] };
     const track = { font: "Outfit", cues: [], prompt: null, skillIds: [] };
     const cached = await cachedLayer(i, { kind: "graphic-prores", track, options: { ...options, overlays: [{ ...local, url: "" }] } }, ".mov", async out => {
@@ -372,7 +374,10 @@ export async function prepareEditorLayers(i: EditorInput, folder: string): Promi
     layers.video.push({ file: await copy(cached, `${name}.mov`), name: `Graphic: ${g.template ?? "custom"}`, s: o.s, d, track: behindTrack, kind: behindGraphic ? "behind" : "front" });
     const sources = path.join(folder, "graphics", name);
     await fs.mkdir(sources, { recursive: true });
-    await fs.writeFile(path.join(sources, "graphic.html"), `<!doctype html><meta charset="utf-8"><style>${g.css}</style><div id="gfx">${g.html}</div>${g.js ? `<script>${g.js}</script>` : ""}`);
+    // PRO4b: a card's picture goes beside its html, which shows it from there.
+    if (g.media) await fs.copyFile(path.join(i.root, ".sidething", "overlays", g.media), path.join(sources, "picture.webp"));
+    const html = g.media ? g.html.split('src="#card-media"').join('src="picture.webp"') : g.html;
+    await fs.writeFile(path.join(sources, "graphic.html"), `<!doctype html><meta charset="utf-8"><style>${g.css}</style><div id="gfx">${html}</div>${g.js ? `<script>${g.js}</script>` : ""}`);
     await fs.writeFile(path.join(sources, "composition.json"), JSON.stringify({ ...g, placement: { x: o.x, y: o.y, w: o.w, rotate: o.rotate ?? 0 }, startS: o.s, endS: o.e }, null, 1));
   }
   // Allocate the behind tracks first, then person, then front. Each cue is one clip.

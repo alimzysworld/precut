@@ -110,9 +110,9 @@ export async function editMusicFile(root: string, file: string): Promise<string 
   const warm = (track: string | null) => { if (track) void import("./peaks").then(m => m.warmPeaks(root, track, true), () => {}); return track; };
   const found = await listed();
   if (found) return warm(found);
+  // Joins the library, then only this track is measured: never a wait on the whole library (see measureTrackNow).
   await addMusicTracks([resolved]);
-  await listMusic();
-  return warm(await listed());
+  return warm(await (await import("./music-catalog")).measureTrackNow(real) ?? await listed());
 }
 
 // Legacy callers wait for the same cached catalog; the panel polls snapshots.

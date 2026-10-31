@@ -301,3 +301,124 @@ export function editWords(root: string, cutId: string, version: number, edit: Wo
       return { cutId, version: record.version };
     }));
 }
+
+/** SCRIPT2: where a piece splits nearest clip seconds `at`: the gap between two of its measured words (the nearer edge of
+ * a word `at` falls in), on the source frame grid when the gap allows, never inside a removal and leaving kept picture on
+ * both sides. -Infinity or Infinity when `at` is at or before its first kept word, or at or past its last: the piece's
+ * own start or end. */
+function splitPoint(assembly: StoredVersion["assembly"], items: Item[], at: number, speed = 1): number {
+  if (!Number.isFinite(at)) throw new Error("Choose words in this edit.");
+  const span = { s: spanOf(items[0]).s, e: spanOf(items.at(-1)!).e };
+  if (!items[0]?.seg || items[0].seg.lineIndex === null) return at - span.s < span.e - at ? -Infinity : Infinity;
+  const kept = items.map(spanOf), inside = (w: Word) => kept.some(k => w.s >= k.s - 1e-6 && w.e <= k.e + 1e-6);
+  const words = wordsFor(assembly, items[0]).filter(w => w.e > kept[0].s - 1e-6 && w.s < kept.at(-1)!.e + 1e-6).sort((a, b) => a.s - b.s);
+  const live = words.filter(inside);
+  if (!live.length) return at - span.s < span.e - at ? -Infinity : Infinity;
+  if (at <= live[0].s + 1e-6) return -Infinity;
+  if (at >= live.at(-1)!.e - 1e-6) return Infinity;
+  const markers = items.flatMap(item => item.removed ?? []);
+  const rate = items[0].clipFpsR.num / items[0].clipFpsR.den, fps = assembly.template.fps;
+  // The first half's length in timeline frames (speed included) at source time x, so the cut can sit on the edit's
+  // frame grid: then every piece after it keeps its frames when the halves move.
+  const frames = (x: number) => items.reduce((n, item) => { const k = spanOf(item); return n + Math.max(0, Math.min(k.e, x) - k.s) * item.durTimelineFrames / ((k.e - k.s) * speed); }, 0);
+  const onGrid = (x: number) => { const k = kept.find(k => x > k.s && x < k.e); if (!k) return x; const item = items[kept.indexOf(k)], per = item.durTimelineFrames / ((k.e - k.s) * speed);
+    return x + (Math.round(frames(x)) - frames(x)) / per; };
+  const gaps = words.slice(0, -1).flatMap((w, i) => {
+    const next = words[i + 1], s = Math.max(...words.slice(0, i + 1).map(x => x.e)), e = next.s;
+    // Never between two words of one removal: a cut run stays one restorable run.
+    if (e < s || markers.some(m => m.s <= w.s + 1e-7 && m.e >= next.e - 1e-7)) return [];
+    const mid = (s + e) / 2, timeline = onGrid(mid), grid = Math.round(mid * rate) / rate;
+    let at = timeline >= s && timeline <= e ? timeline : grid >= s && grid <= e ? grid : mid;
+    // Inside a removed hole (a cut word's guard, a tightened pause): the edge that keeps the hole whole on the side
+    // its marker goes to (a marker goes with the half its first word is in).
+    for (const m of markers) for (const hole of m.ranges ?? [m]) if (hole.s < at - 1e-9 && at < hole.e - 1e-9) at = m.s < at ? Math.min(hole.e, e) : Math.max(hole.s, s);
+    return [{ at }];
+  }).filter(g => live.some(w => w.e <= g.at + 1e-6) && live.some(w => w.s >= g.at - 1e-6));
+  if (!gaps.length) return at - live[0].s < live.at(-1)!.e - at ? -Infinity : Infinity;
+  const nearest = (list: { at: number }[], to: number) => list.reduce((best, g) => Math.abs(g.at - to) < Math.abs(best.at - to) ? g : best).at;
+  // Inside a word: the gap just before it or just after it, whichever edge is nearer (a short word never jumps a gap).
+  const word = words.find(w => at > w.s && at < w.e) ?? words.find(w => Math.abs(at - w.s) < 1e-9 || Math.abs(at - w.e) < 1e-9);
+  if (!word) return nearest(gaps, at);
+  const before = at - word.s < word.e - at, side = gaps.filter(g => before ? g.at <= word.s + 1e-6 : g.at >= word.e - 1e-6);
+  return nearest(side.length ? side : gaps, before ? word.s : word.e);
+}
+
+/** SCRIPT2: split pieces at word boundaries in place, nothing on the timeline moving, so a later move takes whole
+ * pieces. Each half keeps its own words' removal markers and bleeps; reel entry, clip settings, layouts, framing per
+ * format and attached b-roll follow both halves (b-roll as the P1 split does); the new seam is a plain cut and the
+ * piece's own joins stay on its outer edges. Returns every new piece's old piece and source window (between the split
+ * points, unbounded at the piece's own edges), and where each cut landed (-Infinity or Infinity: the piece's edge). */
+export type SplitPieces = { halves: { old: number; s: number; e: number }[]; points: number[] };
+export function splitPiecesAt(record: StoredVersion, assembly: StoredVersion["assembly"], cuts: { piece: number; at: number }[]): SplitPieces {
+  const fps = assembly.template.fps, previous = structuredClone(record);
+  const groups: Item[][] = cutPieceGroups(assembly.cutList).map(({ items }) => items.map(item => ({ ...item,
+    removed: item.removed?.map(marker => ({ ...marker, ranges: (marker as Removal).ranges ?? legacyRanges(marker, items, fps) })) })));
+  const points = new Map<number, number[]>(), landed: number[] = [];
+  for (const cut of cuts) {
+    if (!Number.isInteger(cut.piece) || !groups[cut.piece]) throw new Error("Choose words in this edit.");
+    const at = splitPoint(assembly, groups[cut.piece], cut.at, record.pieceFx?.[cut.piece]?.speed ?? 1);
+    landed.push(at);
+    if (Number.isFinite(at)) points.set(cut.piece, [...new Set([...points.get(cut.piece) ?? [], at])].sort((a, b) => a - b));
+  }
+  if (!points.size) return { halves: groups.map((_, old) => ({ old, s: -Infinity, e: Infinity })), points: landed };
+  const clip = (ranges: Span[] | undefined, window: Span) => ranges && intersect(ranges, window);
+  const halves = groups.flatMap((items, old) => {
+    const at = points.get(old) ?? [];
+    return [-Infinity, ...at].map((s, k) => {
+      const window = { s, e: at[k] ?? Infinity };
+      const own = items.flatMap(item => slice(item, intersect([spanOf(item)], window), fps));
+      const removed = items.flatMap(item => item.removed ?? []).filter(m => m.s >= window.s - 1e-9 && m.s < window.e).map(m => ({ ...m, ranges: clip(m.ranges, window) }));
+      if (own.length) own[0].removed = removed.length ? removed : undefined;
+      return { old, window, items: own, first: k === 0, last: k === at.length };
+    });
+  });
+  let offsetFrames = 0;
+  assembly.cutList = cutItems(halves.flatMap(({ items }, piece) => items.map(item => { const next = { ...item, piece, offsetFrames }; offsetFrames += item.durTimelineFrames; return next; })));
+  const startOf = (piece: number) => assembly.cutList.find(c => c.piece === piece)!.offsetFrames / fps;
+  const lengthOf = (items: Item[]) => items.reduce((n, i) => n + i.durTimelineFrames / fps, 0);
+  const reel = assembly.reel;
+  assembly.reel = { ...reel, cuts: halves.map((h, piece) => ({ ...reel.cuts[h.old], s: spanOf(h.items[0]).s, e: spanOf(h.items.at(-1)!).e,
+    offsetS: startOf(piece), lengthS: lengthOf(h.items), ...(h.last ? {} : { beatDeltaS: 0, beatS: null }) })),
+    // Attached b-roll keeps playing across the seam, as the P1 split shifts it into the later half.
+    broll: halves.flatMap((h, piece) => reel.broll.filter(o => o.voiceIndex === h.old).flatMap(o => {
+      if (h.first) return [{ ...o, voiceIndex: piece }];
+      const prefix = halves.slice(0, piece).filter(x => x.old === h.old).reduce((n, x) => n + x.items.reduce((m, i) => m + spanOf(i).e - spanOf(i).s, 0), 0);
+      const s = o.seg.s + prefix, e = Math.min(o.seg.e, o.seg.s + (previous.pieces?.[h.old]?.lengthS ?? Infinity)), rate = o.seg.clip.meta?.fps || fps;
+      return Math.floor(e * rate) > Math.ceil(s * rate) ? [{ ...o, voiceIndex: piece, seg: { ...o.seg, s, e } }] : [];
+    })) };
+  assembly.reel.model = { ...assembly.reel.model, voice: assembly.reel.cuts.map(({ id }) => ({ id })), broll: assembly.reel.broll.map(({ id, over }) => ({ id, over })) };
+  record.voice = assembly.reel.cuts.map(({ id }) => id);
+  record.broll = assembly.reel.broll.map(({ id, over }) => ({ id, over }));
+  const resolved = resolveReelPieces(assembly.shoot, assembly.template, assembly.cutList, assembly.reel);
+  record.pieces = halves.map((h, piece) => {
+    const before = previous.pieces?.[h.old] ?? resolved[piece];
+    if (h.first && h.last) return { ...before, timelineS: resolved[piece].timelineS };
+    const measured = wordsFor(assembly, h.items[0]);
+    const { s, e, timelineS, lengthS, overlay, removed } = resolved[piece];
+    return { ...structuredClone(before), s, e, timelineS, lengthS, overlay, removed,
+      ...(before.kind === "voice" ? { words: measured.filter(w => h.items.some(i => w.s >= spanOf(i).s - 1e-6 && w.e <= spanOf(i).e + 1e-6)).map(w => w.w.trim()).join(" ") } : {}) };
+  });
+  const copy = <T>(list: (T | null)[] | undefined) => list && halves.map(h => structuredClone(list[h.old] ?? null));
+  record.pieceFx = copy(previous.pieceFx);
+  record.jumpScales = copy(previous.jumpScales);
+  if (previous.layouts) record.layouts = [...halves.map((h, piece) => {
+    const layout = previous.layouts![h.old];
+    if (!layout || layout.kind === "scene") return null;
+    const own = structuredClone(layout), shift = record.pieces![piece].s - (previous.pieces?.[h.old]?.s ?? record.pieces![piece].s);
+    if (own.screen && shift > 0) own.screen.s += shift / (previous.pieceFx?.[h.old]?.speed ?? 1);
+    return own;
+  }), ...previous.layouts.filter(l => l?.kind === "scene")];
+  // A bleep follows the words it covers, cut in two if they lie on both sides of a seam.
+  if (previous.bleeps) record.bleeps = halves.flatMap((h, piece) => previous.bleeps!.filter(b => b.piece === h.old).flatMap(b => {
+    const s = Math.max(b.s, h.window.s), e = Math.min(b.e, h.window.e);
+    return e > s ? [{ ...b, piece, s, e }] : [];
+  }));
+  if (previous.joins) record.joins = halves.slice(0, -1).map((h, i) => halves[i + 1].old === h.old ? null : previous.joins?.[h.old] ?? null);
+  const firstOf = (old: number) => old >= groups.length ? halves.length : halves.findIndex(h => h.old === old);
+  if (record.grade?.matchRef != null) record.grade = { ...record.grade, matchRef: firstOf(record.grade.matchRef) };
+  record.formats = previous.formats?.map(f => ({ ...f, pieceFraming: f.pieceFraming && halves.map(h => f.pieceFraming?.[h.old] ?? null) }));
+  if (record.cutPieces) record.cutPieces = (record.cutPieces as PieceTomb[]).map(tomb => ({ ...tomb, at: firstOf(tombIndex(tomb, previous.pieces ?? [])) }));
+  delete (record as StoredVersion & { energyBaseCuts?: CutItem[] }).energyBaseCuts;
+  record.assembly = assembly;
+  return { halves: halves.map(h => ({ old: h.old, ...h.window })), points: landed };
+}

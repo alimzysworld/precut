@@ -38,6 +38,7 @@ import { ExportModal } from "../components/ExportModal";
 import { MissingMediaBanner } from "../components/MissingMediaBanner";  // EXP3
 import { VersionMenu, followDecision, versionLabel } from "../components/VersionMenu";
 import { WhatChanged } from "../components/WhatChanged";
+import { ProducedRow } from "../components/ProducedRow";  // PRO1
 import { selectedSources } from "../components/footage/selection";
 import type { LiveLook } from "../components/LivePlayer";
 import { ShotOrderDialog } from "../components/ShotOrderDialog";
@@ -1308,6 +1309,7 @@ function Workspace({ shoot, onShootChange }: { shoot: Shoot; onShootChange: (sho
         milestones={history.history.driven && typeof getApi().listVersionMilestones === "function" ? { history: history.history, restore: restoreMilestone, list: () => getApi().listVersionMilestones!(shoot.root, cut.cutId), save: typeof getApi().saveVersion === "function" ? name => getApi().saveVersion!(shoot.root, cut.cutId, name) : undefined } : undefined} />, versionHost)}
       {cut && <SectionHeader as="h2" data-open-edit-title className="mb-2 line-clamp-2 shrink-0 px-1 text-small font-medium">{activeTitle}</SectionHeader>}
       {cut ? <MissingMediaBanner editor shoot={shoot} onShootChange={onShootChange} onRelink={root => go("precuts", { shoot: root, cut: cut.cutId })} /> : null}{/* EXP3 */}
+      {cut && activeVersion ? <ProducedRow root={shoot.root} cutId={cut.cutId} version={activeVersion} busy={editing || regenerating || Boolean(stageActivity)} onEdit={editCut} onOpen={next => openCut(cut.cutId, next)} /> : null}{/* PRO1 */}
       <div className="edits-stage-row">
       <div data-player-container data-source-open={!!source || undefined} data-aspect={aspect < 1 ? "vertical" : "horizontal"} style={{ "--edit-aspect": aspect } as React.CSSProperties} className="edits-player relative min-h-0 min-w-0 flex-1 overflow-hidden rounded-2xl bg-black" onLoadedDataCapture={event => {
         if (event.target instanceof HTMLVideoElement && !event.target.closest('[data-source-preview]') && event.target.getAttribute("aria-label") !== "Take preview") setLiveMedia({ key: draftKey, failed: false });

@@ -1,5 +1,5 @@
 import { musicStems, STEM_NAMES } from './stem-mix';
-import { stemDuckKeys } from '../shared/music-duck';
+import { musicDuckKeys, stemDuckKeys } from '../shared/music-duck';
 import { laneDb, laneMuted } from '../shared/lane-levels';
 import { cutMusicKeys } from './music-duck';
 import { attachedClipSounds } from './clip-sound';
@@ -38,6 +38,11 @@ export function voiceKeys(layer: EditorAudioClip, spans: { s: number; e: number 
   }
   return [...times].sort((a, b) => a - b).map(t => ({ t,
     gain: spans.some(b => layer.s + t >= b.s - 1e-9 && layer.s + t < b.e - 1e-9) ? 0 : 1 }));
+}
+/** PRO3c: with "dip under voice" off nothing ducks the music, but the director's stillnesses and hits still shape it. */
+function shapeOnly(music: object, durationS: number): AudioKey[] | undefined {
+  const shape = 'shape' in music ? (music as { shape?: import('../shared/music-shape').MusicShapeMark[] | null }).shape : undefined;
+  return shape?.length ? musicDuckKeys([], durationS, undefined, shape) : undefined;
 }
 export function gainAt(keys: AudioKey[] | undefined, t: number): number {
   if (!keys?.length) return 1;
@@ -187,7 +192,7 @@ export async function prepareEditorAudio(i: EditorInput, folder: string, voice: 
       return render([...args, '-filter_complex', filters.join(';'), '-map', '[a]', '-t', String(musicEnd), '-c:a', 'pcm_s24le', out], musicEnd);
     });
     clips.push({ file: await copy(prepared, stem==='mix' ? 'Music.wav' : `Music ${stem}.wav`), name: path.basename(music.file), s: 0, d: musicEnd, track: 0, kind: 'music', soundLane:'music', gainDb:gainDb+laneDb(version,'music'),muted:laneMuted(version,'music'),
-      fadeOutS: Math.min(arranged?.arrangement ? .012 : 1.5, musicEnd), keys: (!('duck' in music) || music.duck !== false) ? (keys=>stem==='mix' ? keys : stemDuckKeys(keys,stem))(cutMusicKeys(cuts, plan, { ...version, music }, attachedClipSounds(i.opts?.reel?.broll ?? [], plan, version, i.template.fps))) : undefined });
+      fadeOutS: Math.min(arranged?.arrangement ? .012 : 1.5, musicEnd), keys: (!('duck' in music) || music.duck !== false) ? (keys=>stem==='mix' ? keys : stemDuckKeys(keys,stem))(cutMusicKeys(cuts, plan, { ...version, music }, attachedClipSounds(i.opts?.reel?.broll ?? [], plan, version, i.template.fps))) : shapeOnly(music, plan.durationS) });
     }
   }
   const ends: number[] = [];

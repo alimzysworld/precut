@@ -1,11 +1,13 @@
 // Measured cover selection and the finished compositor, without a model turn.
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { bundledFile } from "./bundle-paths";
 import * as os from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { app, BrowserWindow } from "electron";
+import { app } from "electron";
+import { captureFrame, captureWindow, framePng } from "./capture-frame";
 import type { CoverChoice, DraftPiece, Preferences } from "../shared/schema";
 import type { LayoutPicture } from "./layout-math";
 import { MEDIA_SCHEME, clipRotation } from "../shared/media";
@@ -73,7 +75,7 @@ export function coverCacheKey(_cutId: string, record: StoredVersion, choice: Cov
   const assembly = { template: record.assembly.template,
     cutList: record.assembly.cutList.map(c => ({ ...c, seg: c.seg ? { ...c.seg, clip: stableClip(c.seg.clip) } : null })),
     broll: record.assembly.reel.broll.map(o => ({ ...o, seg: { ...o.seg, clip: stableClip(o.seg.clip) } })) };
-  return createHash("sha256").update(JSON.stringify({ revision: 4, colourRevision: COLOUR_MEASUREMENT_REVISION, t: choice.t, title: choice.title,
+  return createHash("sha256").update(JSON.stringify({ revision: 5, colourRevision: COLOUR_MEASUREMENT_REVISION, t: choice.t, title: choice.title,
     grade: record.grade, titles: record.titles, framing: record.framing, pieceFx: record.pieceFx, energy: record.energy,
     faceMatch: record.faceMatch, transition: record.transition, overlays: record.overlays, joins: record.joins, assembly, context })).digest("hex");
 }
@@ -103,13 +105,12 @@ async function titleStill(track: CaptionTrack, width: number, height: number, ou
   const signal = currentActivity()?.signal;
   signal?.throwIfAborted();
   await app.whenReady();
-  const window = new BrowserWindow({ width, height, useContentSize: true, show: false, transparent: true, backgroundColor: "#00000000",
-    webPreferences: { offscreen: true, backgroundThrottling: false, nodeIntegration: false, contextIsolation: true, sandbox: true, zoomFactor: 1 } });
+  // CAP3: the shared capture window (one row taller than the cover, for the capture token).
+  const window = captureWindow(width, height, 60);
   const abort = () => { if (!window.isDestroyed()) window.destroy(); };
   signal?.addEventListener("abort", abort, { once: true });
   try {
-    window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-    await window.loadFile(path.join(__dirname, "titles/template.html"));
+    await window.loadFile(bundledFile("titles/template.html"));
     const payload = JSON.stringify([track, { width, height, fps: 1, durationS: 1, layer: "all" }]);
     // Preserve the template's measured safe-area fitting while wrapping a big cover title.
     await window.webContents.executeJavaScript(`{ const style = document.createElement('style'); style.textContent = '.cue { white-space: pre-wrap; max-width: ${Math.round((track.captionSource!.safeArea.right - track.captionSource!.safeArea.left) * width * .92)}px; }'; document.head.append(style); }`);
@@ -128,11 +129,11 @@ async function titleStill(track: CaptionTrack, width: number, height: number, ou
         root.style.top = (parseFloat(root.style.top) + top - fitted.top) + 'px';
       }
     }`);
-    await window.webContents.executeJavaScript(`window.titleRenderer.seek(0)`);
-    let image = await window.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true });
-    if (image.getSize().width !== width || image.getSize().height !== height) image = image.resize({ width, height });
+    // CAP3: the title only appears at the seek; a capture straight after it could be the page before it (a cover with
+    // no title, or before the fit above). captureFrame checks the seek's token and captures again.
+    const png = await framePng(await captureFrame(window, width, height, 0, () => new Error("The cover title took too long to draw.")), width, height);
     signal?.throwIfAborted();
-    await fs.writeFile(out, image.toPNG());
+    await fs.writeFile(out, png);
   } finally { signal?.removeEventListener("abort", abort); abort(); }
 }
 const pending = new Map<string, Promise<string>>();
@@ -180,7 +181,8 @@ type StageTimeline = { pieces: DraftPiece[]; width: number; height: number };
 type CoverLayer = { file: string; source: number; rect: { x: number; y: number; w: number; h: number } | null;
   region: { x: number; y: number; w: number; h: number } | null; circle: boolean; lut: string; opacity: number };
 type LiveCoverPlan = { key: string; file: string; width: number; height: number; layers: CoverLayer[]; track: CaptionTrack | null };
-const LIVE_COVER_REVISION = 1, LIVE_COVERS_KEPT = 48, COVER_TITLES_KEPT = 16, LIVE_COVER_DELAY_MS = 1200;
+// CAP3: revision 2 (and cover revision 5): a cover title captured before the capture token could have no title.
+const LIVE_COVER_REVISION = 2, LIVE_COVERS_KEPT = 48, COVER_TITLES_KEPT = 16, LIVE_COVER_DELAY_MS = 1200;
 function segment<T extends { t: number }>(points: T[], time: number): [T, T, number] {
   const right = points.findIndex(point => point.t > time);
   const index = right < 0 ? points.length - 1 : Math.max(0, right - 1);

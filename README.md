@@ -15,12 +15,12 @@ precut is made by sidething and is free software under the GNU AGPL, version 3.
 ## Start in a minute
 
 1. Download `precut.dmg` from [Releases](https://github.com/alimzysworld/precut/releases), open it and drag precut into Applications. It is signed with sidething's Developer ID and notarised by Apple.
-2. Open precut. Pick the AI you already use, Claude Code or Codex, or press Start without AI. You can add one any time.
+2. Open precut. Pick the AI you already use, Claude Code or Codex, or press Start without Claude or Codex. Transcription and framing still run on your Mac. You can add one any time.
 3. While you go through setup, precut downloads its video tools (1.4 GB) and speech model (1.6 GB) in the background, once.
 4. Press Add shoot and choose a folder of clips. precut reads them, then shows ideas and first edits.
 5. Open an edit, change what you like, and press Export.
 
-No AI yet? You can still add a shoot, read every transcript, build an edit by hand from Footage (Add to edit) and export it. Ideas, automatic edits, Ask and post copy need an AI.
+No Claude or Codex yet? You can still add a shoot, read every transcript, build an edit by hand from Footage (Add to edit) and export it. Ideas, automatic edits, Ask and post copy need Claude or Codex.
 
 precut updates itself from this repo's releases. When a newer version is ready, the top bar says "Update ready: restarts when you quit". It installs when you quit precut, after every change you made is saved. Settings, General, has "Check for updates automatically" and "Check for updates".
 

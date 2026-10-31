@@ -4,6 +4,7 @@ import { app, powerMonitor } from "electron";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { checkoutFile } from "./bundle-paths";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import { governor, type ThermalState } from "./resource-governor";
@@ -40,7 +41,7 @@ export function startPowerWatch(): void {
   if (process.platform === "darwin") void (async () => {
     let binary = path.join(process.resourcesPath ?? "", "tools/power-watch");
     if (!app.isPackaged) {
-      const source = path.resolve(__dirname, "../../pipeline/power-watch.swift");
+      const source = checkoutFile("pipeline/power-watch.swift");
       const digest = createHash("sha256").update(await fs.readFile(source)).digest("hex").slice(0, 16);
       const dir = path.join(app.getPath("userData"), "power-helper");
       await fs.mkdir(dir, { recursive: true });

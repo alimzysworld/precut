@@ -9,6 +9,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { checkoutFile } from "./bundle-paths";
 import type { Judgement, Shoot, ShootNotice, SubjectSample, Take, TakeMeasures, Word } from "../shared/schema";
 import { runModel, type Engine } from "./ai";
 import { effectiveClip, stepsChanged } from "./steps";
@@ -50,17 +51,8 @@ function fmt(s: number): string {
 function judgePromptPath(): string {
   const fromCwd = path.join(process.cwd(), "prompts", "judge.md");
   if (fs.existsSync(fromCwd)) return fromCwd;
-  try {
-    const candidates = [
-      path.join(__dirname, "..", "..", "prompts", "judge.md"),
-      path.join(__dirname, "..", "..", "..", "prompts", "judge.md"),
-    ];
-    for (const c of candidates) {
-      if (fs.existsSync(c)) return c;
-    }
-  } catch {
-    // __dirname unavailable (plain ESM): fall through
-  }
+  const fromCheckout = checkoutFile("prompts/judge.md");
+  if (fs.existsSync(fromCheckout)) return fromCheckout;
   return fromCwd;
 }
 

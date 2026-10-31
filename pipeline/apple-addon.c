@@ -26,6 +26,9 @@ extern char *apv_capture(const char *path, int nominal);
 extern int apv_qa_below_desktop(void);
 extern char *apv_qa_frame(const char *path);
 extern char *apv_state(void);
+extern char *apv_qa_readback(int full, double x, double y, double w, double h);
+extern char *apv_qa_grab(const char *path);
+extern char *apv_qa_probes(double after);
 
 static napi_threadsafe_function events = NULL;
 
@@ -188,11 +191,34 @@ static napi_value qa_frame(napi_env env, napi_callback_info info) {
   return out;
 }
 
+/* AV5 QA: read back what the presenter presented (see QaReadback in apple-view.swift). */
+static napi_value qa_readback(napi_env env, napi_callback_info info) {
+  napi_value argv[5];
+  if (!args(env, info, 5, argv)) return undefined(env);
+  bool full = false;
+  napi_get_value_bool(env, argv[0], &full);
+  return json(env, apv_qa_readback(full ? 1 : 0, number(env, argv[1], 0), number(env, argv[2], 0), number(env, argv[3], 0), number(env, argv[4], 0)));
+}
+static napi_value qa_grab(napi_env env, napi_callback_info info) {
+  napi_value argv[1];
+  if (!args(env, info, 1, argv)) return undefined(env);
+  char *path = string(env, argv[0]);
+  napi_value out = json(env, apv_qa_grab(path ? path : ""));
+  free(path);
+  return out;
+}
+static napi_value qa_probes(napi_env env, napi_callback_info info) {
+  napi_value argv[1];
+  if (!args(env, info, 1, argv)) return undefined(env);
+  return json(env, apv_qa_probes(number(env, argv[0], 0)));
+}
+
 NAPI_MODULE_INIT() {
   const struct { const char *name; napi_callback fn; } methods[] = {
     {"onEvent", on_event}, {"attach", attach}, {"load", load}, {"play", play}, {"pause", pause_}, {"seek", seek},
     {"setRect", set_rect}, {"setVisible", set_visible}, {"setMuted", set_muted}, {"setLook", set_look}, {"warm", warm}, {"dispose", dispose},
     {"capture", capture}, {"qaBelowDesktop", qa_below_desktop}, {"state", state}, {"qaFrame", qa_frame},
+    {"qaReadback", qa_readback}, {"qaGrab", qa_grab}, {"qaProbes", qa_probes},
   };
   for (size_t i = 0; i < sizeof(methods) / sizeof(methods[0]); i++) {
     napi_value fn;

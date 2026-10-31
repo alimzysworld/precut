@@ -31,3 +31,13 @@ export function frameRateLabel(fps: number): string {
   if (ntsc !== undefined) return Math.round(ntsc) === 24 ? "23.976" : (Math.round(ntsc * 100) / 100).toFixed(2);
   return String(Math.round(fps * 100) / 100);
 }
+
+/** AV6: the output frame a cut at edit time `t` (seconds) lands on, on the edit's frame grid (`fps`, its standard
+ * rate): the nearest frame, a half rounding up; the edit's end (`durationS`) ends after the frame it falls in. The export trims every piece of its picture to these frames
+ * (preview.ts joinFxVideo) and the Apple player draws its cuts on them (apple-player.ts), so a cut is never more than
+ * half a frame from its sound, which is placed at `t`, and the two pictures change on the same frame. */
+export function cutFrame(t: number, fps: number, durationS?: number): number {
+  // The edit's end keeps its last moment: the frame it falls in is the last frame.
+  if (durationS !== undefined && t >= durationS - 1e-6) return Math.ceil(t * fps - 1e-6);
+  return Math.floor(t * fps + 0.5 + 1e-9);
+}

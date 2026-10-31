@@ -32,7 +32,7 @@ import { folderHints } from "./folder-shape";
 import { parseSidekick, ReplyShapeError } from "./sidekick-validation";
 import { finishingProgress } from "./preview";
 import { runActivity, currentActivity, withRenderSlot, independentPreparation } from "./activity";
-import { editFx, planFx, retimeVersion, carryJoinCraft, carryClipSound } from "./edits-fx";
+import { editFx, planFx, retimeVersion, carryJoinCraft, carryClipSound, syncFxMetadata } from "./edits-fx";
 import { editWords } from "./edits-words";
 import { editOverlays, overlayReadme } from "./overlays";
 import { applyFinishPlan, finishCatalog } from "./finish-plan";
@@ -67,6 +67,8 @@ const previewRevision = (_v: CutVersion) => PREVIEW_REV;
 // A batch stages existing handlers in memory, including structural edits. Only
 // its final snapshot is published; failed validation never changes history.
 const batchDraft = new AsyncLocalStorage<{ file: string; cut: StoredCut }>();
+/** PRO1: whether this work runs inside a batch's staged draft, whose version numbers are not on disk. */
+export const stagedDraft = (): boolean => !!batchDraft.getStore();
 /** A batch already owns the edit lock; never wait behind a queued live save
  * that itself needs that lock. Its final snapshot is the one undoable save. */
 export function savePlaybackChange(root: string, cutId: string, version: number,
@@ -675,6 +677,31 @@ async function validateCutWrite(root: string, cut: StoredCut): Promise<Set<numbe
   if (checked.existing && !insideCommit(root, cut.cutId)) for (const v of cut.versions) if (added.has(v.version)) await assertBase(root, cut.cutId, v.baseVersion!);
   return added;
 }
+/** What saving does to the snapshot it appends: its kept beats anchored, the voiceover retimed to the new picture and
+ * the captions following the voice. PRO2b: exported so a staged draft (Produce's review) is watched as it will be saved. */
+export async function settleSnapshot(root: string, saved: StoredCut, latest: StoredVersion): Promise<void> {
+  const onDisk = await fs.readFile(path.join(root, ".sidething/voiceover", `${saved.cutId}.json`), "utf8")
+    .then(raw => JSON.parse(raw) as import("../shared/schema").VoiceoverScript, error => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    });
+  if (latest.assembly) {
+    latest.keptBeats = anchorKeptBeats(latest,await keptBeatsFor(root, saved, latest.version));
+    latest.keptBeatOrigin = latest.version;
+  }
+  const from = builtFrom.get(latest);
+  const sidecar = onDisk && from !== undefined && onDisk.version > from ? null : onDisk;
+  const script = sidecar ?? latest.voiceover ?? [...saved.versions].reverse().find(v => v.voiceover?.lines.length)?.voiceover;
+  if (script && script.version < latest.version && (latest.voiceover?.version !== latest.version || latest.keptBeatRestorations?.length)) {
+    const source = saved.versions.find(v => v.version === script.version);
+    latest.voiceover = retimeScript(script, source, latest, {
+      before: source ? planFx(source.assembly.cutList, source.assembly.template.fps, source) : undefined,
+      after: planFx(latest.assembly.cutList, latest.assembly.template.fps, latest),
+    });
+    // 0.7.1: a picture edit that moved the voice moves its captions in this same save.
+    if (latest.titles) await (await import("./caption-realign")).followCaptionsToVoice(root, latest);
+  }
+}
 async function atomicOwned(file: string, value: unknown, signal?: AbortSignal): Promise<void> {
   const staged = batchDraft.getStore();
   if (staged?.file === file) { staged.cut = value as StoredCut; return; }
@@ -700,28 +727,8 @@ async function atomicOwned(file: string, value: unknown, signal?: AbortSignal): 
     const known = new Set(head?.versionLog.index.map(e => e.v) ?? []);
     const added = logWrite ? new Set(saved.versions.filter(v => !known.has(v.version)).map(v => v.version)) : await validateCutWrite(root, saved);
     if (logWrite && known.size && !insideCommit(root, saved.cutId)) for (const v of saved.versions) if (added.has(v.version)) await assertBase(root, saved.cutId, v.baseVersion!);
-    const onDisk = await fs.readFile(path.join(root, ".sidething/voiceover", `${saved.cutId}.json`), "utf8")
-      .then(raw => JSON.parse(raw) as import("../shared/schema").VoiceoverScript, error => {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-        throw error;
-      });
     const latest = saved.versions.at(-1);  // at(-1) stays: the snapshot this write just appended
-    if (latest?.assembly && added.has(latest.version)) {
-      latest.keptBeats = anchorKeptBeats(latest,await keptBeatsFor(root, saved, latest.version));
-      latest.keptBeatOrigin = latest.version;
-    }
-    const from = latest ? builtFrom.get(latest) : undefined;
-    const sidecar = onDisk && from !== undefined && onDisk.version > from ? null : onDisk;
-    const script = sidecar ?? latest?.voiceover ?? [...saved.versions].reverse().find(v => v.voiceover?.lines.length)?.voiceover;
-    if (script && latest && added.has(latest.version) && script.version < latest.version && (latest.voiceover?.version !== latest.version || latest.keptBeatRestorations?.length)) {
-      const source = saved.versions.find(v => v.version === script.version);
-      latest.voiceover = retimeScript(script, source, latest, {
-        before: source ? planFx(source.assembly.cutList, source.assembly.template.fps, source) : undefined,
-        after: planFx(latest.assembly.cutList, latest.assembly.template.fps, latest),
-      });
-      // 0.7.1: a picture edit that moved the voice moves its captions in this same save.
-      if (latest.titles) await (await import("./caption-realign")).followCaptionsToVoice(root, latest);
-    }
+    if (latest && added.has(latest.version)) await settleSnapshot(root, saved, latest);
     value = slimCut(saved, await currentIndex(root));
   }
   if (logWrite) {
@@ -1852,7 +1859,7 @@ async function replacePractice(root: string, cut: StoredCut, previous: StoredVer
     grade: previous.grade, audio: previous.audio, energy: previous.energy, titles: previous.titles, faceMatch: previous.faceMatch, cover: previous.cover, overlays: previous.overlays,
     ...(previous.videoType ? { videoType: previous.videoType } : {}),
     voice: reel.cuts.map(({ id }) => id), broll: reel.broll.map(({ id, over }) => ({ id, over })),
-    music: reel.music ? { file: reel.music.file, startS: reel.music.startS, gainDb: reel.music.gainDb, duckDepthDb: previous.music?.duckDepthDb, duck: previous.music?.duck, fit: previous.music?.fit, followStory: previous.music?.followStory } : null,
+    music: reel.music ? { file: reel.music.file, startS: reel.music.startS, gainDb: reel.music.gainDb, duckDepthDb: previous.music?.duckDepthDb, duck: previous.music?.duck, fit: previous.music?.fit, followStory: previous.music?.followStory, ...(previous.music?.shape ? { shape: previous.music.shape } : {}) } : null,
     pieces: resolved, keptFillers: [...(previous.keptFillers ?? [])], templateId: template.id,
     lengthS: offsetFrames / template.fps, preview: null, previewRev: 0, why: previous.why,
     warnings: reel.warnings, missing: [...previous.missing],
@@ -2016,6 +2023,7 @@ async function dispatchEdit(root: string, cutId: string, version: number, edit: 
   if (edit.kind === 'autoLayouts'||edit.kind === 'layoutBoundary'||edit.kind === 'layoutJoin'||edit.kind === 'layoutSplit') return import('./auto-layouts').then(m=>m.editAutoLayout(root,cutId,version,edit));
   if (edit.kind === "bleep" || edit.kind === "lowerThird") return import("./edits-ul1").then(m => m.editUl1(root, cutId, version, edit));
   if (edit.kind === "sfx") return import("./sound-design").then(({ editSounds }) => editSounds(root, cutId, version, edit));
+  if (edit.kind === "produce") return import("./produce-pass").then(m => m.editProduce(root, cutId, version, edit));  // PRO1: one version through runBatch
   if (edit.kind === "bigLine") return import("./titles").then(({ setBigLine }) => setBigLine(root, cutId, version, edit.s, edit.big));
   if (edit.kind === "replace") return import("./cuts").then(m => m.replaceClip(root, cutId, version, edit));
   if (edit.kind === "insert") return import("./cuts").then(({ insertClip }) => insertClip(root, cutId, version, edit));
@@ -2257,7 +2265,7 @@ async function editPiece(root: string, cutId: string, version: number, edit: Cut
       ...(previous.videoType ? { videoType: previous.videoType } : {}),
       voice: assembled.reel.cuts.map((c) => c.id),
       broll: assembled.reel.broll.map(({ id, over }) => ({ id, over })),
-      music: assembled.reel.music ? { file: assembled.reel.music.file, startS: assembled.reel.music.startS, gainDb: assembled.reel.music.gainDb, duckDepthDb: previous.music?.duckDepthDb, duck: previous.music?.duck, fit: previous.music?.fit, followStory: previous.music?.followStory } : null,
+      music: assembled.reel.music ? { file: assembled.reel.music.file, startS: assembled.reel.music.startS, gainDb: assembled.reel.music.gainDb, duckDepthDb: previous.music?.duckDepthDb, duck: previous.music?.duck, fit: previous.music?.fit, followStory: previous.music?.followStory, ...(previous.music?.shape ? { shape: previous.music.shape } : {}) } : null,
       pieces: resolveReelPieces(shoot, template, assembled.cutList, assembled.reel).map((resolved, index) => {
         const oldIndex = edit.kind === "remove" && index >= edit.piece ? index + 1
           : edit.kind === "split" && index > edit.piece ? index - 1 : index;
@@ -2274,8 +2282,22 @@ async function editPiece(root: string, cutId: string, version: number, edit: Cut
       warnings: assembled.reel.warnings, missing: [...previous.missing], feedback,
       assembly: { shoot, template, cutList: assembled.cutList, reel: assembled.reel }, previewRev: 0,
     };
+    // PRO1: carryClipSound carries only sound, so every clip lost its own look, framing, speed and transform on any trim,
+    // removal, split or swap. Each piece keeps the picture settings of the piece it came from; sound (overlaySound
+    // included) stays carryClipSound's to decide. Then timing comes from the playback plan, so lengths, positions and the
+    // scene ranges carried next are measured with speed back on.
+    if (previous.pieceFx) {
+      const from = record.pieces!.map((_, index) => edit.kind === "remove" && index >= edit.piece ? index + 1 : edit.kind === "split" && index > edit.piece ? index - 1 : index);
+      record.pieceFx = from.map(old => { const fx = previous.pieceFx?.[old]; if (!fx) return null;
+        const { muted: _m, gainDb: _g, clean: _c, overlaySound: _o, ...picture } = structuredClone(fx); return Object.keys(picture).length ? picture : null; });
+      // A trim keeps every piece in place, so its joins (which retimeMagneticTrim would copy later) shape this timing too.
+      if (edit.kind === "trim" && previous.joins && record.joins === undefined) record.joins = structuredClone(previous.joins);
+      syncFxMetadata(record);
+    }
     carryJoinCraft(previous, record, record.pieces!.map((_, index) => edit.kind === "remove" && index >= edit.piece ? index + 1
       : edit.kind === "split" && index > edit.piece ? index - 1 : index));
+    // PRO1: the playback plan's timing (speed and joins included) once everything that shapes it is carried.
+    if (previous.pieceFx) syncFxMetadata(record);
     record.pieces = timedPieces(record.assembly, record.pieces);
     if (edit.kind === "trim" && "magnetic" in edit) (await import("./edits-move")).retimeMagneticTrim({...previous,pieces}, record, edit.piece);
     await (await import('./music-arrange')).pinMusicForHandEdit(root,previous,record);

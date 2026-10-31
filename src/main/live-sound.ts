@@ -38,21 +38,28 @@ function queue(root: string, key: string, prepare: () => Promise<void>) {
 /** PAR1: the export's own master stage for this version's sound (the gain its loudness pass gave the premix and the
  * limiter ceiling after it), read from the export's sound manifest: the same request the export makes (its format,
  * energy and cut list), so the cache entry is the export's own. Read only: the viewer never prepares the export's
- * sound itself (doing that in the background made an export that overlapped it fail), so until an export of this
- * sound exists the live mix keeps its estimate. One source of numbers: once it exists, it is the export's. */
-async function exportMaster(root: string, record: StoredVersion): Promise<NonNullable<LiveSound['master']> | null> {
-  const [{ exportFormat, exportAspect }, { prepareEnergy }, { cachedDraftSound }, { getPreferences }, { displayedClip }] = await Promise.all([
+ * sound itself (doing that in the background made an export that overlapped it fail). AV6: with no export of this
+ * sound yet, `measure` measures the export's own premix (preview.ts draftSoundMaster: the same request and graph,
+ * written to nothing the export reads) and gives the stage the export will apply, so the live mix plays at the
+ * export's level before any export (it was 15.7 dB quiet with Audio Auto off, 2 dB with it on). */
+async function exportMaster(root: string, record: StoredVersion, measure = false): Promise<{ master: NonNullable<LiveSound['master']>; exported: boolean } | null> {
+  const [{ exportFormat, exportAspect }, { prepareEnergy }, { cachedDraftSound, draftSoundMaster }, { getPreferences }, { displayedClip }] = await Promise.all([
     import('./export'), import('./finish'), import('./preview'), import('./settings'), import('../shared/media')]);
   const { width, height } = record.assembly.template;
   const version = await exportFormat(record, exportAspect(width, height));
   prepareEnergy(version, version.assembly, version.energy ?? 'subtle', (await getPreferences()).output.height);
   const cuts = version.assembly.cutList.map(c => c.seg ? { ...c, seg: { ...c.seg, clip: displayedClip(c.seg.clip) } } : c);
-  const file = await cachedDraftSound(root, cuts, { name: 'live-master', template: version.assembly.template, version, reel: version.assembly.reel, full: true }, false);
+  const opts = { name: 'live-master', template: version.assembly.template, version, reel: version.assembly.reel, full: true };
+  const file = await cachedDraftSound(root, cuts, opts, false);
   const master = file ? await fs.readFile(`${file}.json`, 'utf8').then(text => JSON.parse(text).master as LiveSound['master'] | null, () => null) : null;
-  return master && Number.isFinite(master.gainDb) && Number.isFinite(master.ceiling) ? master : null;
+  if (master && Number.isFinite(master.gainDb) && Number.isFinite(master.ceiling)) return { master, exported: true };
+  if (!measure) return null;
+  const measured = await runActivity({kind:'render',root,target:null,label:'Preparing sound',cancelable:true}, () => draftSoundMaster(root, cuts, opts), {renderLane:'background'});
+  return measured && Number.isFinite(measured.gainDb) && Number.isFinite(measured.ceiling) ? { master: measured, exported: false } : null;
 }
-/** Master stages found, by the sound's own inputs; the looks still running; when each sound was last asked for. */
-const masters = new Map<string, NonNullable<LiveSound['master']>>();
+/** Master stages found, by the sound's own inputs (measured before an export, or the export's own); the looks still
+ * running; when each sound was last asked for. */
+const masters = new Map<string, NonNullable<LiveSound['master']>>(), measuredOnly = new Set<string>();
 const masterLooks = new Map<string, true>(), masterAsked = new Map<string, number>();
 /** The master stage for this version's sound when known. Otherwise it is looked for off the draft's path, again every
  * 20 s while a draft asked for it in the last half hour (an export may land any time; a look costs about 20 ms of
@@ -62,19 +69,47 @@ function liveMaster(root: string, record: StoredVersion): LiveSound['master'] {
   const key = `${root}|${digest([record.audio, record.laneLevels, record.laneMuted, record.clipSoundMuted, record.clipSoundDefaultOn, record.music, record.sfx, record.voiceover?.lines,
     record.pieceFx, record.bleeps, record.energy, record.assembly.template, cutList.map(c => [c.seg?.clip.id, c.inFrames, c.outFrames, c.durTimelineFrames, c.offsetFrames])])}`;
   masterAsked.delete(key); masterAsked.set(key, Date.now()); if (masterAsked.size > 64) masterAsked.delete(masterAsked.keys().next().value!);
-  const known = masters.get(key);
-  if (known) return known;
-  if (masterLooks.has(key)) return undefined;
+  const known = masters.get(key), edit = editOf(root, record), audioKey = digest(normalizeAudio({...DEFAULT_AUDIO_FINISH,...record.audio}));
+  if (known && !measuredOnly.has(key)) return known;
+  // AV6: until this sound's own stage lands (a measurement takes seconds to minutes after an edit changes the sound),
+  // the edit's nearest earlier version with the same audio settings lends its stage: one edit's loudness barely moves
+  // between versions (the faders sit after it), where the estimate was 15.7 dB out with Audio Auto off. When the
+  // version's own stage lands the mix moves by only the real difference. A first open has none and waits for its own.
+  const lent = known ? undefined : earlierStage(edit, record.version, audioKey);
+  if (masterLooks.has(key)) return known ?? lent;
   masterLooks.set(key, true);
-  const attempt = (): void => void independentPreparation(() => exportMaster(root, record)).then(found => {
+  // AV6: a look measures the premix while no stage is known for this sound and it is one of the two sounds asked for
+  // last (a draft and its playback preparation can ask for neighbours; one measuring pass per sound, kept on disk).
+  // Once measured, looks only read, so an export landing replaces the measured stage with its own.
+  const attempt = (): void => { const measure = !masters.has(key) && [...masterAsked.keys()].slice(-2).includes(key);
+    void independentPreparation(() => exportMaster(root, record, measure)).then(found => {
     // Found: a "Preparing sound" step that ends at once, the signal the edit page takes to read its draft again.
-    if (found) { masterLooks.delete(key); masters.set(key, found); if (masters.size > 64) masters.delete(masters.keys().next().value!);
-      void runActivity({kind:'render',root,target:null,label:'Preparing sound',cancelable:true},async () => {},{renderLane:'background',deferRenderSlot:true}).catch(() => {}); return; }
+    const changed = found && JSON.stringify(found.master) !== JSON.stringify(masters.get(key));
+    if (found) { masters.set(key, found.master); if (found.exported) measuredOnly.delete(key); else measuredOnly.add(key); if (masters.size > 64) { const old = masters.keys().next().value!; masters.delete(old); measuredOnly.delete(old); }
+      keepStage(edit, record.version, audioKey, found.master); }
+    if (changed) void runActivity({kind:'render',root,target:null,label:'Preparing sound',cancelable:true},async () => {},{renderLane:'background',deferRenderSlot:true}).catch(() => {});
+    if (found?.exported) { masterLooks.delete(key); return; }
     const recent = [...masterAsked.keys()].slice(-4);
     if (recent.includes(key) && Date.now() - (masterAsked.get(key) ?? 0) < 1_800_000) setTimeout(attempt, 20_000).unref?.(); else masterLooks.delete(key);
-  }, error => { masterLooks.delete(key); console.warn('Could not read the export level:', error); });
+  }, error => { masterLooks.delete(key); console.warn('Could not read the export level:', error); }); };
   setImmediate(attempt);
-  return undefined;
+  return known ?? lent;
+}
+/** AV6: each edit's stages by version (this run of the app): an edit is its shoot, title and frame (a version carries
+ * no id of its edit; its title stays with it across versions). */
+const editStages = new Map<string, { version: number; audioKey: string; master: NonNullable<LiveSound['master']> }[]>();
+const editOf = (root: string, record: StoredVersion) => `${root}|${record.title ?? ''}|${record.assembly.template.width}x${record.assembly.template.height}`;
+function keepStage(edit: string, version: number, audioKey: string, master: NonNullable<LiveSound['master']>) {
+  const list = (editStages.get(edit) ?? []).filter(e => e.version !== version);
+  list.push({ version, audioKey, master });
+  editStages.delete(edit); editStages.set(edit, list.slice(-32));
+  if (editStages.size > 64) editStages.delete(editStages.keys().next().value!);
+}
+/** The stage of this edit's nearest earlier version with the same audio settings, else its nearest later one. */
+function earlierStage(edit: string, version: number, audioKey: string): LiveSound['master'] {
+  const same = (editStages.get(edit) ?? []).filter(e => e.audioKey === audioKey && e.version !== version);
+  const before = same.filter(e => e.version < version).sort((a, b) => b.version - a.version)[0];
+  return (before ?? same.sort((a, b) => a.version - b.version)[0])?.master;
 }
 
 /** Cache cleaned takes, never a version's mixed movie. Timing, gain, EQ and music
@@ -137,7 +172,9 @@ export async function liveSound(root: string, record: StoredVersion, fx: FxPlan)
     pieces.push({ id: `voiceover:${line.id}:${take.file}:${take.s}:${take.e}`, url: source.ready && path.dirname(source.file) === cache ? cacheUrl(root, source.file) : `st-media://local/${encodeURIComponent(root)}/voice/${encodeURIComponent('voiceover:' + take.file)}`,
       startS: line.s, endS, sourceStart: source.sourceStart, timeMap: [{ t: line.s, s: take.s }, { t: endS, s: take.s + endS - line.s }], gainDb: 0, fadeInS: .005, fadeOutS: .005 });
   }
-  const effectsKey = digest({revision:2,sfx:record.sfx,overlays:record.overlays?.map(o=>({s:o.s,e:o.e,sound:o.sound})),joins:fx.joins.map(j=>({atS:j.atS,sound:j.choice.sound})),design:audio.design,duration:fx.durationS});
+  // PRO3a: a sound with a role is levelled against the voice, so what sets the voice's level is part of its key.
+  const voiceForRoles = record.sfx?.some(s=>s.role) ? {auto:record.audio?.auto,even:record.audio?.evenOutVoices,lanes:record.laneLevels,takes:record.voiceover?.lines.map(l=>l.take?.file),reel:record.assembly.reel.voiceLUFS} : undefined;
+  const effectsKey = digest({revision:2,sfx:record.sfx,overlays:record.overlays?.map(o=>({s:o.s,e:o.e,sound:o.sound})),joins:fx.joins.map(j=>({atS:j.atS,sound:j.choice.sound})),design:audio.design,duration:fx.durationS,...(voiceForRoles ? {voiceForRoles} : {})});
   const receipt = path.join(cache,`live-effects-${effectsKey}.json`);
   let effects: LiveSoundPiece[] = [];
   try { effects = JSON.parse(await fs.readFile(receipt,'utf8')); }

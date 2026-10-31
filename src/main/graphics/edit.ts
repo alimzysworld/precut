@@ -14,6 +14,9 @@ export function graphicTheme(titles: TitleTrack | null | undefined): Partial<Gra
 /** Sanitise, check that every sampled frame draws within its budget, and make the picture used in lists and handles. */
 export async function prepareGraphic(root: string, input: unknown): Promise<{ graphic: MotionGraphic; file: string }> {
   const graphic = sanitizeGraphic(input);
+  // PRO4b: a card's picture must be in this shoot's own card cache (add_card put it there).
+  if (graphic.media && !await (await import("node:fs")).promises.stat((await import("node:path")).join(root, ".sidething", "overlays", graphic.media)).then(s => s.isFile() && s.size > 0, () => false))
+    throw new GraphicError("That card's picture isn't in this shoot. Make the card again with add_card.");
   const { vetGraphic, graphicPoster } = await import("./render");
   await vetGraphic(graphic);
   return { graphic, file: await graphicPoster(root, graphic) };
@@ -23,6 +26,8 @@ export async function prepareGraphic(root: string, input: unknown): Promise<{ gr
 export function graphicFromRequest(request: { template?: string; params?: Record<string, unknown>; composition?: Partial<MotionGraphic> & Record<string, unknown>; durationS?: number; layer?: "front" | "behind"; words?: MotionGraphic["words"] },
   theme: Partial<GraphicTheme>): MotionGraphic {
   if (!!request.template === !!request.composition) throw new GraphicError("Give either a template with params, or a composition with html, css and js.");
+  // PRO4b: a picture from the shoot comes only through add_card, never in a hand-written composition.
+  if (request.composition && (request.composition.media !== undefined || request.composition.template === "screen-card")) throw new GraphicError("Cards are made with add_card (a real picture from the shoot, a stamp in the person's own words).");
   if (request.template) return buildFromTemplate(request.template, request.params ?? {}, theme, { durationS: request.durationS, layer: request.layer, words: request.words });
   const composition = { ...request.composition!, ...(request.durationS !== undefined ? { durationS: request.durationS } : {}), ...(request.layer ? { layer: request.layer } : {}), ...(request.words ? { words: request.words } : {}) };
   return sanitizeGraphic(composition);

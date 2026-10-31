@@ -22,6 +22,13 @@ struct VideoSeg: Decodable {
     /// AV4: the piece's lane (0 the spine) and how it is drawn over time (apple-playback appleLayerPlan).
     let layer: Int?
     let visual: LayerPlan?
+    /// AV6: where the picture shows on the reel: its start and end on the edit's frame grid (main sets them with
+    /// shared/frame-rate.ts cutFrame, the frames the export cuts on), absent for a piece on its own clock. The plan's
+    /// own times stay the segment's name (its Look is found by them); the picture runs from the same file time.
+    let cutStart: Double?; let cutEnd: Double?
+    var shownStart: Double { cutStart ?? timelineStart }
+    var shownEnd: Double { cutEnd ?? timelineEnd }
+    var shownSourceStart: Double { max(0, sourceStart + shownStart - timelineStart) }
 }
 /// AV4: one sampled moment of a picture layer, from the viewer's own functions (apple-playback AppleLayerKey).
 struct LayerKey: Decodable { let t: Double; let rect: [Double]?; let region: [Double]?; let opacity: Double; let shape: Double; let blur: [Double]; let radius: Double; let pixels: [Double] }
@@ -44,9 +51,11 @@ struct Manifest: Decodable {
     let video: [VideoSeg]; let audio: [AudioSeg]
     // AV2: the Look's finish and shader (pipeline/apple-look.swift) and the sound buses' plan.
     let finish: FinishPlan?; let sound: SoundPlan?; let shader: ShaderPlan?
-    init(version: Int, width: Double, height: Double, fps: Double, durationS: Double, video: [VideoSeg], audio: [AudioSeg], finish: FinishPlan? = nil, sound: SoundPlan? = nil, shader: ShaderPlan? = nil) {
+    /// AV6: the edit's frame grid (its standard rate, the export's: main sets it), which the pictures are drawn on.
+    let gridFps: Double?
+    init(version: Int, width: Double, height: Double, fps: Double, durationS: Double, video: [VideoSeg], audio: [AudioSeg], finish: FinishPlan? = nil, sound: SoundPlan? = nil, shader: ShaderPlan? = nil, gridFps: Double? = nil) {
         self.version = version; self.width = width; self.height = height; self.fps = fps; self.durationS = durationS
-        self.video = video; self.audio = audio; self.finish = finish; self.sound = sound; self.shader = shader
+        self.video = video; self.audio = audio; self.finish = finish; self.sound = sound; self.shader = shader; self.gridFps = gridFps
     }
 }
 
@@ -172,7 +181,7 @@ final class PictureLayout {
         width = max(1, Int(manifest.width.rounded())); height = max(1, Int(manifest.height.rounded()))
         segs = manifest.video
         var cuts = Set<Double>([0, manifest.durationS])
-        for seg in manifest.video { cuts.insert(seg.timelineStart); cuts.insert(seg.timelineEnd) }
+        for seg in manifest.video { cuts.insert(seg.shownStart); cuts.insert(seg.shownEnd) }
         // Edges closer than half a millisecond are one edge (an edit's rounding leaves pieces a few microseconds apart;
         // a span between them would have no picture: a black frame if one landed there).
         var times = cuts.sorted().reduce(into: [Double]()) { list, t in if let last = list.last, t - last < 0.0005 { return }; list.append(t) }
@@ -181,7 +190,7 @@ final class PictureLayout {
         if let end = cuts.max(), let last = times.last, end > last { times[times.count - 1] = end }
         var made: [Span] = []
         for (a, b) in zip(times, times.dropFirst()) {
-            let active = manifest.video.indices.filter { manifest.video[$0].timelineStart <= a + 0.0005 && manifest.video[$0].timelineEnd >= b - 0.0005 && PictureLayout.lasts(manifest.video[$0]) }
+            let active = manifest.video.indices.filter { manifest.video[$0].shownStart <= a + 0.0005 && manifest.video[$0].shownEnd >= b - 0.0005 && PictureLayout.lasts(manifest.video[$0]) }
             // The viewer's draw order: its layout order (the lane), then the later piece on top (a dissolve).
             let ordered = active.sorted { (x, y) in
                 let ox = manifest.video[x].visual?.order ?? Double(manifest.video[x].layer ?? 0), oy = manifest.video[y].visual?.order ?? Double(manifest.video[y].layer ?? 0)
@@ -199,7 +208,7 @@ final class PictureLayout {
     }
 
     /// A segment long enough to compose (an empty time range is refused by AVFoundation: -12780).
-    static func lasts(_ seg: VideoSeg) -> Bool { seg.timelineEnd - seg.timelineStart >= 0.0001 }
+    static func lasts(_ seg: VideoSeg) -> Bool { seg.shownEnd - seg.shownStart >= 0.0001 }
     /// The span showing at reel `t` (its start included).
     func spanIndex(at t: Double) -> Int? {
         var lo = 0, hi = spans.count - 1, found: Int? = nil
@@ -299,8 +308,13 @@ final class TileInstruction: NSObject, AVVideoCompositionInstructionProtocol {
     let span: Int
     init(timeRange: CMTimeRange, layout: PictureLayout, span: Int) {
         self.timeRange = timeRange; self.layout = layout; self.span = span
-        let ids = Set(layout.spans[span].tiles.map { layout.trackIDs[$0.seg] })
-        requiredSourceTrackIDs = ids.isEmpty ? nil : ids.sorted().map { NSNumber(value: $0) }
+        // AV6: every track is a source of every span (nil). A span naming only some tracks froze the picture: on the
+        // five-join edit, the dissolve's last 0.45 s (only its incoming picture's track named, the outgoing track's
+        // piece over) presented nothing until a span named the first track again (AV5: 450 ms hold, ~197 pictures
+        // dropped at 3.07 s, every play). Measured offline on that plan (qa/AV6/joins-offline): named tracks 446 ms
+        // frozen, a held frame filling the other track's gap still 445 ms, every track named 0. A track with no
+        // segment at a moment gives no frame and costs nothing, and the tiles still read only their own tracks.
+        requiredSourceTrackIDs = nil
     }
 }
 
@@ -320,19 +334,20 @@ func buildComposition(_ manifest: Manifest) throws -> BuiltComposition {
     }
     tracks.append((try newTrack(), 0))
     var trackOf = [CMPersistentTrackID](repeating: kCMPersistentTrackID_Invalid, count: manifest.video.count)
-    for (index, seg) in manifest.video.enumerated().sorted(by: { $0.element.timelineStart < $1.element.timelineStart }) where PictureLayout.lasts(seg) {
+    for (index, seg) in manifest.video.enumerated().sorted(by: { $0.element.shownStart < $1.element.shownStart }) where PictureLayout.lasts(seg) {
         guard let source = AppleAssets.shared.track(seg.file, .video) else { throw CompositionError.message("no video in \(seg.file)") }
-        var k = tracks.firstIndex { $0.end <= seg.timelineStart + 1e-6 }
+        var k = tracks.firstIndex { $0.end <= seg.shownStart + 1e-6 }
         if k == nil { tracks.append((try newTrack(), 0)); k = tracks.count - 1 }
         let videoTrack = tracks[k!].track
         if let keys = seg.timeMap, !plainClock(keys) {
             // A held picture is one of the file's own frames long (its nominal rate), never a fraction of one.
             let rate = Double(source.nominalFrameRate)
             try composeClock(videoTrack, source: source, keys: keys, hold: rate > 1 ? 1 / rate : 1.0 / 30)
-        } else if let range = sourceRange(source, start: seg.sourceStart, duration: seg.sourceEnd - seg.sourceStart) {
-            try videoTrack.insertTimeRange(range, of: source, at: seconds(seg.timelineStart))
+        } else if let range = sourceRange(source, start: seg.shownSourceStart, duration: seg.shownEnd - seg.shownStart) {
+            // AV6: on the frame grid (shownStart, shownEnd): the file time at the reel time is unchanged.
+            try videoTrack.insertTimeRange(range, of: source, at: seconds(seg.shownStart))
         }
-        tracks[k!].end = seg.timelineEnd
+        tracks[k!].end = seg.shownEnd
         trackOf[index] = videoTrack.trackID
     }
     layout.trackIDs = trackOf
@@ -398,8 +413,11 @@ func buildComposition(_ manifest: Manifest) throws -> BuiltComposition {
     let vc = AVMutableVideoComposition()
     vc.customVideoCompositorClass = PictureCompositor.self
     vc.renderSize = CGSize(width: Double(layout.width), height: Double(layout.height * layout.tileCount))
-    vc.frameDuration = CMTime(seconds: 1 / max(1, manifest.fps), preferredTimescale: compositionTimescale)
-    if let first = tracks.first?.track { vc.sourceTrackIDForFrameTiming = first.trackID }
+    // AV6: on the edit's frame grid (gridFps, the export's frames: 1/60 is exactly 1000 ticks), so a cut placed on
+    // that grid (VideoSeg.shownStart) is drawn on its own frame.
+    vc.frameDuration = CMTime(seconds: 1 / max(1, manifest.gridFps ?? manifest.fps), preferredTimescale: compositionTimescale)
+    // AV6: frames on the plan's own rate (frameDuration), never one track's: following the first track, a layout of a
+    // 25 fps screen over a 60 fps camera presented 25 pictures a second and dropped most of the camera's.
     var instructions: [AVVideoCompositionInstructionProtocol] = []
     // The last instruction runs to the end of the composition as built (a track can end a timescale tick past the plan).
     let edges = layout.spans.map { seconds($0.start) } + [CMTimeMaximum(seconds(layout.spans.last?.end ?? manifest.durationS), composition.duration)]

@@ -18,6 +18,7 @@ import { lookParameters } from "../shared/grade-math";
 import { normalizeBasic } from "./basics";
 import { MIXER_HUES } from "./mixer";
 import { APPLE_DETAIL_STEPS, appleShader } from "./apple-shader";
+import { cutFrame, standardFrameRate } from "../shared/frame-rate";
 
 /** The first second of the last play: pictures shown of those due, and when sound started against the first picture. */
 export interface AppleOpening {
@@ -51,6 +52,9 @@ interface AppleAddon {
   qaBelowDesktop(): number;
   state(): string;
   qaFrame?(file: string): string;
+  qaReadback?(full: boolean, x: number, y: number, w: number, h: number): string;
+  qaGrab?(file: string): string;
+  qaProbes?(after: number): string;
 }
 
 let lastState: ApplePlaybackReport = { player: "chrome", reason: "Apple player is off. Turn it on in Settings, Playback.", appleEnabled: false };
@@ -189,6 +193,19 @@ export function appleExposureGains(exposure: { stops: number; matched?: boolean;
   return [0, 1, 2].map(ch => 2 ** stops * (exposure.gains?.[ch as 0 | 1 | 2] ?? 1)) as [number, number, number];
 }
 
+/** AV6: each spine picture's start and end on the edit's frame grid (the frames the export cuts on, shared/frame-rate.ts
+ * cutFrame at the export's standard rate), as cutStart/cutEnd beside the plan's own times. A picture on its own clock
+ * (speed, ramps, a hold) keeps the plan's times. */
+function onFrameGrid(manifest: AppleManifest, timelineFps: number | undefined): void {
+  const fps = standardFrameRate(timelineFps ?? manifest.fps);
+  if (!(fps > 0)) return;
+  (manifest as AppleManifest & { gridFps?: number }).gridFps = fps;
+  const spine = (manifest.video as (AppleManifest["video"][number] & { cutStart?: number; cutEnd?: number })[]).filter(v => (v.layer ?? 0) === 0);
+  // An edge shared with a piece on its own clock stays where that piece is, so the two still meet.
+  const fixed = spine.filter(v => v.timeMap?.length).flatMap(v => [v.timelineStart, v.timelineEnd]);
+  const grid = (t: number) => fixed.some(f => Math.abs(f - t) < 1e-4) ? t : cutFrame(t, fps, manifest.durationS) / fps;
+  for (const v of spine) if (!v.timeMap?.length) { v.cutStart = grid(v.timelineStart); v.cutEnd = grid(v.timelineEnd); }
+}
 /** Plans already written, by content: reopening an edit (or a tab coming back) reuses its files and manifest. */
 const plans = new Map<string, string>();
 /** One folder of plans per run of the app, removed on quit. */
@@ -388,6 +405,7 @@ export async function appleSetEdit(sender: WebContents, payload: AppleSetEditPay
     parts.filesMs = Math.round(performance.now() - started);
     const manifest: AppleManifest | null = buildAppleManifest(timeline, url => files.get(url) ?? null, piece => rotations[piece.clipId] ?? 0, payload.voice, payload.layers);
     if (!manifest) { quiet(); return recordAppleState({ player: "chrome", reason: APPLE_FILE_REASON, appleEnabled: true, ...base }); }
+    onFrameGrid(manifest, timeline.fps);
     filling = { ...(await enrichAppleLooks(manifest, payload.look, { at: payload.at ?? 0, seconds: 4 })), plan: manifest };
     parts.lookMs = Math.round(performance.now() - started) - parts.filesMs;
     manifestPath = path.join(manifestDir(), `${key.slice(0, 16)}.json`);
@@ -541,6 +559,22 @@ export function appleQaFrame(file: string): Record<string, unknown> {
   if (process.env["PRECUT_QA_BACKGROUND"] !== "1" || !addon?.qaFrame) return { ok: false, error: "QA only" };
   return JSON.parse(addon.qaFrame(file)) as Record<string, unknown>;
 }
+/** QA only (AV5): read back the drawables the presenter presents. `full` keeps the newest whole; `rect` (fractions of
+ * the frame) records each one's mean brightness there with its times. Off for a person; QA arms it. */
+export function appleQaReadback(full: boolean, rect?: { x: number; y: number; w: number; h: number } | null): Record<string, unknown> {
+  if (process.env["PRECUT_QA_BACKGROUND"] !== "1" || !addon?.qaReadback) return { ok: false, error: "QA only" };
+  return JSON.parse(addon.qaReadback(full, rect?.x ?? 0, rect?.y ?? 0, rect?.w ?? 0, rect?.h ?? 0)) as Record<string, unknown>;
+}
+/** QA only (AV5): the newest presented drawable as a PNG (no file: its numbers only), with its sequence and item time. */
+export function appleQaGrab(file = ""): Record<string, unknown> {
+  if (process.env["PRECUT_QA_BACKGROUND"] !== "1" || !addon?.qaGrab) return { ok: false, error: "QA only" };
+  return JSON.parse(addon.qaGrab(file)) as Record<string, unknown>;
+}
+/** QA only (AV5): probe records after sequence `after`, and the last measured play's picture clock. */
+export function appleQaProbes(after = 0): Record<string, unknown> {
+  if (process.env["PRECUT_QA_BACKGROUND"] !== "1" || !addon?.qaProbes) return { ok: false, error: "QA only" };
+  return JSON.parse(addon.qaProbes(after)) as Record<string, unknown>;
+}
 /** QA only (PRECUT_QA_BACKGROUND=1): the invisible QA window goes under the desktop picture so it can be captured opaque. */
 export function appleQaBelowDesktop(): number { return process.env["PRECUT_QA_BACKGROUND"] === "1" && addon ? addon.qaBelowDesktop() : 0; }
 /** QA only: load the addon and attach it to precut's window without playing, so a Chrome viewer run captures the same way. */
@@ -557,4 +591,4 @@ export function stopApplePlayer(): void {
 }
 app.on("before-quit", stopApplePlayer);
 // QA reaches the bridge from main without an import path of its own.
-if (process.env["PRECUT_QA_BACKGROUND"] === "1") (globalThis as { __precutApple?: unknown }).__precutApple = { appleNativeState, appleCapture, appleQaBelowDesktop, appleQaAttach, getApplePlaybackState, appleAddonPath, appleQaFrame, appleLastPlan: () => lastPlanPath };
+if (process.env["PRECUT_QA_BACKGROUND"] === "1") (globalThis as { __precutApple?: unknown }).__precutApple = { appleNativeState, appleCapture, appleQaBelowDesktop, appleQaAttach, getApplePlaybackState, appleAddonPath, appleQaFrame, appleQaReadback, appleQaGrab, appleQaProbes, appleLastPlan: () => lastPlanPath };

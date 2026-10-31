@@ -180,6 +180,8 @@ const handlers: Handlers = {
   makeBetter: (root, cutId, version) => import("./critique").then(m => m.makeBetter(root, cutId, version)),  // MB1
   proposeBetter: (root, cutId, version) => import("./critique").then(m => m.proposeBetter(root, cutId, version)),  // V62
   applyBetter: (root, cutId, version, issueIds) => import("./critique").then(m => m.applyBetter(root, cutId, version, issueIds)),  // V62
+  produceEdit: (root, cutId, version) => import("./produce-director").then(m => m.produceEdit(root, cutId, version)),  // PRO2
+  produceOutcome: (root, cutId, version) => import("./produce-director").then(m => m.produceOutcome(root, cutId, version)),  // PRO2
   extensions,
   installExtension,
   removeExtension,

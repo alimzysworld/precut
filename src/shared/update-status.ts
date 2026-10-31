@@ -5,7 +5,8 @@ export interface UpdateStatus {
   version: string;            // the installed version
   next?: string;              // the version on offer
   pct?: number;               // download progress, 0 to 100
-  failedAt?: "check" | "download" | "verify";
+  preparing?: boolean;        // downloading: the zip is down and Squirrel is unzipping and checking it
+  failedAt?: "check" | "download" | "verify" | "install";
   message?: string;           // plain words, shown as is
   checkedAt?: string;         // ISO time of the last finished check
   manual?: boolean;           // the last check was asked for in Settings

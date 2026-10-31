@@ -53,11 +53,19 @@ const clipLook = nullable(object({ filmFade: { type: "number", minimum: 0, maxim
   basic: object(Object.fromEntries(Object.keys(BASIC_BOUNDS).map(key => [key, { type: "number" }])), []),
   mixer: object(Object.fromEntries(Object.keys(MIXER_HUES).map(key => [key, object({ hue: { type: "number" }, sat: { type: "number" }, lum: { type: "number" } }, [])])), []) }, []));
 const background = nullable({ anyOf: [object({ mode: choice("colour"), colour: { type: "string", pattern: "^#[0-9a-fA-F]{6}$" } }), object({ mode: choice("image"), image: { ...text, description: "Absolute image path to copy, or the saved background cache basename. Originals are never moved." } })] });
-const sfx = { file: text, name: text, atS: number, lengthS: { ...number, exclusiveMinimum: 0 }, gainDb: { type: "number", minimum: -24, maximum: 6 }, kind: choice("whoosh", "hit", "pop", "riser", "impact", "ambience", "roomtone", "ui", "other"), reason: text };
+const sfx = { file: text, name: text, atS: number, lengthS: { ...number, exclusiveMinimum: 0 }, gainDb: { type: "number", minimum: -24, maximum: 6 }, kind: choice("whoosh", "hit", "pop", "riser", "impact", "ambience", "roomtone", "ui", "other"), reason: text,
+  // PRO3a: role levels it against the edit's voice (gainDb then trims, 0 = the role's level); landAtS puts its measured hit (list_sounds hitS) there instead of giving atS.
+  role: { ...choice("hit", "accent", "ui", "ambience"), description: "Place at this role's level against the edit's voice; gainDb then trims it (0 = the role's level). list_sounds gives each library sound's role." },
+  landAtS: { ...number, description: "Edit seconds where the sound's hit should land; it starts hitS earlier (pre-roll). Use instead of atS." } };
+// PRO3a: the music's stillnesses (dip, snap back at endS) and hit dips (dip, recover), multiplied onto speech ducking.
+const musicMark = { anyOf: [object({ kind: choice("still"), atS: number, endS: number, db: { type: "number", minimum: -24, maximum: 0 } }, ["kind", "atS", "endS"]),
+  object({ kind: choice("hit"), atS: number, db: { type: "number", minimum: -24, maximum: 0 }, recoverS: { type: "number", minimum: .02, maximum: 3 } }, ["kind", "atS"])] };
 const lowerThird = { s: number, e: number, title: { ...text, maxLength: 160 }, subtitle: { type: "string", maxLength: 240 }, position: choice("left", "right", "centre") };
 const layout = nullable(object({kind:choice('face','screen','bubble','split','title','placeholder'),screen:object({clipId:text,s:number}),bubble:object({corner:choice('tl','tr','bl','br'),size:{type:'number',minimum:.2,maximum:.45}}),title:{...text,maxLength:500},note:{...text,maxLength:500}},['kind']));
 const layoutBox=object({x:number,y:number,w:number,h:number,circle:{type:'boolean'}},['x','y','w','h']);
 const rangeLayoutFields={cutId:text,s:number,e:number,id:{...text,description:'Layout id from list_layouts.'},sources:object({a:object({clipId:text,s:number}),b:object({clipId:text,s:number})},[]),swap:{type:'boolean'},boxes:object({a:layoutBox,b:layoutBox},[]),radius:{type:'number'},padding:{type:'number'},background:object({kind:choice('screen','gradient','image','colour'),blur:number,dim:number,colour:text,stops:{type:'array',minItems:2,maxItems:3,items:text},angle:{type:'number'},image:text,fromClip:{type:'boolean'}},['kind']),transition:choice('smooth','cut'),screenLoop:object({s:number,e:number},['s','e']),reason:{...text,maxLength:1000}};
+const punchKey = object({ atS: number, scale: { type: "number", minimum: 1, maximum: 1.3 }, style: choice("settle", "hold"), frames: { type: "integer", minimum: 1, maximum: 60 }, creep: { type: "number", minimum: 0, maximum: .005 }, lengthS: { type: "number", minimum: .01, maximum: 600 } }, ["atS", "scale"]);
+const exposureKeyItem = object({ atS: number, levels: { type: "array", minItems: 1, maxItems: 30, items: { type: "number", minimum: .25, maximum: 4 } } });
 const handEdits: [string, string, Record<string, object>, string[]][] = [
   ["update_caption_word", "Correct, re-time or accent one exported caption word. Times are edit seconds; neighbours never overlap. One undoable version without a preview rebuild.", {cutId:text,index:piece,text,s:number,e:number,accent:{type:"boolean"}},["index"]],
   ["retime_caption_words", "Re-time spoken captions locally. Unmatched words leave the edit unchanged.", {cutId:text},[]],
@@ -70,9 +78,10 @@ const handEdits: [string, string, Record<string, object>, string[]][] = [
   ["add_lower_third", "Add a two-line name and title graphic at reel seconds, inside safe area and away from faces", { item: object(lowerThird, ["s", "e", "title", "position"]) }, ["item"]],
   ["update_lower_third", "Update a saved lower third's words, side or reel times", { id: text, patch: object(lowerThird, []) }, ["id", "patch"]],
   ["remove_lower_third", "Remove a lower third", { id: text }, ["id"]],
-  ["place_sound", "Place a library or generated sound under the voice", { item: object(sfx, ["file", "name", "atS", "gainDb", "kind"]) }, ["item"]],
+  ["place_sound", "Place a library or generated sound under the voice. Give atS (where it starts) or landAtS (where its hit lands, pre-roll automatic); with role it sits at that role's level against the voice and gainDb trims it", { item: object(sfx, ["file", "name", "gainDb", "kind"]) }, ["item"]],
   ["move_sound", "Move a sound or change its gain and length; takes it out of automatic placement", { id: text, patch: object(sfx, []) }, ["id", "patch"]],
   ["remove_sound", "Remove a placed sound", { id: text }, ["id"]],
+  ["shape_music", "Shape the music around the story: a stillness {kind:'still',atS,endS,db?} steps the music down one frame after atS (default -8.7 dB) and snaps it back at endS, on the hit; a hit {kind:'hit',atS,db?,recoverS?} dips it (default -4.4 dB) and recovers over 0.3 s. It rides on top of speech ducking, in the viewer and the export. The list replaces the edit's marks; null clears them. One undoable version, local", { shape: nullable({ type: "array", maxItems: 64, items: musicMark }) }, ["shape"]],
   ["set_big_line", "Make a caption line big or normal, or restore automatic with null; uncached lines use one title design call", { s: number, big: nullable({ type: "boolean" }) }, ["s", "big"]],
   ["set_caption_hook", "Set kinetic captions on the opening punch line, throughout, or off; uncached designs use one title call", { hook: choice("auto", "off", "all") }, ["hook"]],
   ["replace_clip", "Replace a b-roll shot, keeping its slot length where usable frames allow. Omit s/e to centre the best usable moment. One undoable version", { piece, clipId: text, s: number, e: number }, ["piece", "clipId"]],
@@ -84,7 +93,7 @@ const handEdits: [string, string, Record<string, object>, string[]][] = [
   ["set_lane_level", "Set a sound lane level in dB, preserving every clip gain", { lane: choice("clip-sound", "voice", "music", "effects"), db: {type:"number",minimum:-60,maximum:6}, muted:{type:"boolean"} }, ["lane"]],
   ["set_clip_sound", "Set one clip sound or mute its lane when piece is omitted. all on/off changes every clip mute in one undoable version, preserving gains. clean reduces instruments or isolates voice with the installed Sound separation add-on", { all: choice("on","off"), clean: choice("none", "remove_music", "isolate_voice"), piece, layer: {type:"integer",enum:[0,1],description:"0: the clip itself; 1: its attached b-roll sound"}, muted: { type: "boolean" }, gainDb: { type: "number", minimum: -12, maximum: 12 } }, []],
   ["set_transform", "Transform selected clips: zoom, position, rotation, crop and flip after framing. auto_straighten measures proxy lines locally and changes nothing without a clear horizon. One undoable save", {cutId:text,piece,pieces:{type:"array",minItems:1,maxItems:500,items:piece},...transformFields,auto_straighten:{type:"boolean"}}, []],
-  ["set_piece_fx", "Set clip framing, speed, reverse, background and volume", { piece, fx: nullable(object({ transform:object(transformFields,[]), framing, muted: { type: "boolean" }, reverse: { type: "boolean" }, speed: { type: "number", minimum: .1, maximum: 10 }, gainDb: { type: "number", minimum: -12, maximum: 12 }, look: clipLook, background }, [])) }, ["piece", "fx"]],
+  ["set_piece_fx", "Set clip framing, speed, reverse, background and volume", { piece, fx: nullable(object({ transform:object(transformFields,[]), framing, muted: { type: "boolean" }, reverse: { type: "boolean" }, speed: { type: "number", minimum: .1, maximum: 10 }, gainDb: { type: "number", minimum: -12, maximum: 12 }, look: clipLook, background, punches: { type: "array", maxItems: 32, items: object({ sourceS: number, scale: { type: "number", minimum: 1, maximum: 1.3 }, style: choice("settle", "hold"), frames: { type: "integer", minimum: 1, maximum: 60 }, creep: { type: "number", minimum: 0, maximum: .005 }, lengthS: { type: "number", minimum: .01, maximum: 600 } }, ["sourceS", "scale"]), description: "PRO3b: as stored (source seconds); set_clip_punch takes edit seconds" }, exposure: { type: "array", maxItems: 32, items: object({ sourceS: number, levels: { type: "array", minItems: 1, maxItems: 30, items: { type: "number", minimum: .25, maximum: 4 } } }), description: "PRO3b: as stored (source seconds); set_clip_exposure takes edit seconds" } }, [])) }, ["piece", "fx"]],
   ["set_clip_look", "Set one clip's look overrides, or follow the edit with null. Basic adds to the edit; preset, intensity and mixer colours replace it", { piece, look: clipLook }, ["piece", "look"]],
   ["set_clip_framing", "Set framing from Clips on one clip or all current clips in ONE undoable version; preserves speed, volume, look and background. null follows the edit's saved framing", { piece: { anyOf: [piece, choice("all")] }, framing: nullable(framing) }, ["piece", "framing"]],
   ["set_background", "Replace the background behind the person with Colour or Image using local cached Apple Vision masks. Set a six digit colour or copy an image by absolute path. Null switches off. One undoable version; preserves each clip's look, framing, speed and volume. No model call", { piece: { anyOf: [piece, choice("all")] }, background }, ["piece", "background"]],
@@ -97,8 +106,13 @@ const handEdits: [string, string, Record<string, object>, string[]][] = [
   ["trim", "Trim a clip at source seconds", { piece, s: number, e: number, magnetic: { type: "boolean", const: true, description: "Explicit frame edges across the source footage, as with a timeline edge drag" } }, ["piece", "s", "e"]],
   ["order_by_shot_time", "Put selected clips or the whole edit into capture-time order in one undoable version. keepMyMoves pins hand-moved clips. Unknown clocks keep their slots", {cutId:text,pieces:{type:"array",minItems:1,maxItems:500,uniqueItems:true,items:piece},keepMyMoves:{type:"boolean"}}, ["cutId"]],
   ["move_piece", "Move a clip to a final zero-based position, keeping its attached items. One undoable version", { piece, to: piece }, ["piece", "to"]],
+  ["move_words", "Move spoken camera words to another place in the edit, as cut and paste or a drag in the Script panel does: picture, sound, captions, bleeps, layouts and clip settings go with them. Pieces piece to last hold the words; s (clip seconds in piece) and e (clip seconds in last) are where they start and end, each snapped to the nearest gap between words, and that piece is split there first; omit s or e for the whole piece. They land before piece to (the piece count for the end), or inside it at clip seconds at, split there first. Old and new seams become plain cuts; a transition set on the moved words' own edges goes with them, without its J or L sound. Voiceover moves with edit_voiceover. One undoable version, no model call; originals untouched", { piece, s: number, last: piece, e: number, to: piece, at: number }, ["piece", "last", "to"]],
   ["snap_join_to_beat", "Snap a join within three frames to its nearest measured beat using a safe source/word boundary. One undoable version", { join: piece }, ["join"]],
   ["split", "Split a clip at source seconds", { piece, at: number }, ["piece", "at"]],
+  // PRO3b: motion in edit seconds, each key locked to the source frame under it (a trim or ripple keeps it on that frame).
+  ["set_clip_punch", "Set a clip's punches (any clip, b-roll too), or clear them with null. Each lands on the frame at atS (edit seconds): settle (default, the launch video's) lands at scale (1.06 to 1.07 reads as a hit) and eases to 1 over frames (default 0.2 s) with out cubic, times 1 + creep per frame after (0.00045 to 0.0009 keeps a shot from sitting dead); hold steps to scale for lengthS (default to the end of the shot). Zooms about the face when the clip has one, else the centre. piece absent = the clip under the first atS. Keeps the clip's other settings; viewer, Apple player and export. One undoable version, local", { piece, punches: nullable({ type: "array", minItems: 1, maxItems: 32, items: punchKey }) }, ["punches"]],
+  ["set_clip_exposure", "Set a clip's exposure keys (a flash on the picture), or clear them with null. From the frame at atS (edit seconds), one level per frame: 1 is the picture as graded, [1.9, 1.35] is the house two-frame hit. Exposure in linear light with a highlight shoulder: brighter without lifting black into a veil or clipping highlights flat. piece absent = the clip under the first atS. Keeps the clip's other settings; viewer and export (the Apple player hands this edit to the Chrome viewer). One undoable version, local", { piece, keys: nullable({ type: "array", minItems: 1, maxItems: 32, items: exposureKeyItem }) }, ["keys"]],
+  ["cut_on_word", "Move a cut so the incoming shot starts `frames` frames (default 1) before caption word `word` (read_captions index; text checks it), keeping the edit's length so the music holds: two magnetic trims in one undoable version. piece = the clip to cut into (absent: the cut nearest the word). mode slide keeps the incoming shot's first frame and moves its end (default for b-roll); roll moves its in-point and keeps its end (default for a clip that carries its own words). A shot's edge moves in whole frames of its own footage, so the result says how many frames it actually leads by. Local", { word: { type: "integer", minimum: 0 }, text, frames: { type: "integer", minimum: 0, maximum: 60 }, piece, mode: choice("slide", "roll") }, ["word"]],
 ];
 const finishEdits: [string, string, Record<string, object>, string[]][] = [
   ["follow_music_story", "Release pinned music and follow the current story again. Hand trims within one beat of the length keep music pinned until this is requested; bigger length changes refit it to the new length on their own", {}, []],
@@ -126,7 +140,7 @@ const briefList = { type: "array", maxItems: 10, items: { type: "string", maxLen
 export const ASK_EDIT_TOOLS = [...handEdits, ...finishEdits].map(([name, description, properties, required]) =>
   tool(name, `${description}. Creates a version using the app's edit handlers.${name==='insert_clip' ? ' Optional length selects nested whole-word windows around the same saved peak and returns window and atS. Beat/bar choices use measured lengths without moving the insertion point; no model call.' : ''}`, { shoot, cut, version, ...properties, ...(multiPieceTools.has(name) ? {pieces:piecesField} : {}), ...(name==='insert_clip' ? {length:choice('1 beat','2 beats','1 bar','2 bars','1 s','2 s','3 s','5 s','best'),source:{anyOf:[...(source.anyOf),object({clipId:text})]}} : {}) }, [...(name==='set_captions'?[]:["shoot"]), ...(['order_by_shot_time','set_transform','set_layout','remove_layout','update_caption_word','retime_caption_words','set_captions'].includes(name)?[]:['cut']), ...required.filter(key=>key!=="piece" || !multiPieceTools.has(name))]));
 // CutEdit objects share the exact field schemas of their single edit tools.
-const batchKinds: Record<string, string> = { set_lane_level: "laneLevel", set_clip_sound: "clipSound", move_piece: "move", set_angles: "angles", cut_words: "cutWords", restore_words: "restoreWords", remove_fillers: "removeFillers", tighten_pauses: "tightenPauses", set_piece_fx: "pieceFx", set_join: "join", set_cover: "cover", insert_clip: "insert", replace_clip: "replace", bleep_words: "bleep" };
+const batchKinds: Record<string, string> = { set_clip_punch: "clipPunch", set_clip_exposure: "clipExposure", cut_on_word: "cutOnWord", set_lane_level: "laneLevel", set_clip_sound: "clipSound", move_piece: "move", set_angles: "angles", cut_words: "cutWords", restore_words: "restoreWords", remove_fillers: "removeFillers", tighten_pauses: "tightenPauses", set_piece_fx: "pieceFx", set_join: "join", set_cover: "cover", insert_clip: "insert", replace_clip: "replace", bleep_words: "bleep" };
 const batchItems = handEdits.flatMap(([name, , fields, required]) => {
   if (name.endsWith("_lower_third")) return [object({ kind: choice("lowerThird"), op: choice(name.split("_")[0]), ...fields }, ["kind", "op", ...required])];
   if (name.endsWith("_overlay")) return [object({ kind: choice("overlay"), op: choice(name.split("_")[0]), ...fields }, ["kind", "op", ...required])];
@@ -134,6 +148,7 @@ const batchItems = handEdits.flatMap(([name, , fields, required]) => {
   return [];
 });
 for (const [name, , fields, required] of handEdits) {
+  if (name === "shape_music") batchItems.push(object({ kind: choice("sfx"), op: choice("musicShape"), ...fields }, ["kind", "op", ...required]));
   if (["place_sound", "move_sound", "remove_sound"].includes(name)) batchItems.push(object({ kind: choice("sfx"), op: choice(name === "place_sound" ? "add" : name === "move_sound" ? "update" : "remove"), ...fields }, ["kind", "op", ...required]));
   if (name === "set_big_line") batchItems.push(object({ kind: choice("bigLine"), ...fields }, ["kind", ...required]));
 }
@@ -156,7 +171,16 @@ const gfxSource = {
 };
 const gfxPlacement = { x: { ...number, minimum: 0, maximum: 1, description: "Centre, fraction of frame width." }, y: { ...number, minimum: 0, maximum: 1, description: "Centre, fraction of frame height." }, w: { ...number, exclusiveMinimum: 0, maximum: 1, description: "Width, fraction of frame width (height follows the graphic's shape). Ignored for full frame." }, rotate: { type: "number" } };
 
-const GRAPHIC_EDIT_NAMES = ["add_graphic", "update_graphic", "remove_graphic"] as const;
+const GRAPHIC_EDIT_NAMES = ["add_graphic", "update_graphic", "remove_graphic", "add_card"] as const;
+// PRO4: a card for something on a screen, from a real picture in the shoot (handler in graphics/card.ts).
+const cardBoxField = (about: string) => ({ type: "array", minItems: 4, maxItems: 4, items: { type: "number", minimum: 0, maximum: 1 }, description: `${about} as [x, y, w, h], fractions of the picture from its top left.` });
+const ADD_CARD = tool("add_card", "Show the real thing he is talking about as a card: a screenshot or photo from the shoot, or one frame of a screen recording. The card tilts in and settles flat, holds, pushes slowly towards the part that matters, and can carry one stamp (a short label or the key number) that pops on it; it cuts out when it ends on a cut, else eases off. No shadows, outlines or invented UI. Name the part with region (fractions) or find (a word or phrase written on the picture; precut reads the picture on this Mac). The stamp must be words the person says in this edit and not the words the caption shows while it is up, or the card is refused. Use look_at on the clip first to choose the picture and its part. One undoable version, no model call.",
+  { shoot, cut, version, media: object({ clip: { ...text, description: "The clip id of a photo, screenshot or recording in this shoot." }, atS: { ...number, description: "A recording: the frame, in source seconds." },
+      s: { ...number, description: "A recording: a span in source seconds; precut takes the frame where find is on screen, else its middle." }, e: number }, ["clip"]),
+    region: cardBoxField("The part to push towards"), find: { ...text, maxLength: 80, description: "Or a word or phrase written on the picture: precut finds it and pushes towards it." },
+    crop: cardBoxField("The part of the picture the card shows (default all of it)"), stamp: { ...text, maxLength: 40, description: "One short label or the key number, in words the person says in this edit; never the words the caption shows while the stamp is up." },
+    stampAtS: { ...number, description: "Reel seconds the stamp lands. Default: where he says those words, if inside the card." },
+    s: { type: "number", minimum: 0 }, e: { type: "number", exclusiveMinimum: 0 }, exit: choice("ease", "cut"), x: gfxPlacement.x, y: gfxPlacement.y, w: gfxPlacement.w }, ["shoot", "cut", "media", "s", "e"]);
 const GRAPHIC_TOOLS: Tool[] = [
   tool("list_graphic_templates", "List the motion graphic starters (animated text, counters, charts, timelines, diagrams, cards, screenshot frames, icons, full-frame explainers) with their params, plus the rules for writing your own composition. Local, read-only.", {}, [], true),
   tool("add_graphic", "Add an animated motion graphic at reel seconds s to e, from a starter (template + params) or your own composition. It looks the same in the player and the export, and one undoable version is saved. Use preview_graphic first to check a hand-written one. No model call.",
@@ -164,8 +188,36 @@ const GRAPHIC_TOOLS: Tool[] = [
   tool("update_graphic", "Change a graphic: its time, place, size, words, or its design (new params for a starter, or a new composition). One undoable version. Starters are rebuilt to their new length.",
     { shoot, cut, version, id: text, patch: object({ s: { type: "number", minimum: 0 }, e: { type: "number", exclusiveMinimum: 0 }, ...gfxPlacement, template: gfxSource.template, params: gfxSource.params, composition: gfxSource.composition, layer: gfxSource.layer, words: gfxWords }, []) }, ["shoot", "cut", "id", "patch"]),
   tool("remove_graphic", "Remove a graphic from the edit. One undoable version.", { shoot, cut, version, id: text }, ["shoot", "cut", "id"]),
+  ADD_CARD,
   tool("preview_graphic", "See a graphic before (or after) adding it: three frames as images, on a neutral backdrop, at the start, middle and end of its animation. Give a template + params, a composition, or an existing graphic's id with shoot and cut. Local, no model call.",
     { shoot, cut, version, id: text, template: gfxSource.template, params: gfxSource.params, composition: gfxSource.composition, durationS: gfxSource.durationS, layer: gfxSource.layer }, [], true),
+];
+
+// PRO1: a Produce pass, its Less, More and Remove. Moves are ordinary edits (the batch_edit shapes) plus a caption accent,
+// a punch-in, a music mark and a graphic; main records each move's target by identity and its before-value.
+const produceMove = object({
+  edit: { anyOf: [...batchItems,
+    object({ kind: choice("captionWord"), index: piece, accent: { type: "boolean" } }),
+    object({ kind: choice("punch"), piece, scale: nullable({ type: "number", minimum: 1, maximum: 1.18 }) }),
+    object({ kind: choice("musicMark"), mark: musicMark }),
+    object({ kind: choice("overlay"), op: choice("add"), source: { type: "string", maxLength: 0 }, item: object({ graphic: object({ ...gfxComposition.properties, words: gfxWords, template: text, media: { type: "string", pattern: "^card-[a-f0-9]{32}\\.webp$", description: "A card's picture in the shoot's card cache (made by add_card)." } }, gfxComposition.required), s: number, e: number, ...gfxPlacement }, ["graphic", "s", "e", "x", "y", "w"]) }),
+  ], description: "One ordinary edit (batch_edit shapes; piece indexes refer to the evolving draft), a caption accent {kind:'captionWord',index,accent}, a punch-in {kind:'punch',piece,scale 1..1.18 or null}, a music mark {kind:'musicMark',mark} or a graphic {kind:'overlay',op:'add',source:'',item:{graphic,s,e,x,y,w}}." },
+  label: { ...text, maxLength: 120, description: "Plain words for the row, e.g. 'the cut at 0:49'. Omit and precut names it." },
+  bind: { ...text, maxLength: 60, description: "Moves with the same bind in a group are kept or taken out together (the two trims of one cut)." },
+}, ["edit"]);
+const produceGroup = object({ id: { ...text, maxLength: 40 }, rank: { type: "integer", minimum: 1, maximum: 99, description: "1 = what the edit most needs (the payoff). Less takes the highest rank out first; More puts the lowest back first." },
+  reason: { ...text, maxLength: 300, description: "Why these moves, in plain words." }, needs: { type: "array", maxItems: 23, items: text, description: "Group ids this group only makes sense with (a thud needs its cut). Less never takes out a group another group still in needs." },
+  moves: { type: "array", minItems: 1, maxItems: 200, items: produceMove } }, ["rank", "reason", "moves"]);
+// PRO2: Produce it in one call. Never automatic: only when the person asks ("produce this", "make it produced").
+const PRODUCE_EDIT = tool("produce_edit", "Produce this edit, only when the person asks (\"produce this\", \"make it produced\"): precut watches the finished edit (rendered frames and the mix around its candidate moments), asks the configured engine once to name the idea, the payoff line and what stays quiet and to place a restrained pass (a cut on the payoff word, the shot's own sound, at most two sounds, music stillness, caption yellow), applies it as ONE undoable produced pass, then watches it back and asks the engine once more whether each group earned its place, taking out the ones that didn't. An even read gets no pass and says why. Returns the outcome (landed, left, refused or failed, in plain words) and the pass status; produce_less, produce_more and produce_remove change it afterwards. Two engine calls; refused when the edit already has a pass.", { shoot, cut, version }, ["shoot", "cut"]);
+const PRODUCE_TOOLS: Tool[] = [
+  PRODUCE_EDIT,
+  tool("produce_apply", "Write a Produce pass onto an edit as ONE undoable version: the idea in a few words, the payoff line, what stays quiet, and ranked groups of moves that only make sense together. Each move is an edit precut already has; precut records its target by identity and its value before, so produce_less, produce_more and produce_remove can take groups out and put them back, and anything the person changes afterwards stays theirs. Refused when the edit already has a pass in it (remove it first). Local, no model call.",
+    { shoot, cut, version, idea: { ...text, maxLength: 200 }, payoff: { ...text, maxLength: 300 }, quiet: { ...text, maxLength: 300 }, groups: { type: "array", minItems: 1, maxItems: 24, items: produceGroup } }, ["shoot", "cut", "idea", "groups"]),
+  tool("produce_less", "Take the weakest group of the edit's produced pass out (highest rank still in that no group still in needs), restoring each of its moves to its value before the pass. Moves the person changed since are kept and named. One undoable version, no model call.", { shoot, cut, version }, ["shoot", "cut"]),
+  tool("produce_more", "Put the strongest group taken out of the edit's produced pass back in. Moves the person changed while it was out are kept and named. One undoable version, no model call.", { shoot, cut, version }, ["shoot", "cut"]),
+  tool("produce_remove", "Take the whole produced pass out of the edit in one undoable version, restoring every move to its value before the pass, except what the person changed since (kept and named). No model call.", { shoot, cut, version }, ["shoot", "cut"]),
+  tool("produce_status", "Read the edit's produced pass: idea, payoff, what stays quiet, each group (rank, reason, needs, in or out) and each move (plain label, and whether the person has changed it, which makes it theirs), what Less and More would do next, and the note the last change left. Read-only, no model call.", { shoot, cut, version }, ["shoot", "cut"], true),
 ];
 
 const permissionTool = tool("permission_prompt", "Ask the person before a non-precut tool runs. For the engine permission handler only.", { tool_name: text, input: { type: "object", additionalProperties: true }, tool_use_id: { type: "string" } }, ["tool_name", "input"]);
@@ -238,6 +290,7 @@ export const MCP_TOOLS: Tool[] = [
   tool("generate_sound", "Make one sound on the person's connected ElevenLabs account and reuse cached sounds. Uses the same handler as the app. Never accepts an API key.", { shoot, prompt: { ...text, maxLength: 2000 }, seconds: { type: "number", minimum: .5, maximum: 30 } }, ["shoot", "prompt", "seconds"]),
   ...ASK_EDIT_TOOLS,
   ...GRAPHIC_TOOLS,
+  ...PRODUCE_TOOLS,
   tool("propose_better", "Check this edit and say what you would change, in plain words. Watches the edit (words, pacing, hook, sound levels, caption clashes, joins, a small contact sheet) and asks the configured engine once. Saves nothing. Returns the numbered list with an id per line; pass the kept ids to make_better. Never undoes the person's own edits; originals untouched.", { shoot, cut, version }, ["shoot", "cut"], true),
   tool("make_better", "Apply chosen improvements from propose_better as ONE undoable version, then re-watch and keep only fixes that landed. issueIds are required: the ids the person kept from propose_better. Never applies without ids, and never undoes the person's own edits; originals untouched. Returns the new version and the changes in plain words, or the same version and no changes when nothing measurably improved.", { shoot, cut, version, issueIds: { type: "array", minItems: 1, items: text } }, ["shoot", "cut", "issueIds"]),
   tool("write_post", "Write post copy in the person's voice for Reels, TikTok, Shorts, YouTube (with timed chapters), LinkedIn or X. One configured-engine call for all platforms, cached by edit content. Saves one undoable version; never posts or sends. Set rewrite for a fresh paid alternative.", { shoot, cut, version, platforms: { type: "array", minItems: 1, items: choice("reels", "tiktok", "shorts", "youtube", "linkedin", "x") }, rewrite: { type: "boolean" } }, ["shoot", "cut", "platforms"]),
@@ -790,7 +843,23 @@ async function dispatchTool(name: string, args: Record<string, unknown>, approve
     const on = found ? await versionOr(root, args.cut as string, args.version as number | undefined, newestListed({ versions: found })) : undefined, saved = found?.find(v => v.version === on);
     if (!saved) throw new Error("Could not find that edit version.");
     const { shoot: _s, cut: _c, version: _v, ...input } = args;
-    return (await import("./graphics/mcp")).graphicEdit(root, args.cut as string, saved.version, name as typeof GRAPHIC_EDIT_NAMES[number], input);
+    if (name === "add_card") return (await import("./graphics/card")).addCard(root, args.cut as string, saved.version, input);  // PRO4
+    return (await import("./graphics/mcp")).graphicEdit(root, args.cut as string, saved.version, name as Exclude<typeof GRAPHIC_EDIT_NAMES[number], "add_card">, input);
+  }
+  if (PRODUCE_TOOLS.some(t => t.name === name)) {  // PRO1
+    const root = await resolveShoot(args.shoot as string), listed = (await listCuts(root)).find(c => c.cutId === args.cut);
+    const on = listed ? await versionOr(root, listed.cutId, args.version as number | undefined, newestListed(listed)) : undefined;
+    if (!listed || typeof on !== "number") throw new Error("Could not find that edit version.");
+    if (name === "produce_edit") {  // PRO2
+      const director = await import("./produce-director");
+      return director.produceReport(root, listed.cutId, await director.produceEdit(root, listed.cutId, on));
+    }
+    const produce = await import("./produce-pass");
+    if (name === "produce_status") return produce.produceStatus(await loadDraftVersion(root, listed.cutId, on));
+    const edit = name === "produce_apply" ? { kind: "produce", op: "apply", pass: { idea: args.idea, payoff: args.payoff, quiet: args.quiet, groups: args.groups } }
+      : { kind: "produce", op: name.slice("produce_".length) };
+    const result = await editCut(root, listed.cutId, on, edit as CutEdit);
+    return { ...result, ...produce.produceStatus(await loadDraftVersion(root, listed.cutId, result.version)) };
   }
   if (!["insert_source","duplicate_pieces","remove_piece","swap_take"].includes(name) && !ASK_EDIT_TOOLS.some(tool => tool.name === name) && !["write_post", "translate_captions"].includes(name)) return runOperation(name, args, line => process.stderr.write(`${line}\n`));
   const root = await resolveShoot(args.shoot as string);
@@ -895,6 +964,7 @@ async function dispatchTool(name: string, args: Record<string, unknown>, approve
     }
     return result;
   }
+  if (name === "shape_music") return namedEdit(root, selected!.cutId, saved.version, { kind: "sfx", op: "musicShape", shape: input.shape } as CutEdit);
   if (["place_sound", "move_sound", "remove_sound"].includes(name)) return namedEdit(root, selected!.cutId, saved.version,
     { ...input, kind: "sfx", op: name === "place_sound" ? "add" : name === "move_sound" ? "update" : "remove" } as CutEdit);
   if (name === "set_caption_hook") {
@@ -934,6 +1004,17 @@ async function dispatchTool(name: string, args: Record<string, unknown>, approve
       edits: targets.map(piece => ({ kind: "pieceFx", piece, fx: { ...saved.pieceFx?.[piece], background: input.background as import("../shared/schema").PieceFx["background"] } })) });
   }
   if (name === "set_angles") return namedEdit(root,selected!.cutId,saved.version,{kind:"angles",cuts:input.cuts as import("./angles").AngleCuts|null});
+  // PRO3b: punches, exposure keys and cuts on words resolve on the draft they run on (motion-edits.ts), in one undoable version.
+  const motionKind = ({ set_clip_punch: "clipPunch", set_clip_exposure: "clipExposure", cut_on_word: "cutOnWord" } as Record<string, string>)[name];
+  if (motionKind || name === "batch_edit" && Array.isArray(input.edits) && (input.edits as { kind: string }[]).some(e => ["clipPunch", "clipExposure", "cutOnWord"].includes(e?.kind))) {
+    const motion = await import("./motion-edits");
+    const edits = (motionKind ? [{ ...input, kind: motionKind }] : input.edits) as (CutEdit | import("../shared/schema").MotionEdit)[];
+    const steps = edits.map(e => motion.isMotionEdit(e) ? motion.motionStep(root, selected!.cutId, e) : e);
+    const word = motionKind === "cutOnWord" ? motion.cutOnWordTrims(await loadDraftVersion(root, selected!.cutId, saved.version), edits[0] as Extract<import("../shared/schema").MotionEdit, { kind: "cutOnWord" }>) : null;
+    const label = !motionKind ? input.label as string : word ? word.note : motionKind === "clipPunch" ? "Set punches" : "Set exposure keys";
+    const result = await namedEdit(root, selected!.cutId, saved.version, { kind: "batch", label, edits: steps as unknown as CutEdit[] });
+    return word ? { ...result, leadFrames: word.leadFrames, note: word.note } : result;
+  }
   if (name === "batch_edit") return namedEdit(root, selected!.cutId, saved.version, { kind: "batch", label: input.label as string, edits: input.edits as CutEdit[] });
   if (name === 'add_placeholder') return namedEdit(root,selected!.cutId,saved.version,{kind:'layout',piece:input.piece as number,layout:{kind:'placeholder',note:input.note as string}});
   if (name === 'fill_placeholder') {
@@ -950,6 +1031,8 @@ async function dispatchTool(name: string, args: Record<string, unknown>, approve
     return namedEdit(root,selected!.cutId,saved.version,{kind:'batch',label:`Changed ${input.piece === 'all' ? 'every clip' : await namedPiece(Number(input.piece))} layout to ${(input.layout as import('../shared/schema').LayoutChoice)?.kind ?? 'face'}`,edits:indexes.map(piece => ({kind:'layout',piece,layout:input.layout as import('../shared/schema').LayoutChoice|null}))});
   }
   if(name==='remove_layout')return namedEdit(root,selected!.cutId,saved.version,{kind:'layoutRange',s:input.s as number,e:input.e as number,layout:null});
+  if (name === "move_words") return namedEdit(root, selected!.cutId, saved.version, { kind: "move", piece: input.piece as number, to: input.to as number,
+    words: { last: input.last as number, ...Object.fromEntries((["s", "e", "at"] as const).filter(key => input[key] !== undefined).map(key => [key, input[key] as number])) } });
   if (name === "bleep_words") return namedEdit(root, selected!.cutId, saved.version, { kind: "bleep", ...input } as CutEdit);
   if (name.endsWith("_lower_third")) return namedEdit(root, selected!.cutId, saved.version, { kind: "lowerThird", op: name.split("_")[0], ...input } as CutEdit);
   const kinds: Record<string, string> = { move_piece: "move", set_big_line: "bigLine", insert_clip: "insert", replace_clip: "replace", cut_words: "cutWords", restore_words: "restoreWords", remove_fillers: "removeFillers", tighten_pauses: "tightenPauses", set_piece_fx: "pieceFx", set_join: "join", set_cover: "cover" };

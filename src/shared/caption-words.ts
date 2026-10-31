@@ -49,13 +49,27 @@ export function replaceCaptionTimings(track: TitleTrack, oldWords: TimedCaptionW
   const result = { ...track, cues: track.cues.map(cue) } as TitleTrack & { captionSource?: { words: { text: string; s: number; e: number }[] }; kinetic?: { lines: { s: number; e: number; cues: TitleTrack['cues'] }[] } };
   if (result.captionSource) {
     const source = result.captionSource.words;
-    result.captionSource = { ...result.captionSource, words: source.flatMap(w => {
+    // Source tokens inside a changed word fold into its first token. PRO1: each kept token remembers the source tokens it
+    // stands for, so key-word marks (emphasis indexes the source words) follow the tokens, then are renumbered.
+    const kept: { w: (typeof source)[number]; from: number[]; i: number }[] = [];
+    source.forEach((w, k) => {
       const i = oldWords.findIndex(old => w.s >= old.s - 1e-7 && w.e <= old.e + 1e-7);
-      return i < 0 ? [w] : Math.abs(w.s - oldWords[i].s) < 1e-7 ? [{ ...w, ...nextWords[i] }] : [];
-    }) };
+      if (i < 0) kept.push({ w, from: [k], i });
+      else if (Math.abs(w.s - oldWords[i].s) < 1e-7) kept.push({ w: { ...w, ...nextWords[i] }, from: [k], i });
+      else { const owner = [...kept].reverse().find(x => x.i === i); owner?.from.push(k); }
+    });
+    result.captionSource = { ...result.captionSource, words: kept.map(x => x.w) };
     if (result.emphasis) {
-      const accented=timedCaptionWords(result).filter(w=>w.accent);
-      result.emphasis=result.captionSource.words.flatMap((word,index)=>accented.some(w=>w.s<word.e && w.e>word.s) ? [String(index)] : []);
+      // PRO1: only a word whose accent changed takes its mark from that accent; every other saved key word stays (a
+      // recompute from accents dropped key words with no accent, so an accent off and on again was not the same edit).
+      // Overlap beyond float noise (as carryEmphasis): a shared boundary is not an overlap.
+      const over = (a: { s: number; e: number }, b: { s: number; e: number }) => a.s < b.e - 1e-6 && a.e > b.s + 1e-6;
+      const marks = new Set(result.emphasis);
+      result.emphasis = kept.flatMap((x, j) => {
+        const i = x.i >= 0 ? x.i : oldWords.findIndex((old, n) => over(old, x.w) || over(nextWords[n], x.w));
+        if (i >= 0 && !!nextWords[i].accent !== !!oldWords[i].accent) return nextWords[i].accent ? [String(j)] : [];
+        return x.from.some(k => marks.has(String(k))) ? [String(j)] : [];
+      });
     }
   }
   if (result.kinetic) result.kinetic = { ...result.kinetic, lines: result.kinetic.lines.map(line => {

@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { dirname, extname, join, resolve } from "node:path";
 import { endianness } from "node:os";
 import { currentActivity, threads } from "../activity";
+import { captureFrame, captureWindow as sharedCaptureWindow, withinBudget } from "../capture-frame";
 import type { OverlayItem, TitleCue, TitleTrack } from "../../shared/schema";
 import type { CaptionTrack } from './captions';
 
@@ -18,7 +19,7 @@ export interface TitleRenderOptions {
   durationS: number;
   layer: "front" | "behind" | "all";
   out: string;
-  overlays?: (OverlayItem & { url: string })[];
+  overlays?: (OverlayItem & { url: string; mediaUrl?: string })[];
 }
 
 /**
@@ -161,16 +162,12 @@ export function titleFrameKey(track: TitleTrack, options: TitleRenderOptions, fr
   return state.length ? JSON.stringify(state) : '';
 }
 
-/** GFX1: a graphic that never returns (an endless loop) is stopped for good by destroying the window. */
-const FRAME_BUDGET_MS = 8000;
-async function withinBudget<T>(window: BrowserWindow, work: Promise<T>): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  try {
-    return await Promise.race([work, new Promise<never>((_, reject) => {
-      timer = setTimeout(() => { if (!window.isDestroyed()) window.destroy(); reject(new Error('A graphic took too long to draw.')); }, FRAME_BUDGET_MS);
-    })]);
-  } finally { clearTimeout(timer); }
+/** CAP2/CAP3: export capture (the window one row taller than the frame, the seek token, the stale-frame check and the
+ * frame budget) is shared with graphic stills and cover titles in ../capture-frame. */
+async function captureTitleFrame(window: BrowserWindow, options: TitleRenderOptions, t: number, profile?: { stale: number; graphicStale: number }): Promise<Buffer> {
+  return straightRgba(await captureFrame(window, options.width, options.height, t, undefined, profile));
 }
+const captureWindow = (options: TitleRenderOptions) => sharedCaptureWindow(options.width, options.height, 240);
 
 const compress = promisify(deflate), decompress = promisify(inflate), subtle = webcrypto.subtle;
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -213,9 +210,11 @@ export function titleStream(track: TitleTrack, options: TitleRenderOptions, dire
   const design = { font: track.font, style: (track as TitleTrack & { style?: string }).style, captionStyle: track.captionStyle,
     safeArea: captionTrack.captionSource?.safeArea,
     preparedBehind: track.cues.filter(c => c.layer === 'behind').every(c => c.id.startsWith('kinetic-')) };
-  const identity = hash({ revision: 2, design, width: options.width, height: options.height,
+  // CAP2: revision 3: a sample captured before the capture token could be the previous frame; none is reused.
+  // CAP3: revision 4: a graphic's frame could still be a frame late behind a fresh token; none is reused.
+  const identity = hash({ revision: 4, design, width: options.width, height: options.height,
     fps: options.fps, layer: options.layer, assets, overlays: options.overlays });
-  const profile = { frames: count, empty: frames - count, captures: 0, hits: 0, reused: 0, captureMs: 0, cacheMs: 0 };
+  const profile = { frames: count, empty: frames - count, captures: 0, hits: 0, reused: 0, stale: 0, graphicStale: 0, captureMs: 0, cacheMs: 0 };
   const enable = spans.map(s => `gte(n,${s.start - first})*lt(n,${s.end - first})`).join('+') || '0';
   let offset = String(spans.at(-1)?.offset ?? 0);
   let consumed = count;
@@ -254,22 +253,14 @@ export function titleStream(track: TitleTrack, options: TitleRenderOptions, dire
             signal?.throwIfAborted();
             if (!window) {
               await app.whenReady();
-              window = new BrowserWindow({ width: options.width, height: options.height, useContentSize: true,
-                show: false, transparent: true, backgroundColor: '#00000000', webPreferences: {
-                  offscreen: true, backgroundThrottling: false, nodeIntegration: false,
-                  contextIsolation: true, sandbox: true, spellcheck: false, zoomFactor: 1 } });
-              window.webContents.setFrameRate(240);
-              window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-              await window.loadFile(join(__dirname, "titles/template.html"));
-              await withinBudget(window, window.webContents.executeJavaScript(`window.titleRenderer.init(...${JSON.stringify([track, options])})`));
+              window = captureWindow(options);
+              await window.loadFile((await import("../bundle-paths")).bundledFile("titles/template.html"));
+              // PRO4b: a card's picture goes in as a data image read by main from the shoot's card cache.
+              const drawn = options.overlays?.some(o => o.graphic?.media) ? { ...options, overlays: await (await import("../overlays")).withCardData(options.overlays!) } : options;
+              await withinBudget(window, window.webContents.executeJavaScript(`window.titleRenderer.init(...${JSON.stringify([track, drawn])})`));
             }
             const captureStart = performance.now();
-            await withinBudget(window, window.webContents.executeJavaScript(`window.titleRenderer.seek(${t})`));
-            let image = await window.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true });
-            const size = image.getSize();
-            if (size.width !== options.width || size.height !== options.height) image = image.resize({ width: options.width, height: options.height });
-            rgba = straightRgba(image.toBitmap({ scaleFactor: 1 }));
-            if (rgba.length !== options.width * options.height * 4) throw new Error('Unexpected title capture dimensions');
+            rgba = await captureTitleFrame(window, options, t, profile);
             profile.captures++; profile.captureMs += performance.now() - captureStart;
             // EXP2: the sample goes to the encoder first; it is kept for the next export off the main thread
             // (hash and compression run in the thread pool), and a cache that cannot be written is only a cache.
@@ -299,7 +290,7 @@ export function titleStream(track: TitleTrack, options: TitleRenderOptions, dire
 /** Frame n is sampled at n / fps; a fractional last frame rounds duration up. */
 export async function renderTitleTrack(track: TitleTrack, options: TitleRenderOptions): Promise<void> {
   const started = performance.now();
-  const profile = { frames: 0, captures: 0, reused: 0, empty: 0, captureMs: 0, conversionMs: 0, pipeMs: 0, wallMs: 0, codec: 'qtrle' };
+  const profile = { frames: 0, captures: 0, reused: 0, empty: 0, stale: 0, graphicStale: 0, captureMs: 0, pipeMs: 0, wallMs: 0, codec: 'qtrle' };
   track = tolerantTitleTrack(track, options.fps);
   validate(track, options);
   await app.whenReady();
@@ -307,18 +298,7 @@ export async function renderTitleTrack(track: TitleTrack, options: TitleRenderOp
   await mkdir(dirname(out), { recursive: true });
   const temporary = `${out}.${randomUUID()}.partial`;
   const frames = Math.max(1, Math.ceil(options.durationS * options.fps - 1e-9));
-  const window = new BrowserWindow({
-    width: options.width, height: options.height, useContentSize: true,
-    show: false, transparent: true, backgroundColor: "#00000000",
-    webPreferences: {
-      offscreen: true, backgroundThrottling: false, nodeIntegration: false,
-      contextIsolation: true, sandbox: true, spellcheck: false,
-      // One CSS pixel per output pixel even on a Retina display.
-      zoomFactor: 1,
-    },
-  });
-  window.webContents.setFrameRate(240);
-  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  const window = captureWindow(options);
   const encoder = spawn(tool("ffmpeg"), [
     "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
     "-f", "rawvideo", "-pix_fmt", "rgba", "-video_size", `${options.width}x${options.height}`,
@@ -340,8 +320,10 @@ export async function renderTitleTrack(track: TitleTrack, options: TitleRenderOp
   signal?.addEventListener("abort", cancel, { once: true });
   try {
     signal?.throwIfAborted();
-    await window.loadFile(join(__dirname, "titles/template.html"));
-    const payload = JSON.stringify([track, options]);
+    await window.loadFile((await import("../bundle-paths")).bundledFile("titles/template.html"));
+    // PRO4b: a card's picture goes in as a data image read by main from the shoot's card cache.
+    const drawn = options.overlays?.some(o => o.graphic?.media) ? { ...options, overlays: await (await import("../overlays")).withCardData(options.overlays!) } : options;
+    const payload = JSON.stringify([track, drawn]);
     await withinBudget(window, window.webContents.executeJavaScript(`window.titleRenderer.init(...${payload})`));
     let previousKey: string | undefined, rgba: Buffer = Buffer.alloc(options.width * options.height * 4);
     const empty = rgba;
@@ -355,14 +337,8 @@ export async function renderTitleTrack(track: TitleTrack, options: TitleRenderOp
       else if (state === previousKey) profile.reused++;
       else {
         const captureStart = performance.now();
-        await withinBudget(window, window.webContents.executeJavaScript(`window.titleRenderer.seek(${frame / options.fps})`));
-        let image = await window.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true });
-        const size = image.getSize();
-        if (size.width !== options.width || size.height !== options.height) image = image.resize({ width: options.width, height: options.height });
+        rgba = await captureTitleFrame(window, options, frame / options.fps, profile);
         profile.captureMs += performance.now() - captureStart;
-        const convertStart = performance.now();
-        rgba = straightRgba(image.toBitmap({ scaleFactor: 1 }));
-        profile.conversionMs += performance.now() - convertStart;
         profile.captures++;
       }
       previousKey = state;

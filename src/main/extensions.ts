@@ -2,6 +2,7 @@
 import { app } from "electron";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { checkoutFile } from "./bundle-paths";
 import * as os from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -225,7 +226,7 @@ export function createExtensionRegistry(deps: {
 let registry: ReturnType<typeof createExtensionRegistry> | undefined;
 function extensionsRegistry() {
   return registry ??= createExtensionRegistry({ userData: process.env.SIDETHING_USER_DATA ?? app.getPath("userData"),
-    manifest: async () => JSON.parse(await fs.readFile(app.isPackaged ? path.join(process.resourcesPath, "extensions.json") : path.resolve(__dirname, "../../resources/extensions.json"), "utf8")),
+    manifest: async () => JSON.parse(await fs.readFile(app.isPackaged ? path.join(process.resourcesPath, "extensions.json") : checkoutFile("resources/extensions.json"), "utf8")),
     soundKey: op => soundKey(op) });
 }
 // REL2: Sound separation's wheels and setup need macOS 26 (Darwin 25). On an older Mac the controls that need it hide.
@@ -239,7 +240,7 @@ export const removeExtension = (id: string) => extensionsRegistry().remove(id);
 // Feature/status reads must not initialise the registry, persist state, install
 // or prompt. The feature can pass this info straight to the shared AddOnPrompt.
 export async function readExtension(id: string, userData = process.env.SIDETHING_USER_DATA ?? app.getPath("userData")): Promise<ExtensionInfo> {
-  const manifest: ExtensionManifest[] = JSON.parse(await fs.readFile(app.isPackaged ? path.join(process.resourcesPath, "extensions.json") : path.resolve(__dirname, "../../resources/extensions.json"), "utf8"));
+  const manifest: ExtensionManifest[] = JSON.parse(await fs.readFile(app.isPackaged ? path.join(process.resourcesPath, "extensions.json") : checkoutFile("resources/extensions.json"), "utf8"));
   const entry = manifest.find(item => item.id === id);
   if (!entry) throw new Error("That add-on is not in the list.");
   for (const file of [path.join(userData, "extensions"), path.join(userData, "extensions/.state.json"), path.join(userData, "extensions", id)]) {

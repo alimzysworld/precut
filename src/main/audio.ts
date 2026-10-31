@@ -10,6 +10,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { checkoutFile } from "./bundle-paths";
 import { promisify } from "node:util";
 import type { AudioFinish } from "../shared/schema";
 import { currentActivity, runActivity } from "./activity";
@@ -32,7 +33,7 @@ function modelFile(): string {
   const relative = "pipeline/models/sh.rnnn";
   const candidates = [
     ...(process.resourcesPath ? [path.join(process.resourcesPath, relative)] : []),
-    ...(typeof __dirname === "string" ? [path.resolve(__dirname, "../..", relative)] : []),
+    checkoutFile(relative),
     path.resolve(relative),
   ];
   const file = candidates.find(existsSync);

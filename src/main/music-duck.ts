@@ -17,5 +17,6 @@ export function cutDuckSpans(cuts: CutItem[], plan: FxPlan, narration: CutVersio
   }).concat((narration?.lines ?? []).flatMap(l=>l.take ? [{startS:l.s,endS:Math.min(plan.durationS,l.s+l.take.e-l.take.s),duckDb:MUSIC_DUCK.speechDb}] : []));
 }
 export function cutMusicKeys(cuts: CutItem[], plan: FxPlan, version: Pick<CutVersion,'music'|'voiceover'|'laneMuted'>, attached: {cut:CutItem;item:FxItem}[] = []) {
-  return musicDuckKeys(cutDuckSpans(cuts,plan,laneMuted(version,'voice') ? undefined : version.voiceover,attached),plan.durationS,version.music?.duckDepthDb);
+  // PRO3a: the music's stillnesses and hits ride on the duck (shared/music-shape.ts).
+  return musicDuckKeys(cutDuckSpans(cuts,plan,laneMuted(version,'voice') ? undefined : version.voiceover,attached),plan.durationS,version.music?.duckDepthDb,version.music?.shape);
 }
