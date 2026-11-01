@@ -8,6 +8,12 @@ export function voiceEndS(lines: VoiceoverLine[] | undefined | null): number {
   for (const l of lines ?? []) if (l.take && Number.isFinite(l.s) && l.take.e > l.take.s) end = Math.max(end, l.s + l.take.e - l.take.s);
   return end;
 }
+/** Where playback stops: the picture's end, or the last voice piece's end when the voice runs on past it (over black,
+ * as "Extend with black" would make it). Every player reads this one rule: the Chrome viewer (liveTimeline
+ * playbackExtent) and the Apple player's plan (buildAppleManifest), so neither stops or snaps back at the picture. */
+export function playbackEndS(pictureS: number, lines: VoiceoverLine[] | undefined | null): number {
+  return Math.max(Number.isFinite(pictureS) ? pictureS : 0, voiceEndS(lines));
+}
 /** Seconds of voice heard after the picture ends, or 0. Under half a frame is not past the end. */
 export function voiceBeyondS(lines: VoiceoverLine[] | undefined | null, pictureS: number, fps = 25): number {
   const beyond = voiceEndS(lines) - (Number.isFinite(pictureS) ? pictureS : 0);

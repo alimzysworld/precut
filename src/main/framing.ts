@@ -231,6 +231,7 @@ export interface EnergyFraming {
   x: number; y: number;       // fraction of the available zoom travel, 0..1
   elapsed: number; duration: number;
   rects?: RectKey[];          // N2a: final composed source rects, piece seconds
+  skipReason?: string;
 }
 
 /** Conservative head envelope across the entire span, with a held boundary
@@ -241,7 +242,9 @@ export function energyFraming(clip: Clip, s: number, e: number, out: { w: number
   energy: Energy = "subtle", beat?: EnergyBeat): EnergyFraming {
   const crop = cropPathFor(clip, s, e, out);
   const result: EnergyFraming = { crop, scale: 1, push: 0, x: .5, y: .5, elapsed: beat?.elapsed ?? 0, duration: beat?.duration ?? e - s };
-  if (!crop || energy === "off" || !beat) return result;
+  const skipped = (skipReason:string) => ({...result,skipReason});
+  if (!crop) return skipped("source too small for this punch");
+  if (energy === "off" || !beat) return result;
   const width = clip.meta!.width, height = clip.meta!.height;
   const track = (clip.subject?.samples ?? []).filter(p => (p.kind === "face" || p.kind === "body") &&
     [p.t, p.x, p.y, p.w, p.h].every(Number.isFinite) && p.x >= 0 && p.x <= 1 && p.y >= 0 && p.y <= 1 &&
@@ -250,7 +253,7 @@ export function energyFraming(clip: Clip, s: number, e: number, out: { w: number
   const before = track.filter(p => p.t < s).at(-1), after = track.find(p => p.t > e);
   if (before) samples.push(before);
   if (after) samples.push(after);
-  if (!samples.length) return result;
+  if (!samples.length) return skipped("no face tracked");
   const xs = crop.keyframes?.map(k => k.x) ?? [crop.x];
   const left = Math.min(...samples.map(p => Math.max(0, (p.x - p.w * (p.kind === "face" ? .65 : .5)) * width))) - Math.max(...xs);
   const right = Math.max(...samples.map(p => Math.min(width, (p.x + p.w * (p.kind === "face" ? .65 : .5)) * width))) - Math.min(...xs);
@@ -260,16 +263,18 @@ export function energyFraming(clip: Clip, s: number, e: number, out: { w: number
   const pixelLimit = Math.min(Math.floor(crop.w) / out.w, Math.floor(crop.h) / out.h);
   const headLimit = Math.min(crop.w / Math.max(1, right - left), crop.h / Math.max(1, bottom - top));
   const limit = Math.min(pixelLimit, headLimit);
-  if (left < 0 || top < 0 || right > crop.w || bottom > crop.h || limit <= 1) return result;
+  if (left < 0 || top < 0 || right > crop.w || bottom > crop.h) return skipped("tracked head would be cropped");
+  if (pixelLimit <= 1) return skipped(width === out.w && height === out.h ? "already at full frame" : "source too small for this punch");
+  if (headLimit <= 1) return skipped("tracked head needs the full frame");
   const scale = beat.punched && limit >= 1.15 ? Math.min(energy === "punchy" ? 1.25 : 1.15, limit) : 1;
   const push = beat.duration > 4 ? Math.max(0, Math.min(.06, limit / scale - 1)) : 0;
   const maximum = scale * (1 + push), cw = crop.w / maximum, ch = crop.h / maximum;
   const lowX = Math.max(0, right - cw), highX = Math.min(crop.w - cw, left);
   const lowY = Math.max(0, bottom - ch), highY = Math.min(crop.h - ch, top);
-  if (lowX > highX || lowY > highY) return result;
+  if (lowX > highX || lowY > highY) return skipped("tracked head would be cropped");
   const faceX = median(samples.map(p => p.x)) * width - median(xs);
   const faceY = median(samples.map(p => p.kind === "body" ? p.y - p.h * .35 : p.y)) * height - crop.y;
-  return { ...result, scale, push,
+  return { ...result, scale, push, ...(beat.punched && scale === 1 ? {skipReason:pixelLimit < 1.15 ? "source too small for this punch" : "tracked head needs more room"} : {}),
     x: crop.w > cw ? clamp(faceX - cw / 2, lowX, highX) / (crop.w - cw) : .5,
     y: crop.h > ch ? clamp(faceY - ch / 3, lowY, highY) / (crop.h - ch) : .5 };
 }
@@ -516,11 +521,11 @@ export function energyReadme(cuts: CutItem[], fps: number, out: { w: number; h: 
       if (!c.seg || !beats[i]) return [];
       const s = c.inFrames / (c.clipFpsR.num / c.clipFpsR.den), length = c.durTimelineFrames / fps;
       const plan = energyFraming(c.seg.clip, s, s + length, out, energy, beats[i]);
-      if (!plan.crop) return [`${clipName(c.seg.clip, { marker: c.seg.marker, s, lengthS: length, timelineS: c.offsetFrames / fps })}: wide fit (insufficient crop resolution).`];
+      if (!plan.crop) return [`${clipName(c.seg.clip, { marker: c.seg.marker, s, lengthS: length, timelineS: c.offsetFrames / fps })}: wide fit (${plan.skipReason}).`];
       const crop = plan.crop, keys = crop.keyframes ?? [{ t: 0, x: crop.x }, { t: length, x: crop.x }];
       return keys.map(k => {
         const scale = energyScaleAt(plan, k.t), w = crop.w / scale, h = crop.h / scale;
-        return `${clipName(c.seg!.clip, { marker: c.seg!.marker, s, lengthS: length, timelineS: c.offsetFrames / fps })}, source ${(s + k.t).toFixed(3)} s: t=${(c.offsetFrames / fps + k.t).toFixed(3)}, scale=${scale.toFixed(6)}, position=(${(k.x + plan.x * (crop.w - w)).toFixed(3)}, ${(crop.y + plan.y * (crop.h - h)).toFixed(3)}), crop=${w.toFixed(3)}x${h.toFixed(3)}${beats[i]!.punched && plan.scale === 1 && energy !== "off" ? " (punch skipped: resolution/head safety)" : ""}.`;
+        return `${clipName(c.seg!.clip, { marker: c.seg!.marker, s, lengthS: length, timelineS: c.offsetFrames / fps })}, source ${(s + k.t).toFixed(3)} s: t=${(c.offsetFrames / fps + k.t).toFixed(3)}, scale=${scale.toFixed(6)}, position=(${(k.x + plan.x * (crop.w - w)).toFixed(3)}, ${(crop.y + plan.y * (crop.h - h)).toFixed(3)}), crop=${w.toFixed(3)}x${h.toFixed(3)}${beats[i]!.punched && plan.scale === 1 && energy !== "off" && plan.skipReason ? ` (punch skipped: ${plan.skipReason})` : ""}.`;
       });
     })].join("\n");
 }

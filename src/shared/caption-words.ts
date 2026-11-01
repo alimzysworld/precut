@@ -1,9 +1,10 @@
-import type { CutEdit, TitleTrack, VoiceoverLine, Word } from './schema';
+import type { CaptionAccentForm, CutEdit, TitleTrack, VoiceoverLine, Word } from './schema';
+const ACCENT_FORMS: readonly CaptionAccentForm[] = ['colour', 'italic', 'caps', 'bigger', 'tag'];   // = captions.ts CAPTION_ACCENT_FORMS
 import { transcriptGroups, transcriptText } from '../main/titles/text';
 import { takeWordList } from './voice-edit';
 export { cutVoiceEdits } from './voice-edit';
 
-export type TimedCaptionWord = { index: number; text: string; s: number; e: number; accent?: boolean; estimated: boolean; cueId: string };
+export type TimedCaptionWord = { index: number; text: string; s: number; e: number; accent?: boolean; estimated: boolean; cueId: string; accentAs?: CaptionAccentForm; big?: boolean };
 export const isCaptionCue = (cue: { role: string; id: string }) => cue.role === 'subtitle' || cue.id.startsWith('kinetic-');
 /** These are the exact words consumed by the live and export title renderer.
  * Display layers may repeat a word; the timeline and MCP expose it once. */
@@ -25,13 +26,17 @@ export type CaptionWordEdit = Extract<CutEdit, { kind: 'captionWord' }>;
 export function updateCaptionWord(track: TitleTrack | null | undefined, edit: CaptionWordEdit, duration: number): TitleTrack {
   const words = timedCaptionWords(track), old = words[edit.index];
   if (!track || !Number.isInteger(edit.index) || !old) throw Error('Choose a caption word in this edit.');
-  if (edit.text === undefined && edit.s === undefined && edit.e === undefined && edit.accent === undefined) throw Error('Choose a word change.');
+  if (edit.text === undefined && edit.s === undefined && edit.e === undefined && edit.accent === undefined && edit.accentAs === undefined && edit.big === undefined) throw Error('Choose a word change.');
   if (edit.text !== undefined && (typeof edit.text !== 'string' || !edit.text.trim() || edit.text.trim().length > 120 || /\s/u.test(edit.text.trim()))) throw Error('Enter one caption word.');
   if (edit.accent !== undefined && typeof edit.accent !== 'boolean') throw Error('Choose whether to accent this word.');
+  // CAP4: a word's own accent form (null goes back to the caption style's); choosing a form stresses the word.
+  if (edit.accentAs !== undefined && edit.accentAs !== null && !(ACCENT_FORMS as readonly unknown[]).includes(edit.accentAs)) throw Error('Choose colour, italic, caps, bigger or tag.');
+  if (edit.big !== undefined && typeof edit.big !== 'boolean') throw Error('Choose whether this word is big.');
   const s = edit.s ?? old.s, e = edit.e ?? old.e;
   if (!Number.isFinite(s) || !Number.isFinite(e) || s < 0 || e > duration + 1e-7 || e <= s ||
       (edit.s !== undefined || edit.e !== undefined) && (s < (words[edit.index - 1]?.e ?? 0) - 1e-7 || e > (words[edit.index + 1]?.s ?? duration) + 1e-7)) throw Error('Keep word timing inside its neighbours.');
-  const next = { text: edit.text?.trim() ?? old.text, s, e, accent: edit.accent ?? old.accent, estimated: old.estimated && !(edit.s !== undefined && edit.e !== undefined) };
+  const next = { text: edit.text?.trim() ?? old.text, s, e, accent: edit.accent ?? (edit.accentAs ? true : old.accent), estimated: old.estimated && !(edit.s !== undefined && edit.e !== undefined),
+    accentAs: edit.accentAs === undefined ? old.accentAs : edit.accentAs ?? undefined, big: edit.big === undefined ? old.big : edit.big || undefined };
   return replaceCaptionTimings(track, [old], [{ ...old, ...next }]);
 }
 export function replaceCaptionTimings(track: TitleTrack, oldWords: TimedCaptionWord[], nextWords: TimedCaptionWord[]): TitleTrack {
@@ -42,7 +47,8 @@ export function replaceCaptionTimings(track: TitleTrack, oldWords: TimedCaptionW
     const tokens = c.words?.length ? c.words : [{ text: c.text, s: c.s, e: c.e, estimated: true }];
     if (!tokens.some(matches)) return c;
     const changed = tokens.map(w => matches(w) ? { ...w, ...change(w) } : w);
-    const transform = (text: string) => track.captionStyle?.case === 'upper' ? text.toUpperCase() : track.captionStyle?.case === 'lower' ? text.toLowerCase() : text;
+    // CAP4: a Big line is in caps whatever the style's case.
+    const transform = (text: string) => track.captionStyle?.case === 'upper' || changed.every(w => w.big) ? text.toUpperCase() : track.captionStyle?.case === 'lower' ? text.toLowerCase() : text;
     return { ...c, words: changed, text: transcriptText(changed.map(w => transform(w.text))), s: Math.min(...changed.map(w => w.s)), e: Math.max(...changed.map(w => w.e)) };
   };
   // Preserve private caption metadata used when the style is changed later.

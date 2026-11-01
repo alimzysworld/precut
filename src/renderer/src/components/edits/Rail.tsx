@@ -4,8 +4,9 @@ import { FOCUS, Tile } from "../ui";
 import "./shell.css";
 
 const icons = { script: Icons.Text, captions: Icons.Captions, look: Icons.Look, sound: Icons.Sound,
-  pace: Icons.Transitions, clips: Icons.Clips, ask: Icons.Ask, search: Icons.Search };
+  pace: Icons.Transitions, clips: Icons.Clips, search: Icons.Search };
 
+/** CH2: tool panels only (keys 1 to 6) and Search. Claude has its own pane at the window's right edge. */
 export function Rail({ panel, onToggle }: { panel: EditsPanel | null; onToggle: (panel: EditsPanel) => void }) {
   const button = (entry: typeof EDIT_PANELS[number]) => {
     const Icon = icons[entry.id];

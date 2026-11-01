@@ -1,10 +1,14 @@
+import { mapTime, mapSource } from './time-map';
+export { mapTime, mapSource } from './time-map';
 import { pieceName } from "../shared/clip-name";
 import { validTransform } from '../shared/clip-transform';
+import { lockAt, lockChoice, lockRect, sanitizeLock, shownFrame, type PieceLock, type TrackFile } from '../shared/pin-keys';
+import { lockTrackFor } from './tracking/lock-tracks';
 import * as fs from "node:fs/promises";
 import { remapLayoutRanges, sourceStart as layoutSourceStart, type LayoutSourceAdvance } from '../shared/layout-presets';
 import { prepareLookSave } from "./look-saves";
 import { planAudioHandles, type AudioHandle } from './join-audio';
-import { planCraft, craftRect, motionScale, zoomAbout, type CraftVersion, type CraftPlan } from './emphasis-framing';
+import { planCraft, craftRect, craftAbout, craftFace, motionScale, zoomAbout, type CraftVersion, type CraftPlan } from './emphasis-framing';
 import { retimeKinetic } from "./titles/captions";
 import type { CutEdit, CutVersion, DraftPiece, DraftTimeline, JoinChoice, PieceFx, Word } from '../shared/schema';
 import type { CutItem } from './export';
@@ -13,7 +17,9 @@ import type { StoredVersion } from './sidekick';
 import { clipLaneDb, defaultClipMuted } from '../shared/lane-levels';
 export type FxVersion = Pick<CutVersion, 'faceMatch' | 'transition' | 'joins' | 'pieceFx' | 'clipSoundMuted' | 'voiceover' | 'laneLevels' | 'laneMuted' | 'clipSoundDefaultOn'> & CraftVersion;
 export type TimeKey = { t: number; s: number };
-export type FxItem = { piece: number; startS: number; endS: number; timeMap: TimeKey[]; overlap: number; gainDb: number; muted?: boolean; soundEnabled?: boolean; reverse?: boolean; audio?: AudioHandle; exposure?: { t: number; k: number }[] };
+export type FxItem = { piece: number; startS: number; endS: number; timeMap: TimeKey[]; overlap: number; gainDb: number; muted?: boolean; soundEnabled?: boolean; reverse?: boolean; audio?: AudioHandle; exposure?: { t: number; k: number }[]; lock?: FxLock };
+/** TRK2: a locked clip's lock, the track it reads and the source span its picture shows (all of its items). */
+export type FxLock = { lock: PieceLock; track: TrackFile; span: [number, number] };
 export type FxPlan = { items: FxItem[]; joins: NonNullable<DraftTimeline['joins']>; durationS: number; craft?: CraftPlan };
 const kinds = ['cut', 'snap', 'ease', 'zoom', 'whip', 'dissolve', 'ramp'];
 const sounds = ['whoosh', 'hit', 'pop', 'riser'];
@@ -38,12 +44,18 @@ export function validPieceFx(value: unknown): value is PieceFx {
     (v.speed === undefined || Number.isFinite(v.speed) && v.speed >= .1 && v.speed <= 10) &&
     (v.gainDb === undefined || Number.isFinite(v.gainDb) && v.gainDb >= -12 && v.gainDb <= 12) &&
     (v.framing === undefined || !!v.framing && ['off', 'steady', 'face'].includes(v.framing.mode) && (v.framing.tight === undefined || Number.isFinite(v.framing.tight) && v.framing.tight >= 0 && v.framing.tight <= 1)) &&
-    (v.punches === undefined || validPunches(v.punches)) && (v.exposure === undefined || validExposure(v.exposure));
+    (v.punches === undefined || validPunches(v.punches)) && (v.exposure === undefined || validExposure(v.exposure)) && (v.lock === undefined || validLock(v.lock));
 }
+/** TRK2: a locked frame's pick and knobs (pin-keys.ts sanitizeLock), already clamped. */
+export function validLock(value: unknown): value is NonNullable<PieceFx['lock']> {
+  try { return !!sanitizeLock(value); } catch { return false; }
+}
+export const PUNCH_MAX = 1.6;
 const finite = (n: unknown, lo: number, hi: number) => typeof n === 'number' && Number.isFinite(n) && n >= lo && n <= hi;
-/** PRO3b: a punch scales 1 to 1.3, settles over 1 to 60 frames, creeps under 0.5% a frame. */
+/** PRO3b: a punch settles over 1 to 60 frames, creeps under 0.5% a frame. CAP4: it scales 1 to 1.6 (the inspector's
+ * Punch row and Ask's hard emotional punch-in). */
 export function validPunches(value: unknown): value is NonNullable<PieceFx['punches']> {
-  return Array.isArray(value) && value.length <= 32 && value.every(p => !!p && typeof p === 'object' && finite(p.sourceS, 0, 1e6) && finite(p.scale, 1, 1.3) &&
+  return Array.isArray(value) && value.length <= 32 && value.every(p => !!p && typeof p === 'object' && finite(p.sourceS, 0, 1e6) && finite(p.scale, 1, PUNCH_MAX) &&
     (p.style === undefined || p.style === 'settle' || p.style === 'hold') && (p.frames === undefined || Number.isInteger(p.frames) && p.frames >= 1 && p.frames <= 60) &&
     (p.creep === undefined || finite(p.creep, 0, .005)) && (p.lengthS === undefined || finite(p.lengthS, .01, 600)));
 }
@@ -84,20 +96,6 @@ function room(c: CutItem, edge: 'head' | 'tail'): number {
   if (!touching.length) return e - s;
   return Math.max(0, edge === 'head' ? Math.min(...touching.map(w => w.s)) - s - .03 : e - Math.max(...touching.map(w => w.e)) - .03);
 }
-export function mapSource(keys: TimeKey[], t: number): number {
-  return interpolate(keys, t, 't', 's');
-}
-export function mapTime(keys: TimeKey[], s: number): number {
-  return interpolate(keys, s, 's', 't');
-}
-function interpolate(keys: TimeKey[], n: number, x: 't' | 's', y: 't' | 's'): number {
-  if (n <= keys[0][x]) return keys[0][y];
-  for (let i = 1; i < keys.length; i++) if (n <= keys[i][x]) {
-    const a = keys[i - 1], b = keys[i];
-    return a[y] + (b[y] - a[y]) * (n - a[x]) / (b[x] - a[x]);
-  }
-  return keys.at(-1)![y];
-}
 /** The single timing plan consumed by draft pictures, sound and full export. */
 export function planFx(cuts: CutItem[], fps: number, version: FxVersion = {}): FxPlan {
   const joins = joinChoices(cuts, version), heads = new Map<number, number>(), tails = new Map<number, number>();
@@ -133,6 +131,17 @@ export function planFx(cuts: CutItem[], fps: number, version: FxVersion = {}): F
   });
   const plan: FxPlan = { items, joins, durationS: at };
   items.forEach(item => { const keys = exposureKeys(item, fps, version.pieceFx?.[item.piece]?.exposure); if (keys) item.exposure = keys; });
+  // TRK2: a locked clip steadies on its thing. Its track is in memory once tracking/lock.ts has read it; until then (or on
+  // a clip played backwards) the picture is as framed.
+  if (version.pieceFx?.some(fx => fx?.lock)) {
+    const spans = new Map<number, [number, number]>();
+    for (const item of items) { const s = item.timeMap.map(k => k.s), was = spans.get(item.piece); spans.set(item.piece, [Math.min(was?.[0] ?? Infinity, ...s), Math.max(was?.[1] ?? -Infinity, ...s)]); }
+    items.forEach((item, i) => {
+      const saved = version.pieceFx?.[item.piece]?.lock, track = saved && lockTrackFor(saved.track.key);
+      if (!saved || !track || item.reverse || track.clipId !== cuts[i].seg?.clip.id) return;
+      try { item.lock = { lock: sanitizeLock(saved)!, track, span: spans.get(item.piece)! }; } catch { /* an unreadable lock draws as framed */ }
+    });
+  }
   planAudioHandles(cuts, plan);
   plan.craft = planCraft(cuts, plan, fps, version);
   return plan;
@@ -155,15 +164,40 @@ function exposureKeys(item: FxItem, fps: number, keys: PieceFx['exposure']): FxI
   }
   return out;
 }
+/** Source seconds per reel second at reel second t (the segment to the right at a knot). */
+function timeRate(keys: TimeKey[], t: number) {
+  let i = keys.findIndex(k => k.t > t); i = i < 0 ? keys.length - 1 : Math.max(1, i);
+  const a = keys[i - 1] ?? keys[0], b = keys[i] ?? keys[0];
+  return (b.s - a.s) / (b.t - a.t || 1);
+}
 function sampleFrame(frame: NonNullable<DraftPiece['frame']>, t: number) {
   let i = frame.findIndex(k => k.t >= t); if (i < 0) i = frame.length - 1;
   if (!i) return { ...frame[0], t };
   const a = frame[i - 1], b = frame[i], u = Math.max(0, Math.min(1, (t - a.t) / (b.t - a.t)));
   return { t, x: a.x + (b.x - a.x) * u, y: a.y + (b.y - a.y) * u, w: a.w + (b.w - a.w) * u, h: a.h + (b.h - a.h) * u };
 }
-/** Rects are sampled after source retiming. N3 and ffmpeg consume these keys. */
-export function fxPictures(pictures: DraftPiece[], cuts: CutItem[], fps: number, plan: FxPlan): DraftPiece[] {
-  return pictures.map((p, i) => {
+type Rect = { x: number; y: number; w: number; h: number };
+/** FACE1: a face-matched cut's framing (fractions of its source, piece seconds): the matched rect it starts on, how long
+ * it takes to settle (0 = holds), and the framing it settles to. */
+export type MatchedFraming = { from: Rect; duration: number; planned: (t: number) => Rect | null };
+/** The craft pass changes this cut item's framing (a jump-cut scale, an emphasis punch or an authored punch). */
+export function craftTouches(plan: FxPlan, i: number): boolean {
+  const craft = plan.craft, item = plan.items[i];
+  return !!craft && !!item && (craft.scales[i] > 1 || craft.punches.some(p => p.atS < item.endS && p.endS > item.startS) || !!craft.motions?.some(m => m.item === i));
+}
+/** FACE1: the face-matched cuts framed in fxPictures, after the craft pass: the craft touches the cut or the one before
+ * it, or the one before was framed here too (its last picture is no longer the one the match measured). */
+export function matchComposes(plan: FxPlan, matched: (i: number) => MatchedFraming | undefined): boolean[] {
+  const composes: boolean[] = [];
+  plan.items.forEach((_, i) => composes.push(!!matched(i) && (craftTouches(plan, i) || i > 0 && (craftTouches(plan, i - 1) || composes[i - 1]))));
+  return composes;
+}
+/** Rects are sampled after source retiming. N3 and ffmpeg consume these keys. `matched` (FACE1) gives face-matched cuts'
+ * framing, so the face lands where the picture before the cut showed it, punches included. */
+export function fxPictures(pictures: DraftPiece[], cuts: CutItem[], fps: number, plan: FxPlan, matched?: (i: number) => MatchedFraming | undefined): DraftPiece[] {
+  const done: DraftPiece[] = [], composes = matched ? matchComposes(plan, matched) : [];
+  return pictures.map((p, i) => done[i] = fxPicture(p, i));
+  function fxPicture(p: DraftPiece, i: number): DraftPiece {
     if (p.layer !== 0 || !plan.items[i]) {
       const owners = plan.items.filter(c => c.piece === p.piece), owner = owners[0], old = cuts.find(c => c.piece === p.piece);
       if (!owner || !old) return p;
@@ -174,10 +208,15 @@ export function fxPictures(pictures: DraftPiece[], cuts: CutItem[], fps: number,
     const incoming = plan.joins.find(j => Math.abs(j.atS - start) < 1e-7);
     const outgoing = plan.joins.find(j => Math.abs(j.atS - (end - (plan.items[i + 1]?.overlap ?? 0))) < 1e-7);
     const effect = incoming?.choice.kind === 'zoom' || incoming?.choice.kind === 'whip' || outgoing?.choice.kind === 'zoom' || outgoing?.choice.kind === 'whip';
-    const craft = plan.craft, moving = !!craft?.motions?.some(m => m.item === i);
-    const crafted = !!craft && (craft.scales[i] > 1 || craft.punches.some(p => p.atS < end && p.endS > start) || moving);
+    const craft = plan.craft, moving = !!craft?.motions?.some(m => m.item === i), locked = item.lock;
+    const crafted = craftTouches(plan, i);
+    // A locked clip keeps its own framing: face matching composes only unlocked cuts.
+    const match = locked ? undefined : matchedFace(i), composed = !!match;
     const times = new Set([start, end, ...item.timeMap.map(k => k.t)]);
-    if (effect || crafted) for (let t = start; t < end; t += 1 / fps) times.add(t);
+    // TRK2: a locked clip's keys sit on the reel's own frame clock, so every output frame reads its lock exactly (a key
+    // between two frames would blend the locks of two source frames: 1 to 12 px blips on the phone, 31 Oct).
+    if (locked) for (let n = Math.ceil(start * fps - 1e-6); n / fps < end - 1e-9; n++) times.add(n / fps);
+    else if (effect || crafted || composed) for (let t = start; t < end; t += 1 / fps) times.add(t);
     else if (item.reverse) for (let t = start; t < end; t += 1 / fps) times.add(t);
     else for (const k of p.frame ?? []) times.add(mapTime(item.timeMap, p.inS + k.t - p.startS));
     if (crafted && craft) for (const punch of craft.punches) for (const t of [punch.atS - 1 / fps, punch.atS, punch.endS - 1 / fps, punch.endS]) if (t >= start && t <= end) times.add(t);
@@ -186,10 +225,19 @@ export function fxPictures(pictures: DraftPiece[], cuts: CutItem[], fps: number,
       const mapped = mapSource(item.timeMap, t);
       const source = item.reverse ? Math.max(item.timeMap[0].s, item.timeMap.at(-1)!.s - 1 / sourceRate(cuts[i]) - (mapped - item.timeMap[0].s)) : mapped;
       let base = sampleFrame(p.frame ?? [{ t: p.startS, x: 0, y: 0, w: 1, h: 1 }], p.startS + source - p.inS);
-      if (crafted && craft && !craft.rolls.some(r => t >= r.s && t < r.e)) {
-        const punch = craft.punches.some(p => t >= p.atS - 1e-8 && t < p.endS);
-        base = craftRect(base, cuts[i], source, craft.scales[i] * (punch ? craft.punchScale : 1));
-      }
+      // TRK2: after framing, before the punches and the clip transform: the rect under the steadied picture, sampled on
+      // the source frame this output frame shows (the encoder's rounding), so the picture and its lock step together.
+      if (locked) { const key = lockAt(locked.track, lockChoice(locked.lock, locked.span), shownFrame(locked.track, source, timeRate(item.timeMap, t), fps)); if (key) base = lockRect(base, key); }
+      const punched = crafted && craft && !craft.rolls.some(r => t >= r.s && t < r.e);
+      const zoom = punched ? craft.scales[i] * (craft.punches.some(p => t >= p.atS - 1e-8 && t < p.endS) ? craft.punchScale : 1) : 1;
+      if (match) {
+        // FACE1: from the matched rect (snap holds it; ease settles into the planned framing), punched about the face, so
+        // the face stays where the last picture showed it and the frame tightens around it.
+        const local = source - p.inS, planned = match.framing.planned(local) ?? base, from = match.from;
+        const u = match.framing.duration ? Math.max(0, Math.min(1, local / match.framing.duration)) : 0, ease = u * u * (3 - 2 * u);
+        base = { t: base.t, x: from.x + (planned.x - from.x) * ease, y: from.y + (planned.y - from.y) * ease, w: from.w + (planned.w - from.w) * ease, h: from.h + (planned.h - from.h) * ease };
+        base = craftAbout(base, craftFace(cuts[i], source), zoom);
+      } else if (punched) base = craftRect(base, cuts[i], source, zoom);
       if (moving && craft?.motions) base = zoomAbout(base, cuts[i], source, motionScale(craft.motions, i, t, fps));   // PRO3b
       let amount = 0, whip = false, direction = 0;
       for (const [join, distance, sign] of [[incoming, t - start, 1], [outgoing, end - t, -1]] as const) {
@@ -200,10 +248,26 @@ export function fxPictures(pictures: DraftPiece[], cuts: CutItem[], fps: number,
       blur.push({ t, amount: amount * (whip ? .035 : .012), angle: whip ? 0 : Math.PI / 4 });
       return { t, x: Math.max(0, Math.min(1 - w, base.x + (base.w - w) * (.5 + (whip ? direction * amount * .5 : 0)))), y: base.y + (base.h - h) / 2, w, h };
     });
-    const unchanged = !crafted && !item.reverse && !effect && Math.abs(start - p.startS) < 1e-10 && Math.abs(end - p.endS) < 1e-10 && item.timeMap.length === 2;
+    const unchanged = !crafted && !composed && !locked && !item.reverse && !effect && Math.abs(start - p.startS) < 1e-10 && Math.abs(end - p.endS) < 1e-10 && item.timeMap.length === 2;
     const opacity = item.overlap ? [{ t: start, a: 0 }, { t: start + item.overlap, a: 1 }, { t: end, a: 1 }] : undefined;
-    return { ...p, startS: start, endS: end, timeMap: item.timeMap, frame: unchanged ? p.frame : p.frame || effect || crafted ? frame : null, ...(effect ? { blur } : {}), ...(opacity ? { opacity } : {}), ...(item.exposure ? { exposure: item.exposure } : {}) };
-  });
+    return { ...p, startS: start, endS: end, timeMap: item.timeMap, frame: unchanged ? p.frame : p.frame || effect || crafted || composed || locked ? frame : null, ...(effect ? { blur } : {}), ...(opacity ? { opacity } : {}), ...(item.exposure ? { exposure: item.exposure } : {}) };
+  }
+  /** FACE1: the matched rect moved so the incoming face sits where the outgoing face is on the last frame before the cut,
+   * measured on that frame's final rect (its punch included). Only for the cuts matchComposes picks. */
+  function matchedFace(i: number) {
+    const framing = matched?.(i), item = plan.items[i], before = plan.items[i - 1], shown = done[i - 1]?.frame;
+    if (!framing || !composes[i] || !item || !before || !shown?.length || item.reverse || before.reverse || item.overlap) return undefined;
+    const at = item.startS - 1 / fps, last = sampleFrame(shown, at);
+    const a = craftFace(cuts[i - 1], mapSource(before.timeMap, at)), b = craftFace(cuts[i], mapSource(item.timeMap, item.startS));
+    if (!a || !b) return undefined;
+    const sx = (a.x - last.x) / last.w, sy = (a.y - last.y) / last.h;
+    let { w, h } = framing.from;
+    // A rect as tall (or wide) as the source cannot slide that way: tighten it a little, at most 6%, so the face can land.
+    const fit = Math.min(1, ...[b.x / (sx * w), (1 - b.x) / ((1 - sx) * w), b.y / (sy * h), (1 - b.y) / ((1 - sy) * h)].filter(n => n > 0 && Number.isFinite(n)));
+    if (fit < 1) { w *= Math.max(fit, 1 / 1.06); h *= Math.max(fit, 1 / 1.06); }
+    const from = { x: Math.max(0, Math.min(1 - w, b.x - sx * w)), y: Math.max(0, Math.min(1 - h, b.y - sy * h)), w, h };
+    return { framing, from };
+  }
 }
 /** Invert a source-time map into ffmpeg setpts (seconds -> seconds). */
 export function fxSetpts(item: FxItem): string {
@@ -372,10 +436,13 @@ export async function editFx(root: string, cutId: string, version: number, edit:
         record.joins = [...record.joins ?? []]; record.joins[edit.join] = edit.choice && { ...edit.choice };
       }
       const after = planFx(assembly.cutList, assembly.template.fps, record);
+      if (edit.kind === 'join') (await import('./sound-attachments')).setJoinSound(record, after, edit.join, edit.choice?.sound ?? null);
       retimeVersion(record, before, after);
       record.feedback = edit.kind === 'join' ? `Updated transition${after.joins[edit.join]?.choice.audio ? `: J ${after.joins[edit.join].choice.audio!.leadS ?? 0} s, L ${after.joins[edit.join].choice.audio!.trailS ?? 0} s, measured from word timings` : ''}` : 'Updated clip settings';
       if (soundOnly) record.feedback = 'Changed clip sound';
       else if (edit.kind === 'pieceFx' && edit.fx?.background !== undefined) record.feedback = `Background ${record.pieceFx?.[edit.piece]?.background?.mode ?? 'off'} on ${pieceName(record.assembly.shoot, record, edit.piece)}`;
+      else if (edit.kind === 'pieceFx' && JSON.stringify(edit.fx?.lock ?? null) !== JSON.stringify(source?.pieceFx?.[edit.piece]?.lock ?? null))   // TRK2
+        record.feedback = edit.fx?.lock ? `Locked the frame${edit.fx.lock.thing ? ` on the ${edit.fx.lock.thing}` : ''}` : 'Unlocked the frame';
       if (!assembly.reel.why.includes(fxReadme)) assembly.reel.why += `\n\n${fxReadme}`;
       if (soundOnly) record.previewRev = PREVIEW_REV;
       else await renderStoredPreview(root, cutId, record, assembly);

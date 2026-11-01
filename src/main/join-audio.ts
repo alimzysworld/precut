@@ -117,10 +117,16 @@ export function audioSpan(item: FxItem): FxItem {
       ...keys, ...(trail ? [{ t: item.endS + trail, s: keys.at(-1)!.s + trail * edgeSpeed(item, false) }] : [])] };
 }
 
+/** REL09e: where a fade out of `fadeS` starts in a clip `d` long, as plain decimals ffmpeg reads. A J cut out of a short
+ * b-roll can take the b-roll's whole length (lead bounded by boundary - a.startS), leaving d - fade a rounding hair from
+ * zero; JavaScript wrote it 1.05e-15 and ffmpeg refused the exponent, so the whole export failed. Under a microsecond is 0;
+ * every other start is written as before (String never uses an exponent from 1e-6 up). */
+export const fadeOutStart = (d: number, fadeS: number): string => { const st = d - fadeS; return st < 1e-6 ? '0' : String(st); };
+
 export function joinAudioMix(plan: FxPlan, filters: string[], output: string): void {
   plan.items.forEach((item, i) => {
     const span = audioSpan(item), d = span.endS - span.startS, fadeIn = item.audio?.fadeInS ?? 0, fadeOut = item.audio?.fadeOutS ?? 0;
-    filters.push(`[a${i}]atrim=duration=${d},${fadeIn ? `afade=t=in:d=${fadeIn},` : ''}${fadeOut ? `afade=t=out:st=${d - fadeOut}:d=${fadeOut},` : ''}adelay=${Math.round(span.startS * 48000)}S:all=1,apad,atrim=duration=${plan.durationS}[jl${i}]`);
+    filters.push(`[a${i}]atrim=duration=${d},${fadeIn ? `afade=t=in:d=${fadeIn},` : ''}${fadeOut ? `afade=t=out:st=${fadeOutStart(d, fadeOut)}:d=${fadeOut},` : ''}adelay=${Math.round(span.startS * 48000)}S:all=1,apad,atrim=duration=${plan.durationS}[jl${i}]`);
   });
   filters.push(plan.items.map((_, i) => `[jl${i}]`).join('') + `amix=inputs=${plan.items.length}:normalize=0:duration=longest[${output}]`);
 }

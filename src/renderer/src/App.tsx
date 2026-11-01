@@ -20,6 +20,11 @@ import ClipsPage from "./pages/Clips";
 import PrecutsPage from "./pages/Precuts";
 import IdeasPage from "./pages/Ideas";
 import WaitingRoom from "./components/WaitingRoom";
+import { ClaudeEmpty, ClaudePane } from "./components/edits/ClaudePane";
+import { ClaudeChat } from "./components/edits/ClaudeChat";
+import { toggleClaude } from "./components/edits/claudeLayout";
+import { useActiveClaudeScreen } from "./components/edits/claudeScreen";
+import { useShortcuts } from "./hooks/useShortcuts";
 import { applyTheme, storedTheme, type ThemeChoice } from "./theme";
 import type { ShootProgress, ShootSummary } from "../../shared/schema";
 
@@ -100,6 +105,8 @@ function AppContent() {
   const [visited, setVisited] = useState<Record<string, Seen>>({});
   const unread = root ? { ideas: page !== "ideas" && hasNewResults(status?.summary?.ideaCount, visited[root]?.ideas), precuts: page !== "precuts" && hasNewResults(status?.summary?.cutCount, visited[root]?.precuts) } : {};
   const shootName = status?.summary?.name ?? root?.split(/[\\/]/).filter(Boolean).at(-1);
+  // CH2b: ⌘L shows or hides Claude on every page, a text field included.
+  useShortcuts("global", CLAUDE_KEYS, !setup.visible);
 
   useEffect(() => {
     applyTheme(theme);
@@ -146,7 +153,9 @@ function AppContent() {
 
   return (
     <AiAccess.Provider value={ai}><ModelAccess.Provider value={ai.ready}><motion.div initial={false} animate={{ paddingTop: 60 }} transition={reduced ? instant : spring.sheet}
-      className="st-dot-matrix relative isolate flex h-dvh min-h-0 flex-col overflow-hidden text-body text-ink">
+      // CH2: the editor's own surface. Claude's pane (every page, CH2b) takes --claude-reserve at the right, top to bottom.
+      style={{ marginRight: "var(--claude-reserve, 0px)" }}
+      className="st-editor-pane st-dot-matrix relative isolate flex h-dvh min-h-0 flex-col overflow-hidden text-body text-ink">
       {root && status?.progress?.openElsewhere && <div role="status" data-open-elsewhere className="pointer-events-none fixed inset-x-0 top-[64px] z-40 flex justify-center px-4">
         {/* FIX2: another precut owns this shoot. Said up front, so no edit here fails with a puzzling message. */}
         <p className="pointer-events-auto flex max-w-[640px] items-center gap-2 rounded-full bg-warn-soft px-4 py-2 text-small text-ink"><LockSimple size={15} weight="fill" className="shrink-0 text-warn" aria-hidden />This shoot is open in another precut, so this one is read only. Quit the other precut to edit here.</p>
@@ -167,10 +176,21 @@ function AppContent() {
           if (needsModel && !ai.ready) { openModelSignIn("retry", () => { if (root) void getApi().retryStage(root, stage).catch(() => {}); }); return Promise.resolve(); }
           return root ? getApi().retryStage(root, stage) : Promise.resolve(); }} />
       {root && page !== "shoots" && <DiscoveryToast toast={toastOf(status?.progress)} onOpen={toast => go("clips", { shoot: root, ...(toast.clipId ? { clip: toast.clipId } : {}), ...(toast.t !== undefined ? { t: String(toast.t) } : {}) })} />}
+      <ClaudeHost page={page} root={root} />
       <SettingsSheet theme={theme} onThemeChange={setTheme} />
       <NeedsAiSheet />
     </motion.div></ModelAccess.Provider></AiAccess.Provider>
   );
+}
+
+const CLAUDE_KEYS = [{ id: "claude-toggle", scope: "global", keys: ["Cmd+l"], label: "Show or hide Claude", handler: () => toggleClaude() }];
+/** CH2b: one Claude pane and one chat for the whole window, on every page: a page switch never restarts Claude Code
+ * or loses the chat. The chat belongs to the open shoot (a new shoot starts a new one); the active page says what
+ * Claude sees (claudeScreen). With no shoot open the pane says so. */
+function ClaudeHost({ page, root }: { page: NavState["page"]; root?: string }) {
+  const screen = useActiveClaudeScreen(page);
+  return <ClaudePane>{root ? <ClaudeChat key={root} root={root} where={page === "precuts" ? "edit" : page === "ideas" ? "ideas" : "footage"}
+    cutId={screen?.cutId} version={screen?.version ?? 0} screenContext={screen?.screenContext} /> : <ClaudeEmpty />}</ClaudePane>;
 }
 
 export function ShootPages({ navigation }: { navigation: NavState }) {

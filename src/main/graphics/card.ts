@@ -140,7 +140,7 @@ async function sourcePicture(root: string, clip: Clip, request: CardRequest, wor
 }
 
 /** One hidden page (never shown, never focused) to draw the picture upright, crop it and encode it. */
-async function withPage<T>(work: (js: <R>(code: string) => Promise<R>) => Promise<T>): Promise<T> {
+export async function withPage<T>(work: (js: <R>(code: string) => Promise<R>) => Promise<T>): Promise<T> {
   const { app, BrowserWindow } = await import("electron");
   await app.whenReady();
   // Painting stays on while hidden: without it Chromium never decodes the picture.

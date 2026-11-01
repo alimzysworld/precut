@@ -15,6 +15,7 @@ import { LiveMix, liveSoundPreviews, listenLiveSound, type LiveSoundTimeline } f
 import { appleLayerPlan, applePlayerDecision, appleRegionAspect, appleTransformNumbers, APPLE_OFF_REASON, APPLE_ON_REASON, type AppleLookPayload } from "../../../shared/apple-playback";
 import { createAppleHole } from "./appleHole";
 import { playbackExtent, voicePlayback, withBeyondCaptions } from "./liveTimeline";
+import { captionAsides } from "../../../shared/caption-asides";
 import type { LaneVisibility } from "./timeline/model";
 import { TITLE_CARD_BASE, type LayoutPicture } from '../../../main/layout-math';
 import { Tile } from "./ui";
@@ -51,6 +52,11 @@ import captionItalic0 from "@fontsource/montserrat/files/montserrat-latin-800-it
 import captionItalic1 from "@fontsource/montserrat/files/montserrat-latin-900-italic.woff2?inline";
 import captionItalic2 from "@fontsource/poppins/files/poppins-latin-800-italic.woff2?inline";
 import captionItalic3 from "@fontsource/poppins/files/poppins-latin-900-italic.woff2?inline";
+// CAP4: the Film captions' serif, vendored with its OFL licence (electron.vite.config.ts embeds the same files for export).
+import serifLatin from "../../../main/titles/fonts/instrument-serif/instrument-serif-latin-400-normal.woff2?inline";
+import serifLatinItalic from "../../../main/titles/fonts/instrument-serif/instrument-serif-latin-400-italic.woff2?inline";
+import serifExtended from "../../../main/titles/fonts/instrument-serif/instrument-serif-latin-ext-400-normal.woff2?inline";
+import serifExtendedItalic from "../../../main/titles/fonts/instrument-serif/instrument-serif-latin-ext-400-italic.woff2?inline";
 
 import outfitExtended600 from "@fontsource/outfit/files/outfit-latin-ext-600-normal.woff2?inline";
 import outfitExtended700 from "@fontsource/outfit/files/outfit-latin-ext-700-normal.woff2?inline";
@@ -277,7 +283,7 @@ const liveFrames = new WeakMap<DraftTimeline, () => LookFrame | null>();
 function copyLookFrame(video: HTMLVideoElement | VideoFrame, piece: DraftPiece, time: number): LookFrame {
   const image = document.createElement("canvas");
   const width = "displayWidth" in video ? video.displayWidth : video.videoWidth, height = "displayHeight" in video ? video.displayHeight : video.videoHeight;
-  const scale = Math.min(1, 320 / Math.max(width, height));
+  const scale = Math.min(1, 640 / Math.max(width, height));
   image.width = Math.max(1, Math.round(width * scale));
   image.height = Math.max(1, Math.round(height * scale));
   const context = image.getContext("2d");
@@ -1250,7 +1256,7 @@ export function createLookThumbnailRenderer() {
   } };
 }
 
-type TitleRenderer = { init(track: TitleTrack, options: { width: number; height: number; layer: "all"; live?: boolean; at?: number; overlays: NonNullable<DraftTimeline["overlays"]> }): Promise<void>; seek(time: number): Promise<void> };
+type TitleRenderer = { init(track: TitleTrack, options: { width: number; height: number; layer: "all"; live?: boolean; at?: number; overlays: NonNullable<DraftTimeline["overlays"]>; asides?: [number, number][] }): Promise<void>; seek(time: number): Promise<void> };
 type TitleWindow = Window & { titleRenderer?: TitleRenderer };
 // Import the SAME fixed interpreter as the exported title renderer, including word timing and motion.
 const latinRange = "U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+2074,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD";
@@ -1262,7 +1268,9 @@ const extendedTitleFonts = [outfitExtended600, outfitExtended700, outfitExtended
 const captionFonts = `@font-face{font-family:"Montserrat";font-weight:100 900;src:url('${captionFont0}')}` + `@font-face{font-family:"Poppins";font-weight:100 900;src:url('${captionFont1}')}` + `@font-face{font-family:"Bebas Neue";font-weight:100 900;src:url('${captionFont2}')}` + `@font-face{font-family:"Archivo Black";font-weight:100 900;src:url('${captionFont3}')}` + `@font-face{font-family:"Caveat";font-weight:100 900;src:url('${captionFont4}')}`
   // The opening caption is italic and heavy: the same real italic faces the export template embeds (electron.vite.config.ts).
   + `@font-face{font-family:"Montserrat";font-style:italic;font-weight:100 800;src:url('${captionItalic0}')}@font-face{font-family:"Montserrat";font-style:italic;font-weight:900;src:url('${captionItalic1}')}`
-  + `@font-face{font-family:"Poppins";font-style:italic;font-weight:100 800;src:url('${captionItalic2}')}@font-face{font-family:"Poppins";font-style:italic;font-weight:900;src:url('${captionItalic3}')}`;
+  + `@font-face{font-family:"Poppins";font-style:italic;font-weight:100 800;src:url('${captionItalic2}')}@font-face{font-family:"Poppins";font-style:italic;font-weight:900;src:url('${captionItalic3}')}`
+  + ([[serifLatin, "normal", latinRange], [serifLatinItalic, "italic", latinRange], [serifExtended, "normal", extendedRange], [serifExtendedItalic, "italic", extendedRange]] as const)
+    .map(([url, style, range]) => `@font-face{font-family:"Instrument Serif";font-style:${style};font-weight:100 900;src:url('${url}');unicode-range:${range}}`).join("");
 export const titleDocument = titleTemplate.replace("/*__TITLE_FONTS__*/", titleFonts + extendedTitleFonts + captionFonts);
 
 interface Props {
@@ -1992,13 +2000,16 @@ export const LivePlayer = forwardRef<StageHandle, Props>(function LivePlayer({ t
     let track = withBeyondCaptions(source ?? { font: "Outfit", cues: [], prompt: null, skillIds: [] }, timeline.durationS);
     track = visibility?.captions ? { ...track, cues: track.cues.filter(cue => cue.role !== "subtitle" && !cue.id.startsWith("kinetic-")) } : visibility?.overlays ? { ...track, cues: track.cues.filter(cue => !cue.id.startsWith("lower-third:")) } : track;
     const at = clock.current.time;
+    const overlays = (visibility?.overlays ? [] : timeline.overlays ?? []).map(item => overlayPreview?.id === item.id ? { ...item, ...overlayPreview } : item);
+    // TASTE1: where captions step aside, from the whole track (a window below keeps only the cues near the playhead).
+    const asides = captionAsides(track.cues, overlays);
     if (window !== undefined) {
       // Only the captions around the playhead, with every cue they share screen time with (placement depends on them).
       let start = at - 1, end = at + window, near = track.cues.filter(c => c.s < end && c.e > start);
       for (let size = -1; size !== near.length;) { size = near.length; start = Math.min(start, ...near.map(c => c.s)); end = Math.max(end, ...near.map(c => c.e)); near = track.cues.filter(c => c.s < end && c.e > start); }
       track = { ...track, cues: near };
     }
-    return renderer.init(track, { width: timeline.width, height: timeline.height, layer: "all", live: true, at, overlays: (visibility?.overlays ? [] : timeline.overlays ?? []).map(item => overlayPreview?.id === item.id ? { ...item, ...overlayPreview } : item) }).then(() => {
+    return renderer.init(track, { width: timeline.width, height: timeline.height, layer: "all", live: true, at, overlays, asides }).then(() => {
       if (generation === titleGeneration.current) { titleReady.current = true; dirty.current = true; }
     }).catch(() => { if (generation === titleGeneration.current) setMessage("Couldn't load the titles on this draft."); });
   };

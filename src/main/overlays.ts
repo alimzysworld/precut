@@ -9,6 +9,8 @@ import { finishStoredVersion, renderStoredPreview } from "./sidekick";
 import { runActivity, withRenderSlot, currentActivity } from "./activity";
 import { tool } from "./tools";
 import { CARD_MEDIA } from "./graphics/templates";
+import { dragPin, sanitizePin } from "../shared/pin-keys";
+import { clipDimensions } from "../shared/media";
 
 type OverlayEdit = Extract<CutEdit, { kind: "overlay" }>;
 const limit = 50 * 1024 * 1024;
@@ -45,27 +47,40 @@ export function cardMediaUrl(root: string, media: string): string {
 }
 /** PRO4b: a card's picture as a data image, read by main from that shoot's card cache, for the title pages main draws
  * (export, stills, posters): they never depend on the media protocol (the CLI and MCP don't register it). */
-export async function cardMediaData(root: string, media: string): Promise<string> {
+export async function cardMediaData(root: string, media: string, missing = "That card's picture isn't in this shoot. Make the card again with add_card."): Promise<string> {
   if (!CARD_MEDIA.test(media)) throw new Error("That picture is not in this shoot's card cache.");
   const folder = path.join(root, ".sidething", "overlays"), file = path.join(folder, media);
   const real = await fs.realpath(file).catch(() => null), realFolder = await fs.realpath(folder).catch(() => null);
-  if (!real || !realFolder || path.dirname(real) !== realFolder) throw new Error("That card's picture isn't in this shoot. Make the card again with add_card.");
+  if (!real || !realFolder || path.dirname(real) !== realFolder) throw new Error(missing);
   const bytes = await fs.readFile(real);
-  if (bytes.toString("ascii", 0, 4) !== "RIFF" || bytes.toString("ascii", 8, 12) !== "WEBP") throw new Error("That card's picture couldn't be read. Make the card again with add_card.");
+  if (bytes.toString("ascii", 0, 4) !== "RIFF" || bytes.toString("ascii", 8, 12) !== "WEBP") throw new Error(missing.replace("isn't in this shoot", "couldn't be read"));
   return `data:image/webp;base64,${bytes.toString("base64")}`;
 }
-/** PRO4b: the same, for an overlay main has already given its media URL (overlayMedia). */
-export async function withCardData<T extends { graphic?: OverlayItem["graphic"]; mediaUrl?: string }>(items: T[]): Promise<(T & { mediaData?: string })[]> {
+const FRAMES_MISSING = "A frame of that scene isn't in this shoot. Make the scene again.";
+/** MOT1: every picture a graphic names (a card's one, a scene's frames) as data images, for the title pages main draws. */
+export async function graphicPictureData(root: string, graphic: NonNullable<OverlayItem["graphic"]>): Promise<{ mediaData?: string; framesData?: string[] }> {
+  return { ...(graphic.media ? { mediaData: await cardMediaData(root, graphic.media) } : {}),
+    ...(graphic.frames?.length ? { framesData: await Promise.all(graphic.frames.map(f => cardMediaData(root, f, FRAMES_MISSING))) } : {}) };
+}
+/** PRO4b: the same, for an overlay main has already given its media URL (overlayMedia). MOT1: and a scene's frame URLs. */
+export async function withCardData<T extends { graphic?: OverlayItem["graphic"]; mediaUrl?: string; framesUrl?: string[] }>(items: T[]): Promise<(T & { mediaData?: string; framesData?: string[] })[]> {
+  const prefix = "st-media://local/";
+  const rootOf = (url: string, name: string, missing: string) => {
+    const tail = `/overlays/${encodeURIComponent(name)}`;
+    if (!url.startsWith(prefix) || !url.endsWith(tail)) throw new Error(missing);
+    return decodeURIComponent(url.slice(prefix.length, -tail.length));
+  };
   return Promise.all(items.map(async item => {
-    const media = item.graphic?.media, prefix = "st-media://local/", url = item.mediaUrl ?? "";
-    if (!media) return item;
-    const tail = `/overlays/${encodeURIComponent(media)}`;
-    if (!url.startsWith(prefix) || !url.endsWith(tail)) throw new Error("That card's picture isn't in this shoot. Make the card again with add_card.");
-    return { ...item, mediaData: await cardMediaData(decodeURIComponent(url.slice(prefix.length, -tail.length)), media) };
+    const media = item.graphic?.media, frames = item.graphic?.frames;
+    if (!media && !frames?.length) return item;
+    const missing = "That card's picture isn't in this shoot. Make the card again with add_card.";
+    return { ...item, ...(media ? { mediaData: await cardMediaData(rootOf(item.mediaUrl ?? "", media, missing), media) } : {}),
+      ...(frames?.length ? { framesData: await Promise.all(frames.map((f, i) => cardMediaData(rootOf(item.framesUrl?.[i] ?? "", f, FRAMES_MISSING), f, FRAMES_MISSING))) } : {}) };
   }));
 }
-export function overlayMedia(root: string, items: OverlayItem[] = []): (OverlayItem & { url: string; mediaUrl?: string })[] {
-  return items.map(item => ({ ...item, url: overlayUrl(root, item.file), ...(item.graphic?.media ? { mediaUrl: cardMediaUrl(root, item.graphic.media) } : {}) }));
+export function overlayMedia(root: string, items: OverlayItem[] = []): (OverlayItem & { url: string; mediaUrl?: string; framesUrl?: string[] })[] {
+  return items.map(item => ({ ...item, url: overlayUrl(root, item.file), ...(item.graphic?.media ? { mediaUrl: cardMediaUrl(root, item.graphic.media) } : {}),
+    ...(item.graphic?.frames?.length ? { framesUrl: item.graphic.frames.map(f => cardMediaUrl(root, f)) } : {}) }));
 }
 
 export async function copyOverlay(root: string, source: string): Promise<string> {
@@ -126,7 +141,7 @@ export function normalizeOverlay(item: OverlayItem, duration: number): OverlayIt
   const s = clamp(item.s, 0, Math.max(0, duration - Math.min(.04, duration)));
   return { id: item.id, file: item.file, s, e: clamp(item.e, s + Math.min(.04, duration), duration),
     x: clamp(item.x, 0, 1), y: clamp(item.y, 0, 1), w: clamp(item.w, .05, 1), rotate: clamp(item.rotate ?? 0, -180, 180), corner: item.corner, enter: item.enter, exit: item.exit, sound: item.sound,
-    ...(item.graphic ? { graphic: item.graphic } : {}) };  // GFX1: a graphic was already sanitised and drawn once by prepareGraphic
+    ...(item.graphic ? { graphic: item.graphic } : {}), ...(item.pin ? { pin: sanitizePin(item.pin) } : {}) };  // GFX1: a graphic was already sanitised and drawn once by prepareGraphic; TRK1: a pin's knobs clamped to their ranges
 }
 export function editOverlays(root: string, cutId: string, version: number, edit: OverlayEdit): Promise<{ cutId: string; version: number }> {
   return runActivity({ kind: "edit", root, target: { cutId, version }, label: "Updating images", cancelable: true }, () =>
@@ -142,7 +157,13 @@ export function editOverlays(root: string, cutId: string, version: number, edit:
         items.push(item);
       } else if (edit.op === "update") {
         const before = items[index];
-        let next = normalizeOverlay({ ...before, ...edit.patch, id: before.id, file: before.file }, duration);
+        let patch = edit.patch;
+        // TRK1b: dragging or resizing a pinned item moves it on the thing: its offset and size, in the thing's units.
+        if (before.pin && !("pin" in patch) && [patch.x, patch.y, patch.w].some(v => v !== undefined)) {
+          const clip = assembly.shoot.clips.find(c => c.id === before.pin!.track.clipId), dims = clip && clipDimensions(clip);
+          patch = { ...patch, pin: dragPin(before.pin, before, patch, assembly.template.width / assembly.template.height, dims ? dims.width / dims.height : 1) };
+        }
+        let next = normalizeOverlay({ ...before, ...patch, id: before.id, file: before.file }, duration);
         if (next.graphic) {  // GFX1: a new composition, or a new length for a starter, is drawn and checked again
           const { prepareGraphic, fitGraphicToSpan } = await import("./graphics/edit");
           if (edit.patch.graphic === undefined && (edit.patch.s !== undefined || edit.patch.e !== undefined)) next = { ...next, graphic: fitGraphicToSpan(next.graphic!, next.e - next.s) };
@@ -150,6 +171,12 @@ export function editOverlays(root: string, cutId: string, version: number, edit:
         }
         items[index] = next;
       } else items.splice(index, 1);
+      if (edit.op === 'update' && edit.patch.sound !== undefined) record.sfx = record.sfx?.filter(s => !(s.anchor?.to === 'graphic' && s.anchor.id === edit.id && s.anchor.edge === 'in'));
+      // REL09e: say what this change did; otherwise the version kept its parent's words.
+      const was = edit.op === "add" ? undefined : record.overlays?.find(item => item.id === edit.id), thing = (edit.op === "add" ? edit.item.graphic : was?.graphic) ? "a graphic" : "an image";
+      record.feedback = edit.op === "add" ? `Added ${thing}` : edit.op === "remove" ? `Removed ${thing}`
+        : "pin" in edit.patch ? (!edit.patch.pin ? `Unpinned ${thing}` : was?.pin ? `Changed the pin on ${thing}` : `Pinned ${thing}`)
+        : edit.patch.sound !== undefined ? `Changed the sound on ${thing}` : `Changed ${thing}`;
       record.overlays = items;
       record.assembly = assembly;
       await renderStoredPreview(root, cutId, record, assembly);

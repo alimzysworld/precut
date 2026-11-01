@@ -2,15 +2,16 @@ import { useModelAccess, openModelSignIn, ModelSignIn } from "../components/Mode
 import { InlineError, Row } from "../components/ui";
 import { useActivity } from "../components/Activity";
 import { useEffect, useRef, useState } from "react";
-import { ChevronLeft as ArrowLeft, Close } from "../components/icons";
+import { ChevronLeft as ArrowLeft } from "../components/icons";
 import type { Cut, ReelIdea, Shoot, ShootRequest, SkillFormat } from "../../../shared/schema";
 import { getApi } from "../data";
 import { go, useNav } from "../nav";
 import { Badge, Button, EmptyState, FOCUS, SegmentedControl } from "../components/ui";
 import { useShortcuts } from "../hooks/useShortcuts";
 import { refreshSidekick, selectSidekickCut, useSidekickWorkspace } from "../components/SidekickChat";
-import { AskPanel } from "../components/finish/AskPanel";
 import { useAskWorkspace, setAskWorkspace } from "../components/finish/askWorkspace";
+import { showClaude, useClaudeLayout } from "../components/edits/claudeLayout";
+import { useClaudeScreen } from "../components/edits/claudeScreen";
 import { ShortcutSheet } from "../components/ShortcutSheet";
 import { IdeaCard, ideaDraftState, ideaReadiness, type BoardIdea } from "../components/ideas/IdeaCard";
 import { shootCanMake } from "../components/videoTypes";
@@ -71,6 +72,7 @@ export function IdeasWorkspace({ shoot }: { shoot: Shoot }) {
   const modelReady = useModelAccess();
   const state = useSidekickWorkspace(shoot.root);
   const ask = useAskWorkspace(shoot.root);
+  const claude = useClaudeLayout();
   const [savingIds, setSavingIds] = useState<Set<string>>(() => new Set());
   const activities = useActivity({ root: shoot.root, state: "running" });
   const { params } = useNav();
@@ -174,10 +176,12 @@ export function IdeasWorkspace({ shoot }: { shoot: Shoot }) {
     } catch { setError("Couldn't save that choice. Try again."); }
     finally { setPassing(false); }
   }
-  const discuss = (entry: BoardIdea) => setAskWorkspace(shoot.root, { open: true, idea: {
+  // CH2b: Ideas' own Ask sidebar folded into Claude's pane: talking about an idea shows Claude with that idea in view.
+  const discuss = (entry: BoardIdea) => { setAskWorkspace(shoot.root, { idea: {
     id: entry.idea.id!, messageId: entry.messageId, index: entry.index, title: entry.idea.title,
     concept: entry.idea.concept, uses: entry.idea.uses, missing: entry.idea.missing,
-  } });
+  } }); showClaude(); };
+  useClaudeScreen("ideas", { version: 0, screenContext: { panel: "ask", idea: askIdea } }, active);
   async function cut(entry: BoardIdea) {
     if (cutting.current.has(entry.idea.id!)) return;
     cutting.current.add(entry.idea.id!); setError(null);
@@ -221,9 +225,8 @@ export function IdeasWorkspace({ shoot }: { shoot: Shoot }) {
       else if (focused) void cut(focused);
     } },
     { id: "ideas-pass", scope: "ideas", keys: ["p"], label: "Pass idea", enabled: !!focused && !selected, handler: () => { if (focused) void pass(focused, !focused.idea.passed); } },
-    { id: "ideas-ask", scope: "ideas", keys: ["9"], label: "Ask", handler: () => setAskWorkspace(shoot.root, { open: !ask.open }) },
-    { id: "ideas-close-ask", scope: "ideas", keys: ["Escape"], label: "Close Ask", enabled: ask.open, handler: () => setAskWorkspace(shoot.root, { open: false }) },
-    { id: "ideas-back", scope: "ideas", keys: ["Escape"], label: "Back to ideas", enabled: !!selected && !ask.open, handler: returnToBoard },
+    { id: "ideas-ask", scope: "ideas", keys: ["9"], label: "Ask Claude", handler: showClaude },
+    { id: "ideas-back", scope: "ideas", keys: ["Escape"], label: "Back to ideas", enabled: !!selected, handler: returnToBoard },
     { id: "ideas-help", scope: "ideas", keys: ["?"], label: "Keyboard shortcuts", handler: () => setHelpOpen(true) },
   ], !helpOpen);
   const renderCard = (entry: BoardIdea, expanded = false) => <IdeaCard key={entry.idea.id} shoot={shoot} entry={entry} expanded={expanded}
@@ -238,7 +241,6 @@ export function IdeasWorkspace({ shoot }: { shoot: Shoot }) {
   return <div data-ideas-workspace className="relative flex h-full min-h-0 flex-col text-ink">
     <div className="flex min-h-0 flex-1 gap-4">
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-    <Row className="mb-3 shrink-0 justify-end"><Button variant="secondary" title="Ask (9)" aria-expanded={ask.open} onClick={() => setAskWorkspace(shoot.root, { open: !ask.open })}>Ask</Button></Row>
     {error || state.error || cutsError || requestsError ? <InlineError className="mb-3 text-small text-danger">{error ?? state.error ?? cutsError ?? requestsError}</InlineError> : null}
     {notice && <p role="status" className="mb-3 text-small text-muted">{notice}</p>}
     {selected ? <>
@@ -262,18 +264,14 @@ export function IdeasWorkspace({ shoot }: { shoot: Shoot }) {
         {!visibleIdeas.length && !adding && (!modelReady && !state.loading && !board.length && !query && filter === "all"
           // ONB2/REL1: without an AI ideas never "appear"; say what makes them, and how to get it.
           ? <div className="max-w-[460px] py-6"><ModelSignIn feature="ideas" onReady={() => void getApi().retryStage(shoot.root, "group").then(() => getApi().retryStage(shoot.root, "ideas")).catch(() => {})} /></div>
-          : <EmptyState variant="inline" as="p" role="status" className="py-8 text-small text-muted">{state.loading ? "Loading your ideas…" : board.length || query || filter !== "all" ? "No ideas match this view yet." : processing ? "Ideas will appear as your footage is understood." : "Ideas will appear here as they're generated. Open Ask to say what you want."}</EmptyState>)}
-        <div data-idea-grid className={`grid auto-rows-fr items-stretch gap-3 ${ask.open ? "grid-cols-2 min-[1100px]:grid-cols-3 max-[850px]:grid-cols-1" : "grid-cols-3 min-[1100px]:grid-cols-4 max-[850px]:grid-cols-2 max-[520px]:grid-cols-1"}`}>{visibleIdeas.map(entry => renderCard(entry))}</div>
+          : <EmptyState variant="inline" as="p" role="status" className="py-8 text-small text-muted">{state.loading ? "Loading your ideas…" : board.length || query || filter !== "all" ? "No ideas match this view yet." : processing ? "Ideas will appear as your footage is understood." : "Ideas will appear here as they're generated. Tell Claude what you want."}</EmptyState>)}
+        <div data-idea-grid className={`grid auto-rows-fr items-stretch gap-3 ${claude.shown ? "grid-cols-2 min-[1100px]:grid-cols-3 max-[850px]:grid-cols-1" : "grid-cols-3 min-[1100px]:grid-cols-4 max-[850px]:grid-cols-2 max-[520px]:grid-cols-1"}`}>{visibleIdeas.map(entry => renderCard(entry))}</div>
         {passedIdeas.length > 0 && <details className="mt-5"><summary className={`w-fit cursor-pointer py-2 text-small text-muted ${FOCUS}`}>Passed · {passedIdeas.length}</summary>
           <div className="mt-3 grid grid-cols-3 gap-3 min-[1100px]:grid-cols-4 max-[850px]:grid-cols-2 max-[520px]:grid-cols-1">{passedIdeas.map(entry => renderCard(entry))}</div>
         </details>}
       </section>
     </>}
     </div>
-    {ask.open && <aside aria-label="Ask sidebar" className="flex w-[360px] min-w-0 shrink-0 flex-col rounded-3xl bg-surface p-4 max-[850px]:w-[300px]">
-      <Row className="shrink-0"><span className="font-medium">Ask</span><Button variant="ghost" aria-label="Close Ask" onClick={() => setAskWorkspace(shoot.root, { open: false })}><Close size={16} /></Button></Row>
-      <AskPanel root={shoot.root} version={0} screenContext={{ panel: "ask", idea: askIdea }} />
-    </aside>}
     </div>
     {undo && <div role="status" className="absolute bottom-24 left-1/2 z-40 flex -translate-x-1/2 items-center gap-4 rounded-full bg-surface px-5 py-3 text-small"><span>Idea passed</span><Button variant="ghost" disabled={passing} onClick={() => { void pass(undo.entry, false); }}>Undo</Button></div>}
     {helpOpen && <ShortcutSheet shortcuts={shortcuts} onClose={() => setHelpOpen(false)} />}

@@ -1,7 +1,7 @@
 import { mediaLabel } from "./mediaLabel";
 import { clipName as shotName } from "../../../../shared/clip-name";
 import { RotatingImage } from "../RotatingImage";
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { LowerThirdEditor } from "./LowerThirdEditor";
 import { previewOverlay, addOverlayFiles, selectOverlay, useOverlaySession } from "../OverlayHandles";
 import { addLibraryItem, LIBRARY_DRAG_TYPE, overlayName, shootLibrary } from "./library";
@@ -14,6 +14,7 @@ import { Button, FOCUS, InlineError, NumberField, SectionHeader, Row, Tile, Slid
 import { PiecePanel } from "./PiecePanel";
 import { takeThumbnail } from "../footage/thumbnail";
 import { AddGraphic, GraphicDesign, graphicName } from "./GraphicControls";
+import type { MotionSource } from "./MotionControls";
 import { LAYOUTS, migrateLayouts } from "../../../../shared/layout-presets";
 
 /** Folder names remain as named on disk; a single-folder shoot has no headings. */
@@ -114,9 +115,23 @@ export function ClipPanel({ shoot, version, index, onSelect, onBack, ...controls
   </div>;
 }
 
+// MOT1b: where the panel was scrolled for the selected overlay. An edit can redraw the whole panel (a new version, the
+// inspector opened again for the same item), so the place is kept here and put back while the same item stays selected.
+const panelPlace = { id: null as string | null, top: 0 };
+const scrollerOf = (node: HTMLElement | null) => { let e = node?.parentElement ?? null; while (e && !/(auto|scroll)/.test(getComputedStyle(e).overflowY)) e = e.parentElement; return e; };
 type AddMoreProps = { shoot: Shoot; version: CutVersion; timeline?: DraftTimeline | null; time?: number; busy?: boolean; onEdit?: (edit: CutEdit) => unknown; selectedOnly?: boolean; onBrowse?: () => void };
 export function AddMore({ shoot, version, timeline, time = 0, busy, onEdit, selectedOnly = false, onBrowse }: AddMoreProps) {
-  const session = useOverlaySession(timeline), selected = timeline?.overlays?.find(item => item.id === session?.selected);
+  const session = useOverlaySession(timeline);
+  // MOT1b: an edit keeps the panel's place. A new version's overlay session is set up a render after its timeline
+  // arrives (and the timeline can be absent while it reloads); through that gap the item that was selected stays
+  // selected, so its settings stay mounted and the panel keeps its scroll position instead of jumping to the top.
+  const kept = useRef<NonNullable<DraftTimeline["overlays"]>[number] | null>(null);
+  const live = session ? timeline?.overlays?.find(item => item.id === session.selected) : undefined;
+  const selected = session ? live : kept.current ? timeline ? timeline.overlays?.find(item => item.id === kept.current!.id) : kept.current : undefined;
+  if (session) kept.current = live ?? null;
+  // ...and its edits still go through: the session's edit is the editor's own (OverlayHandles keeps the latest).
+  const keptSession = useRef(session); if (session) keptSession.current = session;
+  const editor = session ?? (selected ? keptSession.current : undefined), lastDuration = useRef(0); if (timeline) lastDuration.current = timeline.durationS;
   const [error, setError] = useState<string | null>(null), [working, setWorking] = useState(false);
   const [addingText, setAddingText] = useState(false);
   const pending = useRef(false);
@@ -127,8 +142,17 @@ export function AddMore({ shoot, version, timeline, time = 0, busy, onEdit, sele
     try { await work(); return true; } catch (e) { setError(e instanceof Error ? e.message : "Couldn't add that media."); return false; }
     finally { pending.current = false; setWorking(false); }
   }
-  const media = shootLibrary(shoot);
-  return <div aria-label="Media to add" className="space-y-3 pt-2" onDragOver={event => {
+  const media = shootLibrary(shoot), place = useRef<HTMLDivElement>(null), selectedId = selected?.id ?? null;
+  useLayoutEffect(() => {
+    const box = scrollerOf(place.current);
+    if (!box || !selectedId) return;
+    if (panelPlace.id === selectedId && Math.abs(box.scrollTop - panelPlace.top) > 1) box.scrollTop = panelPlace.top;
+    // a scroll caused by the panel briefly being too short to hold the place (a redraw) is not a move: keep the place
+    const save = () => { if (panelPlace.id === selectedId && box.scrollTop < panelPlace.top && box.scrollHeight - box.clientHeight < panelPlace.top - 1) return; panelPlace.id = selectedId; panelPlace.top = box.scrollTop; };
+    box.addEventListener("scroll", save, { passive: true });
+    return () => box.removeEventListener("scroll", save);
+  }, [selectedId, timeline, selected]);
+  return <div ref={place} aria-label="Media to add" className="space-y-3 pt-2" onDragOver={event => {
     if (!locked && session && event.dataTransfer.types.includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; }
   }} onDrop={event => {
     if (!session || locked || !event.dataTransfer.types.includes("Files")) return;
@@ -137,7 +161,7 @@ export function AddMore({ shoot, version, timeline, time = 0, busy, onEdit, sele
     if (!paths.length) { setError("Drop images in the desktop app, or use Add files."); return; }
     void run(() => addOverlayFiles(session, paths, time));
   }}>
-    {selected ? <><button type="button" onClick={() => session && selectOverlay(session, "")} className={`text-[15px] font-semibold text-accent ${FOCUS}`}>‹ Add more</button><OverlaySettings onPreview={item=>session && previewOverlay(session,item)} key={selected.id} item={selected} duration={timeline!.durationS} busy={!!locked} onEdit={async change => session ? run(() => Promise.resolve(session.edit(change))) : false} /></> : <>
+    {selected ? <><button type="button" onClick={() => editor && selectOverlay(editor, "")} className={`text-[15px] font-semibold text-accent ${FOCUS}`}>‹ Add more</button><OverlaySettings onPreview={item=>editor && previewOverlay(editor,item)} key={selected.id} item={selected} motion={timeline ? { titles: timeline.titles, captionSource: timeline.captionSource, beats: timeline.musicGrid?.beats ?? timeline.musicBeatsS, fps: timeline.fps } : null} duration={timeline?.durationS ?? lastDuration.current} busy={!!locked} onEdit={async change => editor ? run(() => Promise.resolve(editor.edit(change))) : false} /></> : <>
       {/* RAIL1: the footage browser (BUG1's Recently added, Matches and search) opens here, in Clips. */}
       {onBrowse ? <div data-browse-footage className="space-y-1.5"><Row className="gap-2"><SectionHeader as="h3" className="font-semibold">From this shoot</SectionHeader><span className="text-[11px] text-muted">Recently added, matches and search</span></Row><Button variant="primary" onClick={onBrowse}>Browse footage</Button></div> : null}
       <Row className="gap-2"><SectionHeader as="h3" className="font-semibold">On this edit</SectionHeader><Button variant="primary" disabled={!session || locked} onClick={() => session && void run(async () => addOverlayFiles(session, await getApi().pickOverlayFiles(), time))}><Plus size={13} />Add files</Button></Row>
@@ -168,8 +192,10 @@ export function AddMore({ shoot, version, timeline, time = 0, busy, onEdit, sele
   </div>;
 }
 
-export function OverlaySettings({ item, duration, busy, onEdit, onPreview }: { onPreview?: (item: OverlayItem) => void; item: OverlayItem & { url: string }; duration: number; busy: boolean; onEdit: (edit: CutEdit) => unknown }) {
+export function OverlaySettings({ item, duration, busy, onEdit, onPreview, motion }: { onPreview?: (item: OverlayItem) => void; item: OverlayItem & { url: string }; duration: number; busy: boolean; onEdit: (edit: CutEdit) => unknown; motion?: MotionSource | null }) {
   const [draft, setDraft] = useState(item), saved = useRef(item), latest = useRef(item);
+  // TASTE1: the times show to 2 decimals (the stored value stays exact); what he types shows as typed until he leaves the field.
+  const [typed, setTyped] = useState<{ s?: string; e?: string }>({});
   useEffect(() => { saved.current = item; latest.current = item; setDraft(item); }, [item]);
   function change(patch: Partial<OverlayItem>) { latest.current = { ...latest.current, ...patch }; setDraft(latest.current); onPreview?.(latest.current); }
   function commit(patch: Partial<OverlayItem>) {
@@ -187,9 +213,9 @@ export function OverlaySettings({ item, duration, busy, onEdit, onPreview }: { o
     <div className="grid grid-cols-[72px_1fr] items-center gap-2.5"><span className="text-right text-[12px] text-muted">Position</span><div className="flex flex-wrap gap-1">{([['Top', .5, .2], ['Centre', .5, .5], ['Bottom', .5, .8], ['Corner', .8, .2]] as const).map(([label, x, y]) => <Tile key={label} type="button" aria-pressed={draft.x === x && draft.y === y} onClick={() => commit({ x, y })} className={`rounded-lg px-2 py-1 text-[11px] ${draft.x === x && draft.y === y ? "bg-accent/15 text-accent" : "bg-ink/[0.06]"} ${FOCUS}`}>{label}</Tile>)}</div></div>
 
     {(item.graphic ? ['enter', 'exit'] as const : ['corner', 'enter', 'exit', 'sound'] as const).map(key => <label key={key} className="grid grid-cols-[72px_1fr] items-center gap-2.5"><span className="text-right text-[12px] text-muted">{key === 'corner' ? 'Corners' : key[0].toUpperCase() + key.slice(1)}</span><select aria-label={key === 'corner' ? 'Corners' : key[0].toUpperCase() + key.slice(1)} value={draft[key] ?? 'none'} onChange={event => commit({ [key]: key === 'sound' && event.target.value === 'none' ? null : event.target.value })} className={field}>{(key === 'corner' ? ['square', 'round'] : key === 'enter' ? ['pop', 'slide-up', 'fade', 'none'] : key === 'exit' ? ['pop', 'fade', 'none'] : ['none', 'pop', 'whoosh', 'hit', 'riser']).map(value => <option key={value} value={value}>{value === 'slide-up' ? 'Slide up' : value[0].toUpperCase() + value.slice(1)}</option>)}</select></label>)}
-    <div className="grid grid-cols-2 gap-2">{(['s', 'e'] as const).map(key => <label key={key} className="space-y-1 text-[11px] text-muted"><span>{key === 's' ? 'Start (seconds)' : 'End (seconds)'}</span><NumberField aria-label={key === 's' ? 'Overlay start' : 'Overlay end'} min={key === 's' ? 0 : (Number.isFinite(draft.s) ? draft.s : item.s) + .04} max={key === 's' ? (Number.isFinite(draft.e) ? draft.e : item.e) - .04 : duration} step={.04} value={Number.isFinite(draft[key]) ? draft[key] : ""} onChange={event => change({ [key]: event.target.value === '' ? NaN : Number(event.target.value) })} onBlur={() => { const value = latest.current[key]; if (Number.isFinite(value) && value >= 0 && (key === 's' ? value < latest.current.e : value > latest.current.s) && value <= duration) commit({ [key]: value }); else { latest.current = saved.current; setDraft(saved.current); } }} onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); event.currentTarget.blur(); } }} className={field} /></label>)}</div>
+    <div className="grid grid-cols-2 gap-2">{(['s', 'e'] as const).map(key => <label key={key} className="space-y-1 text-[11px] text-muted"><span>{key === 's' ? 'Start (seconds)' : 'End (seconds)'}</span><NumberField aria-label={key === 's' ? 'Overlay start' : 'Overlay end'} min={key === 's' ? 0 : (Number.isFinite(draft.s) ? draft.s : item.s) + .04} max={key === 's' ? (Number.isFinite(draft.e) ? draft.e : item.e) - .04 : duration} step={.04} value={typed[key] ?? (Number.isFinite(draft[key]) ? String(Math.round(draft[key] * 100) / 100) : "")} onChange={event => { setTyped(was => ({ ...was, [key]: event.target.value })); change({ [key]: event.target.value === '' ? NaN : Number(event.target.value) }); }} onBlur={() => { setTyped(was => ({ ...was, [key]: undefined })); const value = latest.current[key]; if (Number.isFinite(value) && value >= 0 && (key === 's' ? value < latest.current.e : value > latest.current.s) && value <= duration) commit({ [key]: value }); else { latest.current = saved.current; setDraft(saved.current); } }} onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); event.currentTarget.blur(); } }} className={field} /></label>)}</div>
     <Slider label="Size" min={5} max={100} step={1} unit="%" defaultValue={70} value={Math.round(draft.w * 100)} onChange={value => change({ w: value / 100 })} onRelease={value => commit({ w: value / 100 })} />
-    {item.graphic ? <GraphicDesign key={item.id + ':' + (item.graphic.html.length + item.graphic.css.length)} item={item} busy={busy} onEdit={onEdit} /> : null}
+    {item.graphic ? <GraphicDesign key={item.id + ':' + (item.graphic.html.length + item.graphic.css.length)} item={item} busy={busy} onEdit={onEdit} motion={motion} onPreview={graphic => change({ graphic })} /> : null}
     <p className="text-[11px] text-muted">Drag it on the video to move it; drag its ends on the timeline to retime.</p>
     <Button aria-label="Remove overlay" onClick={() => void onEdit({ kind: 'overlay', op: 'remove', id: item.id })}><Delete size={13} />Remove overlay</Button>
   </fieldset>;

@@ -117,7 +117,9 @@ function askedFolder(argv: string[], cwd: string): string | null {
 }
 const firstInstance = headless || app.requestSingleInstanceLock({ folder: askedFolder(process.argv, process.cwd()) });
 if (!firstInstance) app.exit(0);
-if (!headless) registerMediaScheme();
+// PRO5c: headless too. An export from Ask, MCP or the CLI draws its titles in a page that loads a word's person mattes
+// over st-media; the handler is the same one, with the same checks (registered shoots, inside .sidething/<kind>).
+registerMediaScheme();
 
 function createWindow(): void {
   const win = new BrowserWindow({
@@ -128,7 +130,9 @@ function createWindow(): void {
     show: false,
     title: "precut",
     titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 30, y: 34 },
+    // POLISH1: on the top bar's line (its controls centre 30 px down), not tucked under it. The bar's start leaves them
+    // 72 px (StepBar), so the shoot switcher never meets them.
+    trafficLightPosition: { x: 24, y: 23 },
     backgroundColor: process.platform === "darwin" ? "#00000000" : "#18191c",
     ...(process.platform === "darwin" ? {
       vibrancy: "under-window" as const,
@@ -315,6 +319,7 @@ app.whenReady().then(async () => {
   // ONB2: hold the Mac awake (powerSaveBlocker, prevent-app-suspension) only while a shoot is read or an export runs.
   void import("./keep-awake").then(m => m.startKeepAwake()).catch(() => {});
   if (headless) {
+    registerMediaProtocol();
     if (mcpMode) {
       const { startMcp } = await import("./mcp");
       await startMcp(() => app.exit(0));
@@ -334,6 +339,7 @@ app.whenReady().then(async () => {
   registerMediaProtocol();
   grantLocalFonts();
   registerIpc();
+  if (!headless) void import("./menu").then(menu => menu.installMenu()).catch(error => console.warn("[menu]", error));  // POLISH1
   startUpdater();  // SIGN2: packaged builds check GitHub releases and install on quit, after FIX2's saves
   void import("./power-watch").then(watch => watch.startPowerWatch()).catch(() => {});  // PERF1
   // EXP3: frames a killed or crashed export left in the temp folder go at launch (never a running export's), and a clip

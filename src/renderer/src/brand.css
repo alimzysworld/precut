@@ -28,18 +28,21 @@
 
 /* Indie semantic palette. Opaque surfaces cover the page-only dot matrix. */
 :root {
-  --ground: #f1efea;
-  --surface: #fbfaf7;
-  --surface-hover: #f0eae0;
-  --ink: #28252b;
-  --muted: #685e5f;
-  --hair: #ded6cc;
-  --row-divider: #ded6cc;
-  --selection-fill: #e6edf9;
+  --ground: #e6e3d8;
+  --surface: #f1efe5;
+  --surface-hover: #e3e0d3;
+  --ink: #272720;
+  --muted: #575749;
+  --hair: #cfccba;
+  --row-divider: #cfccba;
+  --selection-fill: #d8d5c5;
+  --on: #d8d5c5;
+  --focus: #cdcab8;
+  --base: #d3cfc0;
   --accent-text: #1d4ed8;
   --primary-ink: #15191f;
   --good: var(--badge-lime-ink);
-  --warn: #815c0d;
+  --warn: #75510b;
   --danger: #a52c4d;
   --badge-lime-fill: #daedb3;
   --badge-lime-ink: #35501a;
@@ -49,11 +52,11 @@
   --badge-pink-ink: #902341;
   --badge-violet-fill: #e6dcf5;
   --badge-violet-ink: #66408c;
-  --badge-neutral-fill: #e9e2d9;
-  --badge-neutral-ink: #5f5659;
-  --dot: #d8d0c6;
-  --tip: #28252b;
-  --tip-ink: #faf7f1;
+  --badge-neutral-fill: #dddacb;
+  --badge-neutral-ink: #535347;
+  --dot: #d3cfc0;
+  --tip: #272720;
+  --tip-ink: #f1efe5;
   --scrim: #17161a80;
 }
 :root[data-theme="dark"] {
@@ -65,6 +68,9 @@
   --hair: #39343c;
   --row-divider: #39343c;
   --selection-fill: #38323d;
+  --on: #38323d;
+  --focus: #47404d;
+  --base: #09080b;
   --accent-text: #79b8f2;
   --primary-ink: #15191f;
   --good: var(--badge-lime-ink);
@@ -95,6 +101,9 @@
   --hair: #39343c;
   --row-divider: #39343c;
   --selection-fill: #38323d;
+  --on: #38323d;
+  --focus: #47404d;
+  --base: #09080b;
   --accent-text: #79b8f2;
   --primary-ink: #15191f;
   --good: var(--badge-lime-ink);
@@ -311,6 +320,8 @@ nav[aria-label="Settings sections"] [aria-current="page"]):has(> span.absolute.i
 .st-player-transport { background: color-mix(in oklab, var(--primary-ink) 82%, transparent); color: var(--media-ink); }
 .st-player-transport span, .st-player-control { color: var(--media-ink); }
 .st-player-control:hover { background: color-mix(in oklab, var(--media-ink) 15%, transparent); }
+/* FS1: the player bar is dark in both themes; the light theme's selection fill hid the white play icon on focus. Doubled class outranks the global focus fill. */
+.st-player-control.st-player-control:focus-visible { background-color: color-mix(in oklab, var(--media-ink) 22%, transparent) !important; }
 .st-lane-audio { background: var(--timeline-audio-fill); color: var(--accent); }
 .st-lane-music { background: var(--timeline-music-fill); color: var(--timeline-music-ink); }
 /* All editor chrome shares Inter, including tools rendered by other slices. */

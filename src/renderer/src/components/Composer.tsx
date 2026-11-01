@@ -83,7 +83,9 @@ export function Composer({ root, scope, onSaved }: { root: string; scope: "clips
   const last = requests.reduce<ShootRequest | undefined>((newest, r) => !newest || stamp(r.at) >= stamp(newest.at) ? r : newest, undefined);
   const failedLine = last?.state === "failed" && !busy ? requestFailure(last.error) : "";
   if (!modelReady) return <ModelSignIn feature={scope === "ideas" ? "ideas" : "ask"} />;
-  return <div data-composer={scope} className="pointer-events-none fixed inset-x-0 bottom-4 z-[40] flex justify-center px-4" onKeyDown={event => { if (event.key === "Escape" && open) { event.stopPropagation(); setOpen(false); } }}>
+  return <div data-composer={scope} className="pointer-events-none fixed inset-x-0 bottom-4 z-[40] flex justify-center px-4"
+    // CH2b: centred on the page, which ends where Claude's pane starts.
+    style={{ right: "var(--claude-reserve, 0px)" }} onKeyDown={event => { if (event.key === "Escape" && open) { event.stopPropagation(); setOpen(false); } }}>
     <div className="pointer-events-auto relative w-[min(680px,100%)]">
       {open && <section aria-label="Conversation with precut" className="glass-floating absolute bottom-full mb-2 max-h-[min(360px,50vh)] w-full overflow-y-auto rounded-3xl p-4">
         <button type="button" aria-label="Close conversation" onClick={() => setOpen(false)} className="absolute right-2 top-2 flex size-7 items-center justify-center rounded-full text-muted hover:bg-ink/[0.06] hover:text-ink"><Close size={14} /></button>

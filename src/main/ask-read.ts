@@ -23,7 +23,7 @@ import { transcriptText } from "./titles/text";
 
 export const ASK_READ_NAMES = ["find_words", "read_edit", "read_transcript", "list_takes", "look_at", "search_footage", "match_screen", "list_screen_recordings"];
 const MAX_BYTES = 49_000;
-type Args = { cut?: string; version?: number; offset?: number; limit?: number; line?: number; query?: string; topic?: string;
+type Args = { cut?: string; version?: number; offset?: number; limit?: number; detail?: boolean; line?: number; query?: string; topic?: string;
   times?: number[]; clipId?: string; in?: "edit" | "shoot"; phrase?: string; words?: string[] };
 export async function readShoot(root: string): Promise<Shoot> {
   return effectiveShoot(JSON.parse(await fs.readFile(path.join(root, ".sidething/index.json"), "utf8")));
@@ -51,26 +51,46 @@ function editWords(edit: Edit) {
     if (item.seg?.clip.leftOut) return [];
     return fxWords(item).filter(word => word.s < e && word.e > s).map(word => ({
       piece: timing.piece, clipId: item.seg?.clip.id, ...word,
+      muted: timing.muted || !!edit.saved.laneMuted?.['clip-sound'] || !!timing.reverse,
       reelS: mapTime(timing.timeMap, Math.max(s, word.s)),
       reelE: mapTime(timing.timeMap, Math.min(e, word.e)),
     }));
   });
 }
 // All collections share one offset. nextOffset resumes every collection; totals
-// make empty/finished collections explicit. Never silently drop the tail.
-function page(meta: Record<string, unknown>, collections: Record<string, unknown[]>, args: Args): unknown {
+// make empty/finished collections explicit. Leave room for MCP original-file annotations.
+// Never silently drop the tail.
+function page(meta: Record<string, unknown>, collections: Record<string, unknown[]>, args: Args, maxBytes = 20_000): unknown {
   const offset = args.offset ?? 0;
   let limit = args.limit ?? 80;
   const total = Object.fromEntries(Object.entries(collections).map(([key, rows]) => [key, rows.length]));
   while (true) {
     const result = { ...meta, offset, nextOffset: Object.values(total).some(n => n > offset + limit) ? offset + limit : null, total,
       ...Object.fromEntries(Object.entries(collections).map(([key, rows]) => [key, rows.slice(offset, offset + limit)])) };
-    if (Buffer.byteLength(JSON.stringify(result)) < MAX_BYTES) return result;
-    if (limit === 1) throw new Error("One record is too large. Request a smaller source span or inspect the shoot index locally.");
+    if (Buffer.byteLength(JSON.stringify(result)) < maxBytes) return result;
+    if (limit === 1) {
+      // REL09e: one record over the budget is summarised in place (its plain fields kept, marked shortened), never a failed read.
+      const shortened = { ...result, ...Object.fromEntries(Object.keys(collections).map(key => [key, ((result as Record<string, unknown>)[key] as unknown[]).map(row => shorten(row, maxBytes))])) };
+      if (Buffer.byteLength(JSON.stringify(shortened)) < maxBytes) return shortened;
+      throw new Error("One record is too large. Request a smaller source span or inspect the shoot index locally.");
+    }
     limit = Math.max(1, Math.floor(limit / 2));
   }
 }
+function shorten(row: unknown, maxBytes: number): unknown {
+  if (!row || typeof row !== "object" || Array.isArray(row) || Buffer.byteLength(JSON.stringify(row)) < maxBytes / 8) return row;
+  const plain = Object.entries(row).filter(([, v]) => v === null || typeof v !== "object").map(([k, v]) => [k, typeof v === "string" && v.length > 200 ? v.slice(0, 200) + " [text shortened]" : v]);
+  return { ...Object.fromEntries(plain), shortened: true };
+}
+/** REL09e: a graphic in a compact read_edit: what it is, where and how long, not its code (detail:true or get_motion has that). */
+function compactOverlay(item: import("../shared/schema").OverlayItem) {
+  if (!item.graphic) return item;
+  const { html: _html, css: _css, js: _js, look: _look, frames: _frames, behindCheck: _check, motion: _motion, composition: _composition, ...graphic } = item.graphic as typeof item.graphic & Record<string, unknown>;
+  return { ...item, graphic };
+}
 const short = (text: string | undefined) => text && text.length > 2000 ? text.slice(0, 2000) + " [text shortened]" : text;
+// Export instructions are not editorial observations, even on older saved versions.
+const editorial = (text: string | undefined) => short(text?.replace(/\n*\[(Energy framing|Motion framing)\][\s\S]*?\[\/\1\]/g, '').trim());
 export async function readAskTool(root: string, name: string, args: Args): Promise<unknown> {
   const sourceShoot = await readShoot(root);
   const shoot = { ...sourceShoot, clips: sourceShoot.clips.filter(c => !c.leftOut) };
@@ -188,7 +208,7 @@ export async function readAskTool(root: string, name: string, args: Args): Promi
   }
   if (!edit) throw new Error("Choose an edit id.");
   const { saved, fx, pieces, a } = edit, words = editWords(edit);
-  const meta = { cutId: edit.cut.cutId, version: saved.version, title: saved.title, lengthS: fx.durationS, reason: short(saved.feedback ?? saved.why), notes:short(saved.why) };
+  const meta = { cutId: edit.cut.cutId, version: saved.version, title: saved.title, lengthS: fx.durationS, reason: editorial(saved.feedback ?? saved.why), notes:editorial(saved.why) };
   if (name === "read_transcript") return page({ ...meta, clock: "s/e source seconds; reelS/reelE reel seconds" }, {
     lines: pieces.flatMap((piece, index) => {
       const kept = words.filter(word => word.piece === index);
@@ -200,27 +220,36 @@ export async function readAskTool(root: string, name: string, args: Args): Promi
     }),
   }, args);
   if (name !== "read_edit") throw new Error("Unknown read tool.");
-  const music = saved.music !== undefined ? saved.music : saved.assembly.reel.music;
-  const musicDepth = duckDepth(saved.music?.duckDepthDb), duckEnabled = !!music && !saved.laneMuted?.music && saved.music?.duck !== false;
-  const stemsAvailable=(await (await import('./extensions')).readExtension('sound-separation')).state==='installed';
-  const stemsReady=!!music && !!await (await import('./stem-mix')).cachedMusicStems(root,path.resolve(root,music.file),{s:music.startS,e:music.startS+fx.durationS}).catch(()=>undefined);
+  const music: import("./sidekick").StoredVersion["music"] = saved.music !== undefined ? saved.music : saved.assembly.reel.music ?? null;
+  const musicDepth = duckDepth(music?.duckDepthDb), duckEnabled = !!music && !saved.laneMuted?.music && music.duck !== false;
+  const keepBeat = music?.stemDucking === true;
+  const stemsAvailable=keepBeat && (await (await import('./extensions')).readExtension('sound-separation')).state==='installed';
+  const stemsReady=keepBeat && !!music && !!await (await import('./stem-mix')).cachedMusicStems(root,path.resolve(root,music.file),{s:music.startS,e:music.startS+fx.durationS}).catch(()=>undefined);
   const attached = attachedClipSounds(saved.assembly.reel.broll,fx,saved,saved.assembly.template.fps);
   const arrangement=await (await import('./music-arrange')).readMusicArrangement(root,saved,fx);
   const cutMusicPlan=await (await import("./cut-to-music")).readCutMusicPlan(root,saved);
   const musicGrid=await (await import('./music-timeline')).timelineMusic(root,saved,fx).catch(()=>undefined);
   const { beatAt }=await import('../shared/music-grid');
+  const musicEnd = Math.min(fx.durationS, music?.endS ?? fx.durationS);
+  const musicParts = arrangement?.parts ?? [];
+  const musicPlays = musicParts.map(part => ({sourceS:part.sourceS,sourceE:Math.min(part.sourceE,part.sourceS+musicEnd-part.atS),atS:part.atS})).filter(part=>part.sourceE>part.sourceS);
+  const clock = (s:number) => `${Number(s.toFixed(2))}s`;
+  const playing = musicPlays.length ? musicPlays.map(p=>`Track ${clock(p.sourceS)} to ${clock(p.sourceE)} plays at edit ${clock(p.atS)} to ${clock(p.atS+p.sourceE-p.sourceS)}.`).join(' ')
+    : music ? `Track ${clock(music.startS)} to ${clock(music.startS+musicEnd)} plays from the start of the edit${music.fit || music.followStory ? ' while the arrangement is not ready' : ''}.` : undefined;
 
-  return page({ ...meta, clock: "pieces and words s/e are source seconds; timelineS/reelS/reelE are reel seconds", grade: saved.grade, balanceReference:saved.balanceReference,
-    framing: saved.framing, transition: saved.transition, clipSoundMuted: !!saved.clipSoundMuted, laneLevels: Object.fromEntries(["clip-sound","voice","music","effects"].map(lane=>[lane,saved.laneLevels?.[lane as import("../shared/schema").SoundLane] ?? 0])), laneMuted:saved.laneMuted ?? {}, audio: saved.audio, music: music ? {...music, gainDb:music.gainDb ?? -18, effectiveGainDb:(music.gainDb ?? -18)+(saved.laneLevels?.music ?? 0),muted:!!saved.laneMuted?.music, duckDepthDb:musicDepth, duck:duckEnabled} : null,
+  return page({ ...meta, detail:!!args.detail, clock: "pieces and words s/e are source seconds; timelineS/reelS/reelE are reel seconds; muted words are not heard", grade: saved.grade, balanceReference:saved.balanceReference,
+    framing: saved.framing, transition: saved.transition, clipSoundMuted: !!saved.clipSoundMuted, laneLevels: Object.fromEntries(["clip-sound","voice","music","effects"].map(lane=>[lane,saved.laneLevels?.[lane as import("../shared/schema").SoundLane] ?? 0])), laneMuted:saved.laneMuted ?? {}, audio: saved.audio, music: music ? {name:path.basename(music.file,path.extname(music.file)), file:music.file, startS:music.startS, endS:musicEnd, plays:short(playing), gainDb:music.gainDb ?? -18, effectiveGainDb:(music.gainDb ?? -18)+(saved.laneLevels?.music ?? 0),muted:!!saved.laneMuted?.music, duckDepthDb:musicDepth, duck:duckEnabled} : null,
     cutMusicPlan: cutMusicPlan ? {summary:cutMusicPlan.summary,durationS:cutMusicPlan.durationS} : null,
-    musicArrangement: arrangement ? {state:'ready',source:music?.file,summary:arrangement.summary,repeats:arrangement.repeats ?? null,alreadyFits:arrangement.alreadyFits,durationS:arrangement.durationS,coversEdit:Math.abs(arrangement.durationS-fx.durationS)<1e-3,sections:arrangement.parts,shape:arrangement.shape,ending:arrangement.ending,metre:arrangement.measurements.metre} : music && (music.fit || music.followStory) ? {state:await (await import('./music-arrange')).musicArrangementStatus(root,saved,fx) ?? null,source:music.file} : null,
+    musicArrangement: arrangement ? {state:'ready',source:music?.file,summary:arrangement.summary,repeats:arrangement.repeats ?? null,alreadyFits:arrangement.alreadyFits,durationS:arrangement.durationS,coversEdit:Math.abs(arrangement.durationS-fx.durationS)<1e-3,...(args.detail ? {sections:arrangement.parts,shape:arrangement.shape} : {}),ending:arrangement.ending,metre:arrangement.measurements.metre} : music && (music.fit || music.followStory) ? {state:await (await import('./music-arrange')).musicArrangementStatus(root,saved,fx) ?? null,source:music.file} : null,
     musicBeatSource: musicGrid && music ? music.file : null,
-    stemDucking: music ? {requested:duckEnabled && saved.music?.stemDucking !== false,enabled:duckEnabled && saved.music?.stemDucking !== false && stemsAvailable && stemsReady,available:stemsAvailable,ready:stemsReady,rhythmDipDb:Math.min(2,musicDepth),voiceDipDb:musicDepth} : null,
+    ...(keepBeat ? {stemDucking:{keepBeatOn:true,active:duckEnabled && stemsAvailable && stemsReady,separationInstalled:stemsAvailable,separatedAudioReady:stemsReady,rhythmDipDb:Math.min(2,musicDepth),voiceDipDb:musicDepth}} : {}),
     autoLayouts:saved.autoLayouts?{enabled:saved.autoLayouts.enabled,offered:saved.autoLayouts.offer?.length??0,error:saved.autoLayouts.error}:null,
     cover: saved.cover ? {t:saved.cover.t,auto:saved.cover.auto,title:saved.cover.title} : {automatic:true},
     captionStyle: saved.titles?.captionStyle, captionLanguage: saved.captionLanguage,
     // V66: where the caption words come from; voiceover words carry negative piece ids.
     captionSource: (()=>{const t=saved.titles as {captionSource?:{words:{piece?:number}[]};captionWordsEdited?:boolean}|null|undefined, w=t?.captionSource?.words ?? [];return t ? {voiceoverWords:w.filter(x=>(x.piece ?? 0)<0).length,speechWords:w.filter(x=>(x.piece ?? 0)>=0).length,handEdited:!!t.captionWordsEdited} : null;})() }, {
+    musicParts: musicPlays,
+    musicShape: arrangement?.shape ?? [],
     musicCuts: cutMusicPlan?.cuts ?? [],
     musicBeats: musicGrid ? [...musicGrid.beats.map(atS=>({atS,kind:'beat'})),...musicGrid.bars.map(atS=>({atS,kind:'bar'})),...musicGrid.hits.map(atS=>({atS,kind:'hit'}))].sort((a,b)=>a.atS-b.atS) : [],
     musicSections: musicGrid?.sections ?? [],
@@ -229,20 +258,22 @@ export async function readAskTool(root: string, name: string, args: Args): Promi
       if (piece.clipId && !available.has(piece.clipId)) return [];
       const timings = fx.items.filter(item => item.piece === index);
       const source = saved.assembly.cutList.find((c,i)=>(c.piece ?? i)===index);
-      const heard = timings.some(t=>!t.muted && !t.reverse) && shoot.clips.some(c=>c.id===piece.clipId && (c.sound || c.meta?.audioChannels));
+      const heard = !saved.laneMuted?.['clip-sound'] && timings.some(t=>!t.muted && !t.reverse) && shoot.clips.some(c=>c.id===piece.clipId && (c.sound || c.meta?.audioChannels));
       const ownDuck = source && timings[0] ? clipDuckDb(source,timings[0]) : MUSIC_DUCK.ambienceDb;
       const overlaySource = attached.find(p=>p.item.piece===index);
-      const overlayHeard = !!overlaySource && !overlaySource.item.muted && !!(overlaySource.cut.seg?.clip.sound || overlaySource.cut.seg?.clip.meta?.audioChannels);
+      const overlayHeard = !saved.laneMuted?.['clip-sound'] && !!overlaySource && !overlaySource.item.muted && !!(overlaySource.cut.seg?.clip.sound || overlaySource.cut.seg?.clip.meta?.audioChannels);
       const look = balancedLook(saved,piece.clipId ?? "",index);
+      const clip = shoot.clips.find(c=>c.id===piece.clipId);
+      const name = heard ? pieceName(shoot,{pieces},index) : clipName({judgement:clip?.judgement ?? null,meta:clip?.meta ?? null,transcript:[]},{s:piece.s,e:piece.e,timelineS:piece.timelineS,lengthS:piece.lengthS,description:piece.description});
 
-      return [{ ...piece, name: pieceName(shoot, { pieces }, index), filmedAt:filmedAt(shoot.clips.find(c=>c.id===piece.clipId)), look: look ? {...look,basic:normalizeBasic(look.basic)} : null, lookOwner: saved.balances?.[piece.clipId ?? ""]?.owner ?? (saved.pieceFx?.[index]?.look ? "hand" : null), balance:saved.balances?.[piece.clipId ?? ""] ?? null, words: short(transcriptText(words.filter(word => word.piece === index).map(word => word.w)) || piece.words), description: short(piece.description || shoot.clips.find(c=>c.id===piece.clipId)?.judgement?.summary), piece: index,
+      return [{ ...(args.detail ? piece : {id:piece.id,kind:piece.kind,clipId:piece.clipId,s:piece.s,e:piece.e,overlay:piece.overlay}), name, filmedAt:filmedAt(shoot.clips.find(c=>c.id===piece.clipId)), look: look ? {...look,basic:normalizeBasic(look.basic)} : null, lookOwner: saved.balances?.[piece.clipId ?? ""]?.owner ?? (saved.pieceFx?.[index]?.look ? "hand" : null), balance:saved.balances?.[piece.clipId ?? ""] ?? null, words: short(transcriptText(words.filter(word => word.piece === index && !word.muted).map(word => word.w))), speechMuted:!heard, description: short(piece.description || shoot.clips.find(c=>c.id===piece.clipId)?.judgement?.summary), piece: index,
         timelineS: timings[0]?.startS ?? piece.timelineS, lengthS: timings.length ? timings.at(-1)!.endS - timings[0].startS : piece.lengthS,
-        overlaySound: piece.overlay ? {clean:saved.pieceFx?.[index]?.overlaySound?.clean ?? "none",muted:saved.pieceFx?.[index]?.overlaySound?.muted ?? !saved.clipSoundDefaultOn,trackMuted:!!saved.clipSoundMuted,effectiveGainDb:overlaySource?.item.gainDb ?? 0,gainDb:saved.pieceFx?.[index]?.overlaySound?.gainDb ?? 0, ducking:{enabled:duckEnabled && overlayHeard,depthDb:duckEnabled && overlayHeard ? musicDepth*clipDuckDb(overlaySource!.cut,overlaySource!.item)/MUSIC_DUCK.speechDb : 0}} : null, sound: {clean:saved.pieceFx?.[index]?.clean ?? "none",muted: saved.pieceFx?.[index]?.muted ?? defaultClipMuted(saved,piece.kind === "broll"), trackMuted: !!saved.clipSoundMuted, heard, effectiveGainDb:timings[0]?.gainDb ?? 0, gainDb:saved.pieceFx?.[index]?.gainDb ?? 0, ducking: { enabled:duckEnabled && heard, depthDb:duckEnabled && heard ? musicDepth*ownDuck/MUSIC_DUCK.speechDb : 0 }}, fx: saved.pieceFx?.[index] ?? null, layout: saved.layouts?.[index] ?? null }];
+        overlaySound: piece.overlay ? {clean:saved.pieceFx?.[index]?.overlaySound?.clean ?? "none",muted:saved.pieceFx?.[index]?.overlaySound?.muted ?? !saved.clipSoundDefaultOn,trackMuted:!!saved.clipSoundMuted || !!saved.laneMuted?.['clip-sound'],effectiveGainDb:overlaySource?.item.gainDb ?? 0,gainDb:saved.pieceFx?.[index]?.overlaySound?.gainDb ?? 0, ducking:{enabled:duckEnabled && overlayHeard,depthDb:duckEnabled && overlayHeard ? musicDepth*clipDuckDb(overlaySource!.cut,overlaySource!.item)/MUSIC_DUCK.speechDb : 0}} : null, sound: {clean:saved.pieceFx?.[index]?.clean ?? "none",muted: saved.pieceFx?.[index]?.muted ?? defaultClipMuted(saved,piece.kind === "broll"), trackMuted: !!saved.clipSoundMuted || !!saved.laneMuted?.['clip-sound'], heard, effectiveGainDb:timings[0]?.gainDb ?? 0, gainDb:saved.pieceFx?.[index]?.gainDb ?? 0, ducking: { enabled:duckEnabled && heard, depthDb:duckEnabled && heard ? musicDepth*ownDuck/MUSIC_DUCK.speechDb : 0 }}, fx: saved.pieceFx?.[index] ?? null, layout: saved.layouts?.[index] ?? null }];
     }), words, joins: fx.joins.map(join=>({...join,musicBeatS:musicGrid ? beatAt(musicGrid,join.atS,1/(2*saved.assembly.template.fps)) ?? null : null})), captions: saved.titles?.cues ?? [], sounds: saved.sfx ?? [],
-    layouts: migrateLayouts(saved,a.template.width/a.template.height), overlays: saved.overlays ?? [], lowerThirds: saved.lowerThirds ?? [], bleeps: saved.bleeps ?? [], angleCuts: saved.angleCuts ?? [],
+    layouts: migrateLayouts(saved,a.template.width/a.template.height), overlays: (saved.overlays ?? []).map(o => args.detail ? o : compactOverlay(o)), lowerThirds: saved.lowerThirds ?? [], bleeps: saved.bleeps ?? [], angleCuts: saved.angleCuts ?? [],
     // SCRIPT1: what the Script panel shows struck: pieces whose every word was cut (restore_words cut) and voiceover
     // words cut (edit_voiceover restoreCut). at is the piece index a cut piece sits before; voice at is reel seconds.
     cutPieces: (saved.cutPieces ?? []).map(t => ({ id: t.id, at: t.at, after: t.after ?? null, piece: { id: t.piece.id, clipId: t.piece.clipId, s: t.piece.s, e: t.piece.e, words: t.piece.words, removed: t.piece.removed } })),
     voiceCuts: (saved.voiceCuts ?? []).map(({ lines: _lines, ...cut }) => cut),
-  }, args);
+  }, { ...args, limit:args.limit ?? (args.detail ? 80 : 24) }, args.detail ? MAX_BYTES : 12_000);
 }

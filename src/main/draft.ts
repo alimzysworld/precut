@@ -25,7 +25,7 @@ import { estimateAutoBasic, measureBasicHistogram, exposureSpans, livePieceId, n
 import { independentPreparation, runActivity, withRenderSlot, currentActivity } from "./activity";
 import { normalizeBasic, validBasic } from "./basics";
 import { getPreferences } from "./settings";
-import { cutFraming, joinFraming, framingRectAt, type CutFraming } from "./preview";
+import { cutFraming, joinFraming, framingRectAt, matchedFraming, type CutFraming } from "./preview";
 import { loadDraftVersion, type StoredVersion } from "./sidekick";
 import { draftGeometry, unknownDraftSize } from "./draft-geometry";
 
@@ -90,7 +90,7 @@ export function draftPictures(assembly: StoredVersion["assembly"], energy: Energ
     const plan = framingPlans({ plan: cutFraming, at: framingRectAt }, [overlayCut], fps, out, energy, "off", framing, motions, reference)[0];
     add(overlay.seg.clip, start, length, piece[0].offsetFrames / fps, 1, undefined, plan, overlay.voiceIndex);
   }
-  const pictures = layoutPictures(anglePictures(fxPictures(pieces, cuts, fps, planFx(cuts, fps, { ...framing, faceMatch, energy })), { ...framing, energy, assembly }, motions, referenceOut), { layouts: framing.layouts, titles: framing.titles, pieceFx: framing.pieceFx, assembly });
+  const pictures = layoutPictures(anglePictures(fxPictures(pieces, cuts, fps, planFx(cuts, fps, { ...framing, faceMatch, energy }), matchedFraming(cuts, plans)), { ...framing, energy, assembly }, motions, referenceOut), { layouts: framing.layouts, titles: framing.titles, pieceFx: framing.pieceFx, assembly });
   const unknown = new Set([...cuts.flatMap(c => c.seg ? [c.seg.clip] : []), ...reel.broll.map(o => o.seg.clip)]
     .filter(unknownDraftSize).map(c => c.id));
   // Empty frame keys request a centre crop from the decoder's real aspect.
@@ -386,6 +386,14 @@ async function draftTimelineOnce(root: string, cutId: string, version: number): 
   }
   throw new Error("Playback preparation was interrupted. Open this edit again.");
 }
+/** TRK1b: the version's overlays and titles, the pinned ones with their keys through these pictures, and the tracks the
+ * pins read (a missing one tracks again in the background; its item draws at its pick placement until then). */
+async function pinned<O extends { s: number; e: number; pin?: import('../shared/pin-keys').PinChoice }>(root: string, record: StoredVersion, pieces: DraftPiece[], frame: { width: number; height: number; fps: number }, overlays: O[], titles: DraftTimeline['titles']) {
+  const items = [...record.overlays ?? [], ...record.titles?.cues ?? []].filter(item => item.pin);
+  if (!items.length) return { overlays, titles };
+  const pin = await import('./tracking/pin'), pinTracks = await pin.pinTracks(root, items, record.assembly.shoot.clips, false).catch(() => ({}));
+  return { overlays: pin.withPinKeys(overlays, pieces, pinTracks, frame), titles: titles && { ...titles, cues: pin.withPinKeys(titles.cues, pieces, pinTracks, frame) }, pinTracks };
+}
 async function buildDraftTimeline(root: string, cutId: string, version: number): Promise<SoundTimeline & { captionSource: CaptionSource }> {
   const began = performance.now();
   root = path.resolve(root);
@@ -415,6 +423,9 @@ async function buildDraftTimeline(root: string, cutId: string, version: number):
   // measurements or invalidating a saved version's immutable edit decisions.
   const preferences = await preferencesWork;
   const motions = await phase("framingMotion", () => framingMotion(root, [...cutList, ...reel.broll.map(o => ({ piece: o.voiceIndex, seg: o.seg }))], record));
+  // TRK2: the locked clips' tracks into memory before the pictures are framed (a missing one tracks again in the
+  // background; its clip plays as framed until the timeline is read again).
+  if (record.pieceFx?.some(f => f?.lock)) await (await import('./tracking/lock')).loadLockTracks(root, record.pieceFx, record.assembly.shoot.clips, false).catch(error => console.error('[lock] tracks:', error));
   const frames = await phase("draftPictures", () => draftPictures(record.assembly, record.energy ?? "subtle", record.faceMatch, record, motions, framingReference(template, preferences.output.height)));
   const unmeasured: ColourPiece = { base: null, exposure: { stops: 0, rolloff: .63 } };
   let pieces: DraftPiece[] = frames.map((piece, i) => {
@@ -488,6 +499,7 @@ async function buildDraftTimeline(root: string, cutId: string, version: number):
     width: template.width, height: template.height, pieces,
     sound,
     look: { preset: grade.preset ?? "clean", intensity: lookIntensity(grade.intensity) },
-    overlays: overlayMedia(root, record.overlays), titles: record.titles || record.bleeps?.length || record.lowerThirds?.length || record.layouts?.some(l => l?.kind === 'title') ? presentTitles(record, cutList, template.fps, captionSource) : record.titles ?? null, cover: await coverWork };
+    ...(record.pieceFx?.some(f => f?.lock) ? { locks: (await import('./tracking/lock')).lockSummaries(record, planFx(cutList, template.fps, record), pieces) } : {}),
+    ...await pinned(root, record, pieces, { width: template.width, height: template.height, fps: template.fps }, overlayMedia(root, record.overlays), record.titles || record.bleeps?.length || record.lowerThirds?.length || record.layouts?.some(l => l?.kind === 'title') ? presentTitles(record, cutList, template.fps, captionSource) : record.titles ?? null), cover: await coverWork };
 }
 

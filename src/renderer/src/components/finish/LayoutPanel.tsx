@@ -10,6 +10,7 @@ import {Slider} from './Controls';
 import {getApi} from '../../data';
 import {previewLayout,layoutSessions} from '../layoutPreview';
 import {timelineTime} from '../timeline/model';
+import {showWhatISay} from '../ShowWhatISay';
 const gradients=[['#182d40','#486c75'],['#f2b5a7','#a56fb6'],['#1f363d','#609c88'],['#e1c78a','#c38764']];
 const swatches=['#191a20','#f0e8d7','#254f62','#395d49','#7d4e62','#ac6844'];
 const field='w-full rounded-lg bg-ink/[0.06] px-2 py-1.5 text-[12px]';
@@ -80,6 +81,11 @@ export function LayoutPanel({shoot,version,index,busy,onEdit,time=0,timeline,asp
       <Row as="label" className="text-small">Auto layouts<Switch label="Auto layouts" checked={!!version.autoLayouts?.enabled} onChange={e=>void auto(e.target.checked)}/></Row>
       {version.autoLayouts?.error?<InlineError>{version.autoLayouts.error}</InlineError>:version.autoLayouts?.offer?.length?<div className="space-y-1"><p className="text-micro text-muted">{version.autoLayouts.offer.length} layouts ready. Your layouts are kept.</p><Button variant="primary" onClick={()=>void auto(true,true)}>Try these layouts</Button></div>:version.autoLayouts?.enabled&&rangesOnly.some(l=>l.auto)?<p role="status" className="text-micro text-muted">Picked {rangesOnly.filter(l=>l.auto).length} layouts from what you say and show</p>:null}
       {draft.reason?<p className="text-micro text-muted">{draft.reason}</p>:null}
+      {draft.cutaway?<div data-cutaway-controls className="space-y-2 rounded-lg bg-ink/[0.03] p-2">{/* BROLL2: a Show what I say cutaway */}
+        <p className="text-small">B-roll over “{draft.cutaway.phrase}”</p>
+        {draft.opacity!==undefined?<Slider label="Screen opacity" value={Math.round(draft.opacity*100)} min={20} max={95} unit="%" defaultValue={55} onChange={n=>preview({...draft,opacity:n/100})} onRelease={n=>void commit({...latest.current,opacity:n/100})}/>:null}
+        <div className="flex flex-wrap gap-2"><Button onClick={()=>showWhatISay(draft.s??0,draft.e??version.lengthS)}>Other shots</Button><Button onClick={()=>void onEdit?.({kind:'layoutRange',s:draft.s!,e:draft.e!,layout:null})}>Remove b-roll</Button></div>
+      </div>:null}
       {draft.sources?.a?<Button onClick={()=>setReplacing(true)}>Replace</Button>:null}
       {rangesOnly.length?<div className="flex flex-wrap gap-1" aria-label="Layout ranges">{rangesOnly.map(l=><Button key={`${l.s}:${l.e}`} aria-label={`Layout from ${l.s} to ${l.e} seconds`} onClick={()=>{setDraft(l);onSeek?.(l.s!);}}>{timelineTime(l.s!)} to {timelineTime(l.e!)}</Button>)}</div>:null}
       <div className="grid grid-cols-2 gap-2"><label className="text-micro text-muted">From{timeField('s','Layout from',draft.s??0)}</label><label className="text-micro text-muted">To{timeField('e','Layout to',draft.e??version.lengthS)}</label></div>

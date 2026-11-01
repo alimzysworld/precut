@@ -215,6 +215,28 @@ func appleFrameKey(_ frame: AppleLookState.FrameSnapshot) -> String {
 /// A value a completion handler fills in for a later one.
 final class Box<T> { var value: T; init(_ value: T) { self.value = value } }
 
+/// PLAY1: the picture item runs as long as the plan (manifest.durationS), past the picture's end to the last voice
+/// piece, over black (VO7-9). A trailing empty range does not lengthen a composition (its duration stayed the
+/// picture's, so the player clamped every seek and play to the picture's end), so the gap is closed with one frame
+/// of the track's own source at the very end: the gap before it is an empty edit, and the plan's span there has no
+/// tiles, so the compositor draws black over the whole tail and never reads that frame.
+func extendPicture(_ video: AVMutableCompositionTrack, in composition: AVMutableComposition, to manifest: Manifest) {
+    let end = seconds(manifest.durationS), pictureEnd = composition.duration
+    guard CMTimeCompare(end, pictureEnd) > 0 else { return }
+    let frame = seconds(1 / max(1, manifest.gridFps ?? manifest.fps))
+    // A track a tick or two short of the plan (rounding, no voice past the picture) keeps the old empty range: the
+    // last picture's span runs to the end and must not read the borrowed frame.
+    guard CMTimeCompare(CMTimeSubtract(end, pictureEnd), frame) >= 0 else { video.insertEmptyTimeRange(CMTimeRange(start: pictureEnd, end: end)); return }
+    let at = CMTimeSubtract(end, frame)
+    // The frame comes from a picture the plan already reads (the builder's own asset cache), from where it starts.
+    if let seg = manifest.video.first(where: { PictureLayout.lasts($0) }), let source = AppleAssets.shared.track(seg.file, .video),
+       let range = sourceRange(source, start: seg.shownSourceStart, duration: CMTimeGetSeconds(CMTimeSubtract(end, at))),
+       (try? video.insertTimeRange(CMTimeRange(start: range.start, duration: CMTimeSubtract(end, at)), of: source, at: at)) != nil,
+       CMTimeCompare(composition.duration, end) >= 0 { return }
+    emitEvent(["type": "extendFailed", "pictureS": CMTimeGetSeconds(pictureEnd), "durationS": manifest.durationS, "now": CMTimeGetSeconds(composition.duration)])
+    video.insertEmptyTimeRange(CMTimeRange(start: pictureEnd, end: end))
+}
+
 /// AV2 QA: the mean of a sparse grid of a picture's pixels (0 to 255), to count black pictures on the display.
 func sampleLuma(_ buffer: CVPixelBuffer) -> Double {
     guard CVPixelBufferLockBaseAddress(buffer, .readOnly) == kCVReturnSuccess else { return -1 }
@@ -640,9 +662,17 @@ final class SoundEngine {
     }
 
     /// Read the first moments of sound at `at`, so Play can start at once. Safe to call on every seek.
+    /// PLAY1: only the newest asked prepare reads. J seeks the picture every frame, each with its prepare (three
+    /// readers of half a second); queued one after another they fell seconds, then minutes, behind, and the next
+    /// play or pause (queue.sync) waited for all of them with the app's main thread.
+    private let prepareLock = NSLock()
+    private var prepareTicket = 0
     func prepare(at: Double) {
+        prepareLock.lock(); prepareTicket += 1; let ticket = prepareTicket; prepareLock.unlock()
         queue.async { [weak self] in
             guard let self, !self.playing else { return }
+            self.prepareLock.lock(); let newest = self.prepareTicket == ticket; self.prepareLock.unlock()
+            guard newest else { return }
             self.voice.prepareLocked(at: at, seconds: 0.5)
             self.music.prepareLocked(at: at, seconds: 0.5)
             self.effects.prepareLocked(at: at, seconds: 0.5)
@@ -1001,8 +1031,7 @@ final class ApplePlayerHost: NSObject {
         let pictureBuilt = try buildComposition(Manifest(version: manifest.version, width: manifest.width, height: manifest.height, fps: manifest.fps, durationS: manifest.durationS, video: manifest.video, audio: [], gridFps: manifest.gridFps))
         let pictureOnly = pictureBuilt.composition
         if let video = pictureOnly.tracks(withMediaType: .video).first, CMTimeGetSeconds(pictureOnly.duration) < manifest.durationS - 0.001 {
-            let from = pictureOnly.duration
-            video.insertEmptyTimeRange(CMTimeRange(start: from, end: seconds(manifest.durationS)))
+            extendPicture(video, in: pictureOnly, to: manifest)
         }
         let item = AVPlayerItem(asset: pictureOnly)
         // The builder's framing, composed for the screen with the page's colour (see PictureCompositor).

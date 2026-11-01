@@ -1,5 +1,8 @@
 import type { MotionGraphic } from "../../shared/schema";
+import { changeMotion, clampMotion, motionLabels, type Motion, type MotionChange, type MotionContext } from "../../shared/motion";
 import { iconSvg, ICON_NAMES } from "./icons";
+import { SCENE_TEMPLATES } from "./scenes";
+import { changeLook, clampLook, type Look, type LookChange } from "../../shared/look";
 
 // GFX1: the starter graphics, in sidething's indie style: one type family, generous space, one accent, short
 // ease-out moves and no bouncing. Each starter is plain html + css (+ a few lines of js where a number has to
@@ -14,9 +17,11 @@ export interface TemplateInfo {
 }
 type Params = Record<string, unknown>;
 // A starter may size its own frame from its params (a card takes its picture's shape).
-type Built = { html: string; css: string; js?: string; size?: { widthPx: number; heightPx: number }; media?: string };
+// MOT1: a scene also returns its pictures (shoot-cache handles) and the motion it was drawn from.
+type Built = { html: string; css: string; js?: string; size?: { widthPx: number; heightPx: number }; media?: string; frames?: string[]; motion?: Motion };
 // hidden: made only by its own tool (add_card), never offered as a starter, so its checks can't be skipped.
-interface Template extends TemplateInfo { hidden?: boolean; build(p: Params, theme: GraphicTheme, durationS: number): Built }
+// listed false (SCN1a scenes): rebuilt and edited like any starter, but not offered empty: a scene needs his words or frames.
+interface Template extends TemplateInfo { hidden?: boolean; listed?: boolean; build(p: Params, theme: GraphicTheme, durationS: number, motion?: unknown, look?: Look | null): Built }
 
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
@@ -403,27 +408,39 @@ stamp.style.transform='translate('+x.toFixed(2)+'px,'+y.toFixed(2)+'px) scale('+
           + `li b{font-weight:800;font-size:calc(var(--u)*4);color:var(--accent);font-variant-numeric:tabular-nums}li span{font-weight:600;font-size:calc(var(--u)*5.2);line-height:1.15;color:var(--on)}` };
     },
   },
+  // SCN1a: the four full-screen scenes (scenes.ts); their time and feel are the graphic's motion.
+  ...SCENE_TEMPLATES.map(t => ({ ...t, listed: false })),
 ];
 
+const info = ({ build: _build, hidden: _hidden, listed: _listed, ...rest }: Template): TemplateInfo => rest;
+/** The starters offered to add (scenes are made from his words and frames, so they are not offered empty). */
 export function graphicTemplates(): TemplateInfo[] {
-  return TEMPLATES.filter(t => !t.hidden).map(({ build: _build, hidden: _hidden, ...info }) => info);
+  return TEMPLATES.filter(t => !t.hidden && t.listed !== false).map(info);
 }
 export function templateInfo(id: string): TemplateInfo | undefined {
-  return graphicTemplates().find(t => t.id === id);
+  const found = TEMPLATES.find(t => t.id === id && !t.hidden);
+  return found && info(found);
 }
 
 /** Build a composition from a starter. Params outside the starter's list are ignored; bad values fall back to the defaults. */
-export function buildFromTemplate(id: string, params: Record<string, unknown> = {}, theme: Partial<GraphicTheme> = {}, options: { durationS?: number; layer?: "front" | "behind"; words?: MotionGraphic["words"] } = {}): MotionGraphic {
+export function buildFromTemplate(id: string, params: Record<string, unknown> = {}, theme: Partial<GraphicTheme> = {}, options: { durationS?: number; layer?: "front" | "behind"; words?: MotionGraphic["words"]; motion?: Motion | null; look?: Look | null } = {}): MotionGraphic {
   const template = TEMPLATES.find(t => t.id === id);
   if (!template) throw new Error(`There is no graphic template called "${id}". Choose one from the list.`);
   const resolved: GraphicTheme = { font: theme.font || DEFAULT_THEME.font, accent: colour(theme.accent, DEFAULT_THEME.accent), ink: colour(theme.ink, DEFAULT_THEME.ink), tone: theme.tone === "light" ? "light" : "dark" };
   const durationS = clamp(options.durationS ?? template.durationS, 0.8, 60);
-  const built = template.build(params ?? {}, resolved, durationS);
+  // MOT1: the motion is given, or rides along from graphicSource's params (so any rebuild keeps it); it is never a look param.
+  // LOOK1: a scene's look rides along the same way (graphicSource puts it in params.look); options.look null = none.
+  const { motion: carried, look: carriedLook, ...look } = params ?? {};
+  const sceneLook = template.kind === "scene" ? (options.look === null ? null : options.look ?? (carriedLook ? clampLook(carriedLook) : null)) : null;
+  const built = template.build(look, resolved, durationS, options.motion ?? carried, sceneLook);
   // The look rides along in the html so the starter can be rebuilt to a new length without losing it.
-  built.html = built.html.replace(/data-gfx-params="/, `data-gfx-theme="${esc(JSON.stringify(resolved))}" data-gfx-params="`);
+  built.html = built.html.replace(/data-gfx-params="/, `data-gfx-theme="${esc(JSON.stringify(resolved))}" ${built.motion ? `data-gfx-motion="${esc(JSON.stringify(built.motion))}" ` : ""}data-gfx-params="`);
   const graphic: MotionGraphic = { html: built.html, css: built.css, widthPx: built.size?.widthPx ?? template.widthPx, heightPx: built.size?.heightPx ?? template.heightPx, durationS, frame: template.frame, template: template.id };
   if (built.js) graphic.js = built.js;
   if (built.media) graphic.media = built.media;
+  if (built.frames?.length) graphic.frames = built.frames;
+  if (built.motion) graphic.motion = built.motion;
+  if (sceneLook) graphic.look = sceneLook;
   if (options.layer === "behind" && template.frame === "overlay") graphic.layer = "behind";
   if (options.words?.length) graphic.words = options.words;
   return graphic;
@@ -431,14 +448,64 @@ export function buildFromTemplate(id: string, params: Record<string, unknown> = 
 
 const unesc = (s: string) => s.replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
 /** The starter, params and look a graphic was made from, read back from its own html; null for a hand-written composition. */
+/** MOT1: a scene's params also carry its motion (the graphic's own, else the copy in its html), so a rebuild keeps it. */
 export function graphicSource(g: MotionGraphic): { template: string; params: Record<string, unknown>; theme: Partial<GraphicTheme> } | null {
   const template = /data-gfx-template="([a-z0-9-]+)"/.exec(g.html), params = /data-gfx-params="([^"]*)"/.exec(g.html), theme = /data-gfx-theme="([^"]*)"/.exec(g.html);
   if (!template || !params) return null;
   try {
     const found = { template: template[1], params: JSON.parse(unesc(params[1])) as Record<string, unknown>, theme: theme ? JSON.parse(unesc(theme[1])) : {} };
+    const motion = g.motion ?? (/data-gfx-motion="([^"]*)"/.exec(g.html) ? JSON.parse(unesc(/data-gfx-motion="([^"]*)"/.exec(g.html)![1])) : null);
+    if (motion) found.params.motion = clampMotion(motion);
+    if (g.look) found.params.look = clampLook(g.look);   // LOOK1
     // PRO4: a card keeps its picture once, in its <img>; put it back so a rebuild (a new length) keeps it.
     if (found.params.image === CARD_IMAGE_REF) found.params.image = /<img class="shot" alt="" src="(data:image\/[a-z]+;base64,[A-Za-z0-9+/=]+)"/.exec(g.html)?.[1] ?? "";
     return found;
   }
   catch { return null; }
+}
+
+/** MOT1b: a graphic's motion (a scene's), with what it is rebuilt from; null for a graphic without one. */
+export function graphicMotion(g: MotionGraphic): { source: NonNullable<ReturnType<typeof graphicSource>>; motion: Motion; labels: string[] } | null {
+  const source = graphicSource(g), motion = g.motion ?? source?.params.motion;
+  if (!source || !motion || !TEMPLATES.some(t => t.id === source.template)) return null;
+  const clean = clampMotion(motion);
+  return { source, motion: clean, labels: motionLabels(source.params, clean.elements.length) };
+}
+export const NO_MOTION = "That graphic has no motion to fine-tune. Scenes have it; change other graphics with update_graphic.";
+/** MOT1b: the one way a motion changes, from the inspector, the timeline's ticks, Ask and the MCP: change the numbers,
+ *  resolve them for the item as it sits now, and rebuild from the template (never new code). An empty change only resolves. */
+export function setGraphicMotion(g: MotionGraphic, change: MotionChange, ctx: MotionContext) {
+  const found = graphicMotion(g);
+  if (!found) throw new Error(NO_MOTION);
+  const { motion: _carried, ...look } = found.source.params;
+  const result = changeMotion(found.motion, change, ctx, found.labels);
+  const graphic = buildFromTemplate(found.source.template, look, found.source.theme, { durationS: g.durationS, layer: g.layer, words: g.words, motion: result.motion });
+  return { ...result, graphic, labels: found.labels };
+}
+
+// ---- LOOK1: a scene's look (shared/look.ts), the one way it changes from the inspector, Ask and the MCP: change the
+// values and rebuild from the template (never new code). Pictures from the shoot and the auto dim are main's
+// (graphics/look.ts); this part is pure, so the inspector previews a change while it is being made.
+export const NO_LOOK = "Only scenes have a look. Change other graphics with update_graphic.";
+export const isScene = (g: MotionGraphic | null | undefined) => !!g && !!graphicSource(g) && SCENE_TEMPLATES.some(t => t.id === graphicSource(g)!.template);
+/** A scene's look (null while it is still on black, as saved before looks), with what it is rebuilt from. */
+export function graphicLook(g: MotionGraphic): { source: NonNullable<ReturnType<typeof graphicSource>>; look: Look | null } | null {
+  const source = graphicSource(g);
+  if (!source || !SCENE_TEMPLATES.some(t => t.id === source.template)) return null;
+  return { source, look: g.look ? clampLook(g.look) : null };
+}
+/** The scene rebuilt with this look (its motion and words kept). */
+export function withGraphicLook(g: MotionGraphic, look: Look | null): MotionGraphic {
+  const found = graphicLook(g);
+  if (!found) throw new Error(NO_LOOK);
+  const { motion: _m, look: _l, ...params } = found.source.params;
+  return buildFromTemplate(found.source.template, { ...params, ...(g.motion || found.source.params.motion ? { motion: g.motion ?? found.source.params.motion } : {}) }, found.source.theme,
+    { durationS: g.durationS, layer: g.layer, words: g.words, look });
+}
+/** One look change, rebuilt: what changed in plain words. Brand colours (the edit's caption colours) feed Shuffle. */
+export function setGraphicLook(g: MotionGraphic, change: LookChange, brand: string[] = []) {
+  const found = graphicLook(g);
+  if (!found) throw new Error(NO_LOOK);
+  const result = changeLook(found.look, change, brand);
+  return { ...result, graphic: withGraphicLook(g, result.look) };
 }

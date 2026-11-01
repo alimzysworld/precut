@@ -4,7 +4,8 @@ import { useLaneResize } from './timeline/laneResize';
 import { MusicBlock } from './timeline/MusicBlock';
 import { LayoutLane } from './timeline/LayoutLane';
 import { CaptionWords } from "./timeline/CaptionWords";
-import { updateCaptionWord } from "../../../shared/caption-words";
+import { timedCaptionWords, updateCaptionWord } from "../../../shared/caption-words";
+import { PunchTicks } from "./timeline/PunchTicks";
 import { clickSelection, boxPieces, moveSelection, selectionBatch } from "./timeline/selection";
 import { useSoundSeparation, CLEAN_SOUND_CHOICES } from "./finish/ClipSoundCleaning";
 import { autoCorrect, useBalance } from "../hooks/useBalance";
@@ -20,7 +21,7 @@ import { getApi } from "../data";
 import { More, Wand, Undo, Redo, Captions, Video, Voice, Music, Overlays, Sound, Volume, VolumeOff, Eye, EyeOff, Minus, Plus, TransitionCut, Snap, Ease, Zoom, Whip, Dissolve, Ramp } from "./icons";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { usePageActive } from "../hooks/usePageActivity";
-import { useShortcuts } from "../hooks/useShortcuts";
+import { shortcutKeys, useShortcuts } from "../hooks/useShortcuts";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import type { CutEdit, CutVersion, DraftTimeline, Shoot } from "../../../shared/schema";
 import { magneticTime } from "../../../shared/magnetic";
@@ -30,14 +31,16 @@ import { storyboard } from "./edits/model";
 import type { StageHandle } from "./Stage";
 import { FOCUS, Slider } from "./ui";
 import { OverlayBlock } from "./timeline/OverlayBlock";
+import { useKept } from "./finish/MotionControls";
 import { Waveform } from "./timeline/Waveform";
-import { clipSoundBlocks, captionBlocks, clipDuration, soundBlocks, timelineTime, magneticPreview, magneticSpans, insertionAt, trimEdge, type TrimEdge, type LaneId, type LaneVisibility } from "./timeline/model";
+import { clipSoundBlocks, captionBlocks, clipDuration, soundBlocks, soundLabelSlots, timelineTime, magneticPreview, magneticSpans, insertionAt, trimEdge, type TrimEdge, type LaneId, type LaneVisibility } from "./timeline/model";
 import { DurationBadge, Filmstrip } from "./timeline/Filmstrip";
 import "./timeline/timeline.css";
 import { timelineZoom, wheelPixels } from "./viewZoom";
 import { SOURCE_DRAG_TYPE, readSourceDrag, sourceInsertAt } from "./library/source";
 import { TAKE_DRAG_TYPE, readTakeDrag, type TakeDrag } from "./TakeViewer";
-import type { TimelineTool } from "./edits/ToolBar";
+import { AudioScrub, CloseGap, FitView, Magnet, keyGlyphs, type TimelineTool } from "./edits/ToolBar";
+import { Tooltip } from "./ui/InfoTip";
 import { hitTrimEdge, paintTrim, trimZone } from './timeline/instantTrim';
 import { musicSnap, musicTicks, musicalTrim, fitPlacement, joinBeat, snapJoinToBeat } from './timeline/musicBeats';
 import { beatAt, type MusicGrid } from '../../../shared/music-grid';
@@ -315,7 +318,8 @@ export function Timeline({ liveTime, onScrub, selectedVoices, onSelectVoices, se
   const progress = activeIndex < 0 ? 0 : Math.max(0, Math.min(1, (time - starts[activeIndex]) / (lengths[activeIndex] || 1)));
   // VO7-11: what a live paint needs, from this render, so a frame of the clock never renders the timeline.
   const live = useRef({ scale, duration, starts, lengths, following, pageActive, shown: 0 }); live.current = { scale, duration, starts, lengths, following, pageActive, shown: Math.max(0, Math.min(duration, time)) };
-  const head = useRef<HTMLSpanElement>(null), headTime = useRef<HTMLSpanElement>(null), readout = useRef<HTMLSpanElement>(null);
+  const head = useRef<HTMLSpanElement>(null), headTime = useRef<HTMLSpanElement>(null), readout = useRef<HTMLSpanElement>(null), readoutTotal = useRef<HTMLSpanElement>(null);
+  const ruler = useRef<HTMLDivElement>(null), seconds = useRef<{ nodes: HTMLElement[]; widths: number[]; badge: { length: number; half: number } }>({ nodes: [], widths: [], badge: { length: 0, half: 26 } });
   const rulerScrub = useRef(false);
   /** Follow the clock: keep the current piece (or the playhead inside a long one) in view. */
   function followAt(at: number) {
@@ -359,11 +363,33 @@ export function Timeline({ liveTime, onScrub, selectedVoices, onSelectVoices, se
       if (shown !== h.style.transform && (!shown || prior === undefined || Math.abs(Number(prior) - x) >= .25)) h.style.transform = shown;
     }
     if (headTime.current && headTime.current.textContent !== text) headTime.current.textContent = text;
-    const total = `${text} / ${timelineTime(g.duration)}`;
-    if (readout.current && readout.current.textContent !== total) readout.current.textContent = total;
+    if (readout.current && readout.current.textContent !== text) readout.current.textContent = text;
+    const total = `/ ${timelineTime(g.duration)}`;
+    if (readoutTotal.current && readoutTotal.current.textContent !== total) readoutTotal.current.textContent = total;
+    coverSeconds(Math.max(0, Math.min(g.duration, at)) * g.scale, text, g.duration * g.scale);
+  }
+  /** CH4: the playhead's label owns the ruler's top row. A seconds label it would sit on fades out; the widths are
+   * measured once per zoom (below), the label's only when its text gets longer or shorter, so a frame reads no layout. */
+  function coverSeconds(x: number, text: string, end: number) {
+    const s = seconds.current, label = headTime.current;
+    if (label && s.badge.length !== text.length && label.offsetWidth > 0) s.badge = { length: text.length, half: label.offsetWidth / 2 + 6 };
+    // At either end of the reel the label slides inward to stay whole; its notch stays on the line.
+    const half = s.badge.half - 6, shift = end > 2 * half ? Math.max(half, Math.min(end - half, x)) - x : 0, shown = `${Math.round(shift * 10) / 10}px`;
+    if (label && label.style.getPropertyValue("--badge-shift") !== shown) label.style.setProperty("--badge-shift", shown);
+    x += shift;
+    s.nodes.forEach((node, i) => {
+      const left = parseFloat(node.style.left) || 0, covered = String(left < x + s.badge.half && left + s.widths[i] > x - s.badge.half);
+      if (node.dataset.covered !== covered) node.dataset.covered = covered;
+    });
   }
   const paint = useRef(paintLive); paint.current = paintLive;
   useEffect(() => liveTime?.subscribe(at => paint.current(at)), [liveTime]);
+  // CH4: the seconds labels and their widths, read when the ruler's ticks change (zoom, resize), before the paint below.
+  useLayoutEffect(() => {
+    const nodes = Array.from(ruler.current?.querySelectorAll?.<HTMLElement>("[data-ruler-second]") ?? []);
+    seconds.current = { ...seconds.current, nodes, widths: nodes.map(node => node.offsetWidth || 24) };
+    if (!liveTime) coverSeconds(Math.max(0, Math.min(duration, time)) * scale, timelineTime(time), duration * scale);
+  }, [tickInterval, ticks.length, scale]);
   useLayoutEffect(() => { if (liveTime) paint.current(liveTime.now()); }, [liveTime, time, scale, duration]);
   /** VO7-11: a ruler scrub seeks the player at most once per frame; the playhead is painted on every move. */
   const frameSeek = useRef<{ frame: number; at: number | null }>({ frame: 0, at: null });
@@ -868,6 +894,10 @@ export function Timeline({ liveTime, onScrub, selectedVoices, onSelectVoices, se
   if(!captionCache.current || captionCache.current.draft!==viewDraft || captionCache.current.version!==version)captionCache.current={draft:viewDraft,version,blocks:captionBlocks(viewDraft ? viewDraft.titles : version.titles, pieces.map((piece,index)=>({...piece,timelineS:starts[index],lengthS:lengths[index]})),version.bigLines)};
   const cues=captionCache.current.blocks;
   const overlays = viewDraft?.overlays ?? [];
+  // MOT1b: what a motion graphic's ticks snap to: his words and the music grid this timeline draws.
+  const motionSource = useKept(() => ({ titles: viewDraft?.titles, captionSource: viewDraft?.captionSource, beats: grid.beats, fps: viewDraft?.fps }), [viewDraft?.titles, viewDraft?.captionSource, grid.beats, viewDraft?.fps]);
+  // CAP4: a dragged punch tick snaps to where a caption word starts.
+  const punchWords = useKept(() => timedCaptionWords(viewDraft ? viewDraft.titles : version.titles).map(w => w.s), [viewDraft?.titles, version.titles]);
   const thirdTiming = localPlan && previewBase.current ? magneticTime(magneticSpans(previewBase.current),magneticSpans(localPlan).map(p=>{
     const old=previewBase.current!.pieces.find(s=>s.layer===0 && s.piece===p.piece),next=localPlan.pieces.find(s=>s.layer===0 && s.piece===p.piece);
     return {...p,offsetS:old && next ? (next.inS-old.inS)/(version.pieceFx?.[p.piece]?.speed ?? 1) : 0};
@@ -880,6 +910,7 @@ export function Timeline({ liveTime, onScrub, selectedVoices, onSelectVoices, se
   });
   const joinIcons = { cut: TransitionCut, snap: Snap, ease: Ease, zoom: Zoom, whip: Whip, dissolve: Dissolve, ramp: Ramp };
   const sounds = [...soundBlocks(draft),...(version.sfx ?? []).map(item=>({id:item.id,s:item.atS,e:Math.min(duration,item.atS+(item.lengthS ?? ((draft?.liveSound?.effects.find(p=>p.id===item.id)?.endS ?? item.atS+.3)-item.atS))),label:item.name ?? 'Sound effect'}))];
+  const soundSlots = soundLabelSlots(sounds, scale);  // REL09e: labels that would collide take the next free stretch, truncate or hide
   const lanes: { id: LaneId; label: string; icon: typeof Video; note?: string }[] = [
     { id: 'layouts', label: 'Layouts', icon: Video, note: 'Layout ranges' },
     { id: "video", label: "Video", icon: Video, note: "Preview only" },
@@ -937,13 +968,13 @@ export function Timeline({ liveTime, onScrub, selectedVoices, onSelectVoices, se
     if (rect) scrubSeek(snappedTime((event.clientX - rect.left) / scale, event.altKey || !!drag?.moved), final);
   }
   return <section {...laneResize} data-editor-timeline data-timeline aria-label="Storyboard timeline" className="st-timeline flex h-full min-h-0 flex-col rounded-2xl bg-surface text-small">
+    {/* CH4: groups by job, apart by space and never a divider: history, the tool and clip actions, then time and zoom. */}
     <div className="st-timeline-bar">
-      <div className="st-timeline-tools">
-        <Tile type="button" data-timeline-snapping aria-label="Snapping" aria-pressed={snapping} title="Snapping (N). Option skips snapping" onClick={toggleSnapping} className={`st-timeline-tool ${snapping ? 'bg-accent/15 text-accent' : 'text-muted'} ${FOCUS}`}>Snapping {snapping ? 'on' : 'off'}</Tile>
-        <Tile type="button" data-timeline-close-gaps aria-label="Close gaps" aria-pressed={closeGaps} title={`Close gaps. Delete on voice ${closeGaps ? 'closes' : 'leaves'} the gap; Shift+Delete does the opposite`} onClick={()=>setTimelinePref({closeGaps:!timelinePrefs().closeGaps})} className={`st-timeline-tool ${closeGaps ? 'bg-accent/15 text-accent' : 'text-muted'} ${FOCUS}`}>Close gaps {closeGaps ? 'on' : 'off'}</Tile>
-        <Tile type="button" data-timeline-audio-scrub aria-label="Audio scrub" aria-pressed={audioScrub} title="Audio scrub (Shift+S). Hear the sound while you drag the playhead" onClick={toggleAudioScrub} className={`st-timeline-tool ${audioScrub ? 'bg-accent/15 text-accent' : 'text-muted'} ${FOCUS}`}>Audio scrub {audioScrub ? 'on' : 'off'}</Tile>
-        <button type="button" aria-label={history?.undoLabel ? `Undo ${namedText(history.undoLabel)}` : "Undo"} title={`Undo (Cmd+Z)${busy ? ": Wait for this edit to finish saving" : !history?.undoLabel ? ": No changes to undo" : `: ${namedText(history.undoLabel)}`}`} disabled={busy || !history?.undoLabel} onClick={history?.undo} className={`st-timeline-tool ${FOCUS}`}><Undo size={16} /></button>
-        <button type="button" aria-label={history?.redoLabel ? `Redo ${namedText(history.redoLabel)}` : "Redo"} title={`Redo (Cmd+Shift+Z)${busy ? ": Wait for this edit to finish saving" : !history?.redoLabel ? ": No changes to redo" : `: ${namedText(history.redoLabel)}`}`} disabled={busy || !history?.redoLabel} onClick={history?.redo} className={`st-timeline-tool ${FOCUS}`}><Redo size={16} /></button>
+      <div className="st-timeline-group">
+        <Tooltip label={history?.undoLabel ? `Undo ${namedText(history.undoLabel)}` : "Undo"} state={busy ? "waits for the save to finish" : !history?.undoLabel ? "nothing to undo" : undefined} shortcut={keyGlyphs(shortcutKeys("undo", "precuts") ?? "Cmd+z")}>
+          <button type="button" aria-label={history?.undoLabel ? `Undo ${namedText(history.undoLabel)}` : "Undo"} disabled={busy || !history?.undoLabel} onClick={history?.undo} className={`st-timeline-icon ${FOCUS}`}><Undo size={16} /></button></Tooltip>
+        <Tooltip label={history?.redoLabel ? `Redo ${namedText(history.redoLabel)}` : "Redo"} state={busy ? "waits for the save to finish" : !history?.redoLabel ? "nothing to redo" : undefined} shortcut={keyGlyphs(shortcutKeys("redo", "precuts") ?? "Cmd+Shift+z")}>
+          <button type="button" aria-label={history?.redoLabel ? `Redo ${namedText(history.redoLabel)}` : "Redo"} disabled={busy || !history?.redoLabel} onClick={history?.redo} className={`st-timeline-icon ${FOCUS}`}><Redo size={16} /></button></Tooltip>
       </div>
       {tools}
       <span ref={voiceReadout} role="status" data-voice-readout hidden className="st-timeline-feedback tnum" />
@@ -951,10 +982,25 @@ export function Timeline({ liveTime, onScrub, selectedVoices, onSelectVoices, se
       {trimNote && !heldCount ? <span role="status" data-trim-note className="st-timeline-feedback">{trimNote}</span> : null}
       {heldCount || heldNote ? <span role="status" data-held-keys={heldCount} className="st-timeline-feedback">{heldCount ? `${heldCount} ${heldCount === 1 ? 'key waits' : 'keys wait'} for the last change to save` : heldNote}</span> : null}
       <span role="status" data-trim-readout hidden={!dragging} className="st-timeline-feedback">{dragging ? dragging.edge ? `${dragging.length.toFixed(1)} s${dragging.limit ? ` · ${dragging.limit}` : ""}` : `Place ${(dragging.to ?? 0)+1}` : ''}</span>
-      <span ref={readout} className="st-timeline-time tnum">{`${timelineTime(time)} / ${timelineTime(duration)}`}</span>
-      <div className="st-timeline-tools"><button type="button" aria-label="Zoom out" title="Zoom out" disabled={zoom <= 1} onClick={() => changeZoom(zoom - .5)} className={`st-timeline-tool ${FOCUS}`}><Minus size={14} /></button><Slider compact label="Timeline zoom" min={1} max={64} step={.1} defaultValue={1} value={zoom} onChange={value => changeZoom(value)} className="w-20" /><button type="button" aria-label="Zoom in" title="Zoom in" disabled={zoom >= 64} onClick={() => changeZoom(zoom + .5)} className={`st-timeline-tool ${FOCUS}`}><Plus size={14} /></button><button type="button" aria-label="Fit timeline" title="Fit timeline (Shift-Z)" onClick={() => changeZoom(1, 0)} className={`st-timeline-tool bg-ground ${FOCUS}`}>Fit</button></div>
+      <span className="st-timeline-time tnum"><span ref={readout}>{timelineTime(time)}</span> <span ref={readoutTotal} className="st-timeline-total">{`/ ${timelineTime(duration)}`}</span></span>
+      {/* Zoom has no keys yet (pinch or Command-scroll); Fit is Shift-Z, as registered. */}
+      <div className="st-timeline-group">
+        <Tooltip label="Zoom out"><button type="button" aria-label="Zoom out" disabled={zoom <= 1} onClick={() => changeZoom(zoom - .5)} className={`st-timeline-icon ${FOCUS}`}><Minus size={14} /></button></Tooltip>
+        <Slider compact label="Timeline zoom" min={1} max={64} step={.1} defaultValue={1} value={zoom} onChange={value => changeZoom(value)} className="w-20" />
+        <Tooltip label="Zoom in"><button type="button" aria-label="Zoom in" disabled={zoom >= 64} onClick={() => changeZoom(zoom + .5)} className={`st-timeline-icon ${FOCUS}`}><Plus size={14} /></button></Tooltip>
+        <Tooltip label="Fit timeline" shortcut={keyGlyphs(shortcutKeys("zoom-fit", "precuts") ?? "Shift+z")}><button type="button" aria-label="Fit timeline" onClick={() => changeZoom(1, 0)} className={`st-timeline-icon ${FOCUS}`}><FitView size={15} /></button></Tooltip>
+      </div>
     </div>
-    <div className="st-timeline-lanes flex min-h-0 flex-1 overflow-hidden">
+    <div className="st-timeline-lanes relative flex min-h-0 flex-1 overflow-hidden">
+      {/* CH4: the timeline's switches live in the empty corner above the lane names. On is a soft neutral fill. */}
+      <div role="group" aria-label="Timeline options" className="st-timeline-corner">
+        <Tooltip label="Snapping" state={snapping ? "on" : "off"} shortcut={keyGlyphs(shortcutKeys("timeline-snapping", "precuts") ?? "n")} below>
+          <Tile type="button" data-timeline-snapping aria-label="Snapping" aria-pressed={snapping} onClick={toggleSnapping} className={`st-timeline-toggle ${FOCUS}`}><Magnet size={17} /></Tile></Tooltip>
+        <Tooltip label="Close gaps" state={closeGaps ? "on" : "off"} below>
+          <Tile type="button" data-timeline-close-gaps aria-label="Close gaps" aria-pressed={closeGaps} onClick={()=>setTimelinePref({closeGaps:!timelinePrefs().closeGaps})} className={`st-timeline-toggle ${FOCUS}`}><CloseGap size={17} /></Tile></Tooltip>
+        <Tooltip label="Audio scrub" state={audioScrub ? "on" : "off"} shortcut={keyGlyphs(shortcutKeys("timeline-audio-scrub", "precuts") ?? "Shift+s")} below>
+          <Tile type="button" data-timeline-audio-scrub aria-label="Audio scrub" aria-pressed={audioScrub} onClick={toggleAudioScrub} className={`st-timeline-toggle ${FOCUS}`}><AudioScrub size={17} /></Tile></Tooltip>
+      </div>
       <div className="st-timeline-labels" onWheel={event => { const row = viewport.current; if (row && !event.ctrlKey && !event.metaKey) row.scrollTop += event.deltaY; }}><div ref={labelsInner} className="st-timeline-labels-inner">{lanes.map(lane => {
         const soundLane:SoundLane|null=lane.id==='clip-sound'||lane.id==='broll-sound'?'clip-sound':lane.id==='voice'?'voice':lane.id==='music'?'music':lane.id==='sound-effects'?'effects':null;
         return <div key={lane.id} data-lane-size={lane.id} data-lane-label={lane.label} className="st-timeline-label" style={laneStyle(lane.id)}><lane.icon size={14} className="shrink-0" /><span>{lane.label}</span>{soundLane ? <>
@@ -1044,7 +1090,7 @@ export function Timeline({ liveTime, onScrub, selectedVoices, onSelectVoices, se
             onPointerDown={event => { if (event.button !== 0) return; event.preventDefault(); event.stopPropagation(); pauseFollowing(); event.currentTarget.setPointerCapture(event.pointerId); rulerDrag.current = { x: event.clientX, moved: false }; scrubbing(true); seekRuler(event); }}
             onPointerMove={event => { if (event.currentTarget.hasPointerCapture(event.pointerId)) seekRuler(event); }} onPointerUp={event => { if (event.currentTarget.hasPointerCapture(event.pointerId)) { seekRuler(event, true); event.currentTarget.releasePointerCapture(event.pointerId); } rulerDrag.current = null; scrubbing(false); }}
             onPointerCancel={event => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); rulerDrag.current = null; scrubbing(false); }} onLostPointerCapture={() => { rulerDrag.current = null; scrubbing(false); }}
-            className={`st-timeline-ruler cursor-ew-resize tnum text-micro text-muted ${FOCUS}`} style={{ touchAction: "none" }}>{ticks.map(tick => <span key={tick} className="absolute top-0" style={{ left: tick * scale }}>{formatDuration(tick)}</span>)}
+            ref={ruler} className={`st-timeline-ruler cursor-ew-resize tnum text-micro text-muted ${FOCUS}`} style={{ touchAction: "none" }}>{ticks.map(tick => <span key={tick} data-ruler-second={tick} className="st-ruler-second absolute top-0" style={{ left: tick * scale }}>{formatDuration(tick)}</span>)}
             {grid.bars.map((at,i)=><span key={`bar-${i}`} data-ruler-bar={i+1} title={`Bar ${i+1}`} className="st-ruler-bar absolute bottom-0" style={{left:`${at/(duration || 1)*100}%`,transition:reduced ? undefined : sourceWindowTransition}}>{i+1}</span>)}
             {beatTicks.filter(t=>t.kind!=='bar').map(t=><span key={t.at} data-ruler-beat className="st-ruler-beat absolute bottom-0" style={{left:t.at*scale}} />)}</div>
           <LayoutLane version={version} draft={viewDraft} time={time} scale={scale} busy={busy} hidden={hidden.layouts} style={laneStyle('layouts')} onEdit={onEdit} onSelect={at=>{onDeselect?.();player.current?.seek(at);onInspect?.('layout');}} />
@@ -1070,6 +1116,7 @@ export function Timeline({ liveTime, onScrub, selectedVoices, onSelectVoices, se
                   {replaceHover === piece.sourceIndex ? <span data-replace-target className="pointer-events-none absolute inset-0 flex -translate-y-0.5 items-center justify-center rounded-md bg-accent/25 text-[12px] font-semibold text-ink"><span className="rounded-full bg-surface px-3 py-1">Replace</span></span> : null}
                   {version.layouts?.[piece.sourceIndex]?.kind === 'placeholder' ? <span data-placeholder={piece.sourceIndex} className="absolute inset-0 flex items-center justify-center rounded-md border border-dashed border-current bg-surface/90 px-2 text-[11px] text-accent">Shot needed: {version.layouts[piece.sourceIndex]!.note}</span> : null}
                 </Tile>
+                <PunchTicks piece={piece.sourceIndex} fx={version.pieceFx?.[piece.sourceIndex]} startS={starts[index]} endS={starts[index] + lengths[index]} scale={scale} timeline={viewDraft} words={punchWords} busy={busy} onEdit={onEdit} onSelect={() => onSelectPiece?.(piece.sourceIndex)} />
                 {cutId && correction.ready.includes(piece.clipId ?? "") ? <button type="button" data-auto-correct-ready title="Auto correct ready" aria-label="Auto correct ready" className={`absolute right-2 top-2 rounded-full bg-ground px-1.5 py-0.5 text-accent ${FOCUS}`} onPointerDown={event=>event.stopPropagation()} onClick={event=>{event.stopPropagation();void correctPiece(piece.sourceIndex,true);}}><Wand size={13} style={{fill:"currentColor",stroke:"none"}} /></button> : null}
                 {draft && version.pieces && (["start","end"] as const).map(edge => <button key={edge} type="button" data-trim-handle={edge} aria-label={`Trim ${edge} of ${pieceName(shoot, version, piece.sourceIndex)}`} title={`Drag to trim ${edge}. Option skips snapping. Click, then , or . for one frame.`}
                   onPointerDown={event=>beginGesture(event,index,edge)} onClick={event=>{event.stopPropagation();if(suppressClick.current){suppressClick.current=false;return;}setSelectedEdge({piece:piece.sourceIndex,edge});onSelectPiece?.(piece.sourceIndex);}}
@@ -1100,10 +1147,10 @@ export function Timeline({ liveTime, onScrub, selectedVoices, onSelectVoices, se
             {joins.map(join=>{const at=starts[join.index+1] ?? join.atS;return <span key={join.index} data-beat-join={join.index} hidden={beatAt(grid,at,1/(2*(draft?.fps ?? 25)))===undefined} className="st-music-cut absolute top-0" style={{left:at*scale}} />;})}
             <span ref={snapFlash} data-music-snap hidden className="st-music-snap absolute inset-y-0" />
           </div><MusicBlock music={version.music} draft={draft} duration={duration} scale={scale} snapping={snapping} busy={busy} onChange={onMusicChange} onInspect={()=>onInspect?.("music-item")} onPause={()=>{pauseFollowing();player.current?.pause?.();}} />{onMusicGain && <VolumeLine endInset={Math.max(4,(duration-Math.min(duration,version.music.endS ?? duration))*scale+4)} label="Music volume" value={version.music.gainDb ?? -18} min={-60} max={0} disabled={busy} onPreview={value=>previewVolume(value)} onCommit={async gainDb=>{try{await onMusicGain(gainDb);}finally{previewVolume(null);}}} />}</div>}</div>
-          <div data-lane="overlays" data-hidden={!!hidden["overlays"]} className="st-timeline-lane relative" style={laneStyle("overlays")}>{overlays.map(item => <OverlayBlock key={item.id} item={item} duration={duration} scale={scale} busy={busy} onEdit={onEdit} onSelect={id => onSelectOverlay?.(id)} />)}{lowerThirds.map(item => <OverlayBlock key={item.id} item={{ ...item, file: item.title, x: .5, y: .72, w: .5, corner: "square", enter: "none", exit: "none", sound: null }} duration={duration} scale={scale} busy={busy} onEdit={change => { if (change.kind === "overlay" && change.op === "update") onEdit({ kind: "lowerThird", op: "update", id: item.id, patch: { s: change.patch.s, e: change.patch.e } }); }} onSelect={() => onInspect?.("library")} />)}</div>
-          {sounds.length > 0 && <div data-lane="sound-effects" data-hidden={!!hidden["sound-effects"]} className="st-timeline-lane relative" style={laneStyle("sound-effects")}>{sounds.map(sound => <button key={sound.id} data-sound-block type="button" onClick={() => { onInspect?.("sound-item", { id: sound.id }); }} className={`st-timeline-block absolute min-w-2 truncate rounded bg-accent/15 text-micro text-accent ${FOCUS}`} style={{ left: sound.s * scale, width: (sound.e - sound.s) * scale }}>{sound.label}</button>)}</div>}
+          <div data-lane="overlays" data-hidden={!!hidden["overlays"]} className="st-timeline-lane relative" style={laneStyle("overlays")}>{overlays.map(item => <OverlayBlock key={item.id} item={item} duration={duration} scale={scale} busy={busy} onEdit={onEdit} onSelect={id => onSelectOverlay?.(id)} motion={motionSource} />)}{lowerThirds.map(item => <OverlayBlock key={item.id} item={{ ...item, file: item.title, x: .5, y: .72, w: .5, corner: "square", enter: "none", exit: "none", sound: null }} duration={duration} scale={scale} busy={busy} onEdit={change => { if (change.kind === "overlay" && change.op === "update") onEdit({ kind: "lowerThird", op: "update", id: item.id, patch: { s: change.patch.s, e: change.patch.e } }); }} onSelect={() => onInspect?.("library")} />)}</div>
+          {sounds.length > 0 && <div data-lane="sound-effects" data-hidden={!!hidden["sound-effects"]} className="st-timeline-lane relative" style={laneStyle("sound-effects")}>{sounds.map((sound, i) => { const slot = soundSlots[i]; return <button key={sound.id} data-sound-block type="button" aria-label={sound.label} title={sound.label} onClick={() => { onInspect?.("sound-item", { id: sound.id }); }} className={`st-timeline-block absolute min-w-2 overflow-hidden rounded bg-accent/15 text-left text-micro text-accent ${FOCUS}`} style={{ left: sound.s * scale, width: (sound.e - sound.s) * scale }}>{slot && <span data-sound-label className="pointer-events-none absolute inset-y-0 flex items-center" style={{ left: slot.left, width: slot.width }}><span className="block truncate px-1">{sound.label}</span></span>}</button>; })}</div>}
           {viewDraft && voiceEnd > viewDraft.durationS + .5 / (viewDraft.fps ?? 25) && <span data-picture-end role="img" aria-label="Picture ends" title="Picture ends. Export stops here unless you extend it." className="pointer-events-none absolute inset-y-0 z-20 w-px bg-muted/60" style={{ left: viewDraft.durationS * scale }}><span className="absolute left-1 top-0 whitespace-nowrap rounded bg-surface px-1 text-micro text-muted">Picture ends</span></span>}
-          {pieces.length > 0 && <span ref={head} aria-hidden="true" data-layered-playhead className="pointer-events-none absolute inset-y-0 z-[47] w-px bg-accent will-change-transform" style={{ left: Math.max(0, Math.min(duration, time)) * scale }}><span className="st-timeline-headcap"><span className="st-timeline-head" /><span ref={headTime} data-playhead-time className="st-timeline-badge">{timelineTime(time)}</span></span></span>}
+          {pieces.length > 0 && <span ref={head} aria-hidden="true" data-layered-playhead className="pointer-events-none absolute inset-y-0 z-[47] w-px bg-accent will-change-transform" style={{ left: Math.max(0, Math.min(duration, time)) * scale }}><span className="st-timeline-headcap"><span ref={headTime} data-playhead-time className="st-timeline-badge">{timelineTime(time)}</span></span></span>}
         </div>
       </div>
     </div>

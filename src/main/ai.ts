@@ -94,6 +94,9 @@ async function signedIn(engine: Engine, bin: string, cwd: string): Promise<boole
   }
 }
 
+/** CH3: the same question for Claude's pane before it starts a chat (the engine's own status command, no model turn). */
+export const engineSignedIn = (engine: Engine, bin: string, cwd: string) => signedIn(engine, bin, cwd);
+
 /** A turn that ended without an answer. "Not signed in" only when the engine says so when asked;
  * otherwise its own last words, plainly. Keeps "couldn't finish" so callers don't spend a second turn. */
 async function engineStopped(engine: Engine, bin: string, cwd: string, said: string): Promise<Error> {

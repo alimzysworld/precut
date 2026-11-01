@@ -1,4 +1,5 @@
 import {withClipTransforms} from '../../../shared/clip-transform';
+import { pinKeys, pinTrackId, type PinChoice } from '../../../shared/pin-keys';
 import { updateCaptionWord } from "../../../shared/caption-words";
 import { clipLaneDb, allClipSound, defaultClipMuted } from '../../../shared/lane-levels';
 import { replacementSpan } from "./replaceModel";
@@ -9,7 +10,7 @@ import type { CutEdit, CutVersion, DraftPiece, DraftTimeline, LiveSoundPiece, Pi
 import type { LiveSoundTimeline } from './liveMix';
 import { mediaUrl } from '../../../shared/media';
 import { applyVoiceEdit, voiceJoinFades, type VoiceTake } from '../../../shared/voice-edit';
-import { voiceEndS } from '../../../shared/picture-extent';
+import { playbackEndS } from '../../../shared/picture-extent';
 import { buildCaptionTrack } from '../../../main/titles/captions';
 import { isCaptionCue } from '../../../shared/caption-words';
 import type { CaptionTrack } from '../../../main/titles/captions';
@@ -27,10 +28,12 @@ export function isSoundAdjustment(edit: CutEdit, version: CutVersion): boolean {
 /** Cut and per-take cleanup decisions invalidate a main timeline. Immutable version numbers and
  * adjustment layers do not describe decoder or preparation work. */
 export function cutSignature(version: CutVersion) {
-  return JSON.stringify([version.overlays?.map(o=>[o.id,o.sound,o.s,o.e]),version.sfx?.map(s=>[s.id,s.file]),[version.audio?.clean ?? true,version.audio?.denoise ?? .6,version.audio?.auto ?? true,version.audio?.breaths ?? true],version.voice,version.broll,version.pieces,version.energy,version.faceMatch,version.framing,version.transition,version.joins,version.angleCuts,version.layouts,
+  return JSON.stringify([version.overlays?.map(o=>[o.id,o.sound,o.s,o.e,o.pin && pinTrackId(o.pin)]),version.sfx?.map(s=>[s.id,s.file]),[version.audio?.clean ?? true,version.audio?.denoise ?? .6,version.audio?.auto ?? true,version.audio?.breaths ?? true],version.voice,version.broll,version.pieces,version.energy,version.faceMatch,version.framing,version.transition,version.joins,version.angleCuts,version.layouts,
     version.pieceFx?.flatMap((fx,piece) => fx && [fx.speed,fx.reverse,fx.framing,fx.background].some(value=>value!==undefined) ? [{piece,speed:fx.speed,reverse:fx.reverse,framing:fx.framing,background:fx.background}] : []) ?? [],version.formats,
     // V63: another track, or fitting turned on, needs main to fit and measure it.
-    version.music && [version.music.file,!!version.music.fit,!!version.music.followStory,version.music.pinnedArrangement?.key]]);
+    version.music && [version.music.file,!!version.music.fit,!!version.music.followStory,version.music.pinnedArrangement?.key],
+    // TRK1b: a new pin needs main to load (or make) its track.
+    version.titles?.cues.flatMap(c=>c.pin ? [pinTrackId(c.pin)] : [])]);
 }
 /** The version's bleeps on the reel clock, through the timeline's own pieces (each keeps its piece number). */
 function liveBleeps(timeline: DraftTimeline, version: CutVersion) {
@@ -46,9 +49,16 @@ function liveBleeps(timeline: DraftTimeline, version: CutVersion) {
 /** AV4: the titles the viewer draws for a caption track, presented as main presents them for the draft and the export
  * (titles/ul1 presentTitles): every caption word under a bleep masked, the version's lower thirds laid on. The draft
  * and the saved or live track the Finish panel hands the viewer both go through here. */
+/** TRK1b: pinned overlays and titles with their keys through this timeline's pictures, from the tracks main loaded
+ * (a track still being made: the item draws at its pick placement until it is ready). */
+function livePins<T extends {s:number;e:number;x?:number;y?:number;w?:number;pin?:PinChoice}>(timeline: DraftTimeline, version: CutVersion, items: T[]): T[] {
+  if(!timeline.pinTracks || !items.some(item=>item.pin))return items;
+  const pieces=withClipTransforms(timeline.pieces,version.pieceFx),frame={width:timeline.width,height:timeline.height,fps:timeline.fps ?? 25};
+  return items.map(item=>{const track=item.pin && timeline.pinTracks![pinTrackId(item.pin)],keys=track && pinKeys(item,pieces,track,frame);return keys ? {...item,pinKeys:keys} : item;});
+}
 export function presentLiveTitles(titles: TitleTrack | null | undefined, timeline: DraftTimeline, version: CutVersion, bleeps = liveBleeps(timeline, version)): TitleTrack {
   const track=titles ?? {font:'Outfit',cues:[],prompt:null,skillIds:[]};
-  return {...track,cues:[...maskCues(track.cues.filter(c=>!c.id.startsWith('lower-third:')),bleeps),...lowerThirdCues(version.lowerThirds,track.captionStyle)]};
+  return {...track,cues:[...livePins(timeline,version,maskCues(track.cues.filter(c=>!c.id.startsWith('lower-third:')),bleeps)),...lowerThirdCues(version.lowerThirds,track.captionStyle)]};
 }
 export function finishTimeline(timeline: DraftTimeline, version: CutVersion, root: string): DraftTimeline {
   const source = timeline as LiveSoundTimeline;
@@ -62,7 +72,7 @@ export function finishTimeline(timeline: DraftTimeline, version: CutVersion, roo
   const otherTrack=!!source.liveSound?.music && source.liveSound.music.arrangementSource!==version.music?.file;
   // V63: the same fitted track keeps its prepared arrangement and clock; only levels follow the version.
   const heard=source.liveSound?.music,fitted=version.music && (version.music.fit || version.music.followStory) && heard?.arrangementSource===version.music.file && heard.arrangementState==='ready' && !!heard.fit===!!version.music.fit && !!heard.followStory===!!version.music.followStory ? heard : undefined;
-  return voiceFromVersion({...timeline,...(otherTrack ? {musicGrid:undefined,musicBeatsS:undefined} : {}),pieces:withClipTransforms(timeline.pieces,version.pieceFx),uniformBalances:version.balances,correctionKey:version.feedback?.startsWith("Auto correct ") ? version.version : undefined,uniformGrade:version.grade,uniformPieceLooks:(version.pieceFx ?? []).map(fx=>fx?.look ?? null),titles:presentLiveTitles(titles,timeline,version,bleeps),overlays:(version.overlays ?? []).map(item=>({...item,url:`st-media://local/${encodeURIComponent(root)}/overlays/${encodeURIComponent(item.file)}`,...(item.graphic?.media ? {mediaUrl:`st-media://local/${encodeURIComponent(root)}/overlays/${encodeURIComponent(item.graphic.media)}`} : {})})),
+  return voiceFromVersion({...timeline,...(otherTrack ? {musicGrid:undefined,musicBeatsS:undefined} : {}),pieces:withClipTransforms(timeline.pieces,version.pieceFx),uniformBalances:version.balances,correctionKey:version.feedback?.startsWith("Auto correct ") ? version.version : undefined,uniformGrade:version.grade,uniformPieceLooks:(version.pieceFx ?? []).map(fx=>fx?.look ?? null),titles:presentLiveTitles(titles,timeline,version,bleeps),overlays:livePins(timeline,version,version.overlays ?? []).map(item=>({...item,url:`st-media://local/${encodeURIComponent(root)}/overlays/${encodeURIComponent(item.file)}`,...(item.graphic?.media ? {mediaUrl:`st-media://local/${encodeURIComponent(root)}/overlays/${encodeURIComponent(item.graphic.media)}`} : {}),...(item.graphic?.frames?.length ? {framesUrl:item.graphic.frames.map(f=>`st-media://local/${encodeURIComponent(root)}/overlays/${encodeURIComponent(f)}`)} : {})})),
     ...(source.liveSound ? {liveSound:{...source.liveSound,laneLevels:version.laneLevels,laneMuted:version.laneMuted,bleeps:bleeps.filter(b=>soundPieces?.some(p=>!p.muted && (p.layer ?? 0)===0 && p.piece===b.piece)).map(({piece,...b})=>b),effects:source.liveSound.effects.map(p=>{
       const item=version.sfx?.find(s=>s.id===p.id);if(!item)return p;
       const length=item.lengthS ?? p.endS-p.startS,delta=item.atS-p.startS;
@@ -256,7 +266,7 @@ export function optimisticTimeline(timeline: DraftTimeline, edit: CutEdit, versi
 // ---- VO7-9: playback past the picture's end.
 /** Play, scrub and seek run to the end of the last voice piece; the picture (and the export) end at durationS. */
 export function playbackExtent(timeline: DraftTimeline): number {
-  return Math.max(timeline.durationS, voiceEndS(timeline.voiceover));
+  return playbackEndS(timeline.durationS, timeline.voiceover);
 }
 /** One voice piece as the Web Audio scheduler plays it: file seconds `offset` at reel `startS`, with
  * the 5 ms fades only where take audio was removed (voiceJoinFades, the rule every exporter reads). */

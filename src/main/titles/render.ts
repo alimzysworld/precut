@@ -11,6 +11,7 @@ import { currentActivity, threads } from "../activity";
 import { captureFrame, captureWindow as sharedCaptureWindow, withinBudget } from "../capture-frame";
 import type { OverlayItem, TitleCue, TitleTrack } from "../../shared/schema";
 import type { CaptionTrack } from './captions';
+import { asideAt, captionAsides, fullSpans, hiddenUnderFull, type AsideSpan } from "../../shared/caption-asides";
 
 export interface TitleRenderOptions {
   width: number;
@@ -20,6 +21,7 @@ export interface TitleRenderOptions {
   layer: "front" | "behind" | "all";
   out: string;
   overlays?: (OverlayItem & { url: string; mediaUrl?: string })[];
+  asides?: AsideSpan[];   // TASTE1: where captions step aside (captionAsides), made once per render and drawn by the page too
 }
 
 /**
@@ -127,36 +129,52 @@ function straightRgba(bitmap: Buffer): Buffer {
   return bitmap;
 }
 
+// CAP4: template.html TAG_S and BLUR_S.
+const TAG_S = .18, BLUR_S = .3;
 // Longest opening style motion after a phrase arrives (template.html OPENING_STYLES: pop, re-centre and dim), with room.
 const OPENING_MOTION_S = .3;
 /** A capture changes only at an animation sample, word reveal or matte frame.
  * Holds and empty spans reuse exact lossless pixels, never approximate motion. */
 export function titleFrameKey(track: TitleTrack, options: TitleRenderOptions, frame: number): string {
-  const t = frame / options.fps, state: unknown[] = [];
+  const t = frame / options.fps, state: unknown[] = [], aside = asideAt(options.asides ?? captionAsides(track.cues, options.overlays), t);
+  const full = fullSpans(options.overlays);
   for (const cue of track.cues) {
     if (options.layer !== 'all' && cue.layer !== options.layer || t < cue.s || t >= cue.e) continue;
+    // SCN1b: captions a scene stepped aside for are not drawn on this frame (template.html), so they are not in its key.
+    // TASTE1: nor are they under a key word, or before a word scene from the start of its line (captionAsides).
+    if (aside && (cue.role === 'subtitle' || cue.id.startsWith('kinetic-') || !!(cue as TitleCue & { opening?: unknown }).opening)) continue;
+    // TASTE1: a pinned title under a full-screen graphic is hidden there (template.html underFull).
+    if (hiddenUnderFull(cue, t, full)) continue;
     const caption = cue.role === 'subtitle' ? track.captionStyle : null;
-    const words = cue.words ?? [...cue.text.matchAll(/\S+/gu)].map((m,i)=>({text:m[0],s:cue.s+(cue.enter==='type'?i*.25:0),e:cue.e,accent:false}));
+    const words: { text: string; s: number; e: number; accent?: boolean; accentAs?: import('../../shared/schema').CaptionAccentForm }[] = cue.words ?? [...cue.text.matchAll(/\S+/gu)].map((m,i)=>({text:m[0],s:cue.s+(cue.enter==='type'?i*.25:0),e:cue.e,accent:false}));
+    // CAP4: a Tag accent wipes on over TAG_S from its word, then stays (template.html): how many have started is state.
+    // (captions.ts accentFormOf, inline: this module stays free of the caption builder's imports)
+    const tags = caption ? words.filter(w => w.accent && (w.accentAs ?? caption.accentAs) === 'tag') : [];
     // An opening style moves while any of its phrases arrives: the pop, the block re-centring and earlier lines dimming.
     const opening = !!(cue as TitleCue & { opening?: unknown }).opening && track.cues.some(c => (c as TitleCue & { opening?: unknown }).opening && c.e === cue.e && t >= c.s && t < c.s + OPENING_MOTION_S);
-    const moving = opening || cue.enter !== 'none' && cue.enter !== 'type' && t < cue.s+.22 || cue.exit !== 'none' && t >= cue.e-.12 ||
+    // TRK1b: a pinned title follows its thing, so every frame it is on is its own sample.
+    const moving = opening || !!cue.pinKeys || cue.enter !== 'none' && cue.enter !== 'type' && t < cue.s+.22 || cue.exit !== 'none' && t >= cue.e-.12 ||
       !!caption && (caption.animation === 'pulse' && words.some(w=>w.accent && t>=w.s && t<w.e) || caption.animation === 'typewriter' && caption.preset !== 'punch' && words.some(w=>t>=w.s && t<w.e)) ||
       // PAR1: template.html pops an accent word while it is spoken in every caption style (not only pulse): each frame moves.
-      !!caption && words.some(w=>w.accent && t>=w.s && t<(w.e ?? cue.e));
+      // CAP4: except Fade (Film), which never pops.
+      !!caption && caption.animation !== 'fade' && words.some(w=>w.accent && t>=w.s && t<(w.e ?? cue.e)) ||
+      // CAP4: a Tag's fill wiping on, and Blur in clearing (template.html TAG_S, BLUR_S).
+      tags.some(w => t >= w.s && t < w.s + TAG_S) || caption?.effect === 'blur-in' && t < cue.s + BLUR_S;
     // The opening's caption edge switches at the spans main measured; a frame either side of a switch is its own capture.
     const edge = (cue as TitleCue & { opening?: { edges?: { s: number; e: number }[] } }).opening?.edges?.some(span => t >= span.s && t < span.e) ?? null;
     state.push([cue.id, moving ? frame : null, edge, !caption || caption.animation === 'typewriter' ? words.filter(w=>w.s<=t).length : null,
       // PAR1: the words being spoken, as template.html reads them (s to e), in every caption style and kinetic cue: the
       // template colours a spoken word with the accent in all of them (an opening style colours by accent only).
-      (caption || cue.id.startsWith('kinetic-')) && !(cue as TitleCue & { opening?: unknown }).opening ? words.flatMap((w,i)=>t>=w.s && t<(w.e ?? cue.e) ? [i] : []).join(',') : null]);
+      (caption || cue.id.startsWith('kinetic-')) && !(cue as TitleCue & { opening?: unknown }).opening ? words.flatMap((w,i)=>t>=w.s && t<(w.e ?? cue.e) ? [i] : []).join(',') : null,
+      ...(tags.length ? [tags.filter(w => t >= w.s).length] : [])]);
     if (cue.layer === 'behind') for (const matte of (track as TitleTrack & {personMattes?: {s:number;e:number;fps:number}[]}).personMattes ?? []) {
       if (t>=matte.s && t<matte.e) state.push(['matte',matte.s,Math.floor((t-matte.s)*matte.fps+1e-7)]);
     }
   }
-  for (const item of options.overlays ?? []) if (options.layer === 'all' || options.layer === (item.graphic?.layer === 'behind' ? 'behind' : 'front')) if (t >= item.s && t < item.e) {
+  for (const item of options.overlays ?? []) if (options.layer === 'all' || options.layer === (item.graphic?.layer === 'behind' ? 'behind' : 'front')) if (t >= item.s && t < item.e && !hiddenUnderFull(item, t, full)) {
     // GFX1: a graphic is a function of time, so every frame it is on screen is its own sample.
     if (item.graphic) { state.push([item.id, frame]); continue; }
-    const moving = item.enter !== 'none' && t < item.s+Math.min(.25,(item.e-item.s)/2) || item.exit !== 'none' && t >= item.e-Math.min(.15,(item.e-item.s)/2);
+    const moving = !!item.pinKeys || item.enter !== 'none' && t < item.s+Math.min(.25,(item.e-item.s)/2) || item.exit !== 'none' && t >= item.e-Math.min(.15,(item.e-item.s)/2);
     state.push([item.id,moving?frame:null]);
   }
   return state.length ? JSON.stringify(state) : '';
@@ -178,6 +196,7 @@ const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(valu
 export function titleStream(track: TitleTrack, options: TitleRenderOptions, directory: string, assets: unknown, range?: { from: number; to: number }) {
   track = tolerantTitleTrack(track, options.fps);
   validate(track, options);
+  options = { ...options, asides: options.asides ?? captionAsides(track.cues, options.overlays) };
   const frames = Math.ceil(options.durationS * options.fps - 1e-9);
   // EXP2: a part of the edit (output frames from..to) streams only its own samples. Timestamps stay on the
   // edit's frame clock; `enable` counts the part's own frames from zero, as its overlay does.
@@ -212,7 +231,11 @@ export function titleStream(track: TitleTrack, options: TitleRenderOptions, dire
     preparedBehind: track.cues.filter(c => c.layer === 'behind').every(c => c.id.startsWith('kinetic-')) };
   // CAP2: revision 3: a sample captured before the capture token could be the previous frame; none is reused.
   // CAP3: revision 4: a graphic's frame could still be a frame late behind a fresh token; none is reused.
-  const identity = hash({ revision: 4, design, width: options.width, height: options.height,
+  // PRO5c: revision 5: a word behind the person could be captured before its matte was painted; none is reused.
+  // TASTE1: revision 6: captions now step aside for key words and before word scenes; none drawn under the old rule is reused.
+  // CAP4: revision 7: caption accent forms, Big lines, Fade and the optional text effects draw here now.
+  // LOOK1: revision 8: a word scene can draw a picture from the shoot under its words (its look); none is reused.
+  const identity = hash({ revision: 8, design, width: options.width, height: options.height,
     fps: options.fps, layer: options.layer, assets, overlays: options.overlays });
   const profile = { frames: count, empty: frames - count, captures: 0, hits: 0, reused: 0, stale: 0, graphicStale: 0, captureMs: 0, cacheMs: 0 };
   const enable = spans.map(s => `gte(n,${s.start - first})*lt(n,${s.end - first})`).join('+') || '0';
@@ -255,8 +278,8 @@ export function titleStream(track: TitleTrack, options: TitleRenderOptions, dire
               await app.whenReady();
               window = captureWindow(options);
               await window.loadFile((await import("../bundle-paths")).bundledFile("titles/template.html"));
-              // PRO4b: a card's picture goes in as a data image read by main from the shoot's card cache.
-              const drawn = options.overlays?.some(o => o.graphic?.media) ? { ...options, overlays: await (await import("../overlays")).withCardData(options.overlays!) } : options;
+              // PRO4b: a card's picture (MOT1: a scene's frames) goes in as a data image read by main from the shoot's card cache.
+              const drawn = options.overlays?.some(o => o.graphic?.media || o.graphic?.frames?.length) ? { ...options, overlays: await (await import("../overlays")).withCardData(options.overlays!) } : options;
               await withinBudget(window, window.webContents.executeJavaScript(`window.titleRenderer.init(...${JSON.stringify([track, drawn])})`));
             }
             const captureStart = performance.now();
@@ -293,6 +316,7 @@ export async function renderTitleTrack(track: TitleTrack, options: TitleRenderOp
   const profile = { frames: 0, captures: 0, reused: 0, empty: 0, stale: 0, graphicStale: 0, captureMs: 0, pipeMs: 0, wallMs: 0, codec: 'qtrle' };
   track = tolerantTitleTrack(track, options.fps);
   validate(track, options);
+  options = { ...options, asides: options.asides ?? captionAsides(track.cues, options.overlays) };
   await app.whenReady();
   const out = resolve(options.out);
   await mkdir(dirname(out), { recursive: true });
@@ -321,8 +345,8 @@ export async function renderTitleTrack(track: TitleTrack, options: TitleRenderOp
   try {
     signal?.throwIfAborted();
     await window.loadFile((await import("../bundle-paths")).bundledFile("titles/template.html"));
-    // PRO4b: a card's picture goes in as a data image read by main from the shoot's card cache.
-    const drawn = options.overlays?.some(o => o.graphic?.media) ? { ...options, overlays: await (await import("../overlays")).withCardData(options.overlays!) } : options;
+    // PRO4b: a card's picture (MOT1: a scene's frames) goes in as a data image read by main from the shoot's card cache.
+    const drawn = options.overlays?.some(o => o.graphic?.media || o.graphic?.frames?.length) ? { ...options, overlays: await (await import("../overlays")).withCardData(options.overlays!) } : options;
     const payload = JSON.stringify([track, drawn]);
     await withinBudget(window, window.webContents.executeJavaScript(`window.titleRenderer.init(...${payload})`));
     let previousKey: string | undefined, rgba: Buffer = Buffer.alloc(options.width * options.height * 4);

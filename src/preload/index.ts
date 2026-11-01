@@ -83,6 +83,7 @@ const api: Api = {
   addMusicTracks: (...args) => ipcRenderer.invoke("api:addMusicTracks", ...args),
   pickMusicTracks: (...args) => ipcRenderer.invoke("api:pickMusicTracks", ...args),
   pickOverlayFiles: (...args) => ipcRenderer.invoke("api:pickOverlayFiles", ...args),
+  showWhatYouSay: (...args) => ipcRenderer.invoke("api:showWhatYouSay", ...args),
   motionStatus: (...args) => ipcRenderer.invoke("api:motionStatus", ...args),
   chatSend: (...args) => ipcRenderer.invoke("api:chatSend", ...args),
   chatThread: (...args) => ipcRenderer.invoke("api:chatThread", ...args),
@@ -141,6 +142,17 @@ const api: Api = {
   listVersionMilestones: (...args) => ipcRenderer.invoke("api:listVersionMilestones", ...args),
   saveVersion: (...args) => ipcRenderer.invoke("api:saveVersion", ...args),
   restoreVersion: (...args) => ipcRenderer.invoke("api:restoreVersion", ...args),
+  // TRK1c: stick a graphic to a thing, and how far the tracker is.
+  pinEdit: (...args) => ipcRenderer.invoke("api:pinEdit", ...args),
+  // LOOK1: a scene's look, made real by main (pictures, the auto dim); the inspector saves the edit it returns.
+  lookEdit: (...args) => ipcRenderer.invoke("api:lookEdit", ...args),
+  // TRK2: lock a clip's frame on a thing (the MCP's lock handlers), progress on the same channel as the pin's.
+  lockEdit: (...args) => ipcRenderer.invoke("api:lockEdit", ...args),
+  onPinProgress: (cb) => {
+    const listener = (_e: Electron.IpcRendererEvent, progress: { cutId: string; itemId: string; pct: number }) => cb(progress);
+    ipcRenderer.on("api:pin-progress", listener);
+    return () => { ipcRenderer.removeListener("api:pin-progress", listener); };
+  },
   // VO7-4: cached waveform peaks.
   getPeaks: (...args) => ipcRenderer.invoke("api:getPeaks", ...args),
   forgetShoot: (...args) => ipcRenderer.invoke("api:forgetShoot", ...args),
@@ -153,6 +165,11 @@ const api: Api = {
   relinkShoot: (...args) => ipcRenderer.invoke("api:relinkShoot", ...args),
   shootProgress: (...args) => ipcRenderer.invoke("api:shootProgress", ...args),
   retryStage: (...args) => ipcRenderer.invoke("api:retryStage", ...args),
+  onMenu: (cb: (command: string) => void) => {
+    const listener = (_event: unknown, command: string) => cb(command);
+    ipcRenderer.on("api:menu", listener);
+    return () => { ipcRenderer.removeListener("api:menu", listener); };
+  },
   onNavigate: (cb: (hash: string) => void) => {
     const listener = (_event: unknown, hash: string) => cb(hash);
     ipcRenderer.on("api:navigate", listener);

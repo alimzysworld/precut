@@ -21,6 +21,9 @@ The person mentions footage, a shoot, clips, a reel, a short, a video edit, capt
 
 \`precut tools\` lists every tool with its description, and \`precut tool <name> '<json>'\` runs one from the terminal with the same arguments.
 
+## Taste
+- Do what the person asks, fully. When you add anything they didn't ask for, use precut's tools with intent: each one should do a job you can name (stop the scroll, land the point, carry a cut, lift the energy), and the amount should match the video (a calm vlog wants few, a fast tip or a launch can carry more). Don't add something just because precut can.
+
 ## Safe defaults
 - precut never deletes or moves footage and never touches originals. Every change to an edit saves a new version, so it can always be undone. Say which version you made.
 - One writer at a time: while the precut app has a shoot open, changes to it from here are refused. Reads still work. If a change is refused, ask the person to close that shoot in the app.

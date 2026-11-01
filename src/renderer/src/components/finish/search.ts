@@ -14,7 +14,8 @@ export function panelForControl(entry: Pick<ControlEntry, "panel" | "tab">): Edi
 const entries: ControlEntry[] = [];
 function group(tab: InspectorTab, panel: string, label: string, synonyms = "", controls: [string, string, string?, string?][] = []) {
   const destination = panelForControl({ panel, tab });
-  const sheet = destination ? EDIT_PANELS.find(entry => entry.id === destination)!.label : "Export";
+  // CH2: Ask lives in Claude's pane, not a rail sheet.
+  const sheet = destination === "ask" ? "Claude" : destination ? EDIT_PANELS.find(entry => entry.id === destination)!.label : "Export";
   const path = `${sheet} › ${label}`;
   entries.push({ id: panel, tab, panel, label, synonyms, path });
   controls.forEach(([name, aria, aliases = "", selector = `[aria-label="${aria}"]`]) => entries.push({ id: `${panel}-${aria.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`, tab, panel, label: name, synonyms: aliases, selector, path: `${path} › ${name}` }));

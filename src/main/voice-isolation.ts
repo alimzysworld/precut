@@ -6,7 +6,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { promisify } from "node:util";
 import { tool, supportDir, toolEnvironment } from "./tools";
-import { currentActivity, runActivity } from "./activity";
+import { currentActivity, runActivity, shareWork, awaitShared } from "./activity";
 import { sourceAudio, sourceAudioInput, sourceAudioChannels } from './source-audio';
 
 const exec = promisify(execFile);
@@ -42,18 +42,19 @@ export async function localAudioProcess(command: string, args: string[]): Promis
 }
 async function once<T>(key: string, work: () => Promise<T>): Promise<T> {
   // A waiting caller inherits its own cancellation, not a canceled caller's result.
+  // DEAD1: an export awaiting a scan a timeline read started lends it its lane (activity.ts awaitShared).
   while (pending.has(key)) {
     const previous = pending.get(key)!, signal = currentActivity()?.signal;
     await new Promise<void>((resolve, reject) => {
       const abort = () => { signal?.removeEventListener("abort", abort); reject(signal?.reason); };
       signal?.addEventListener("abort", abort, { once: true });
       const ready = () => { signal?.removeEventListener("abort", abort); resolve(); };
-      void previous.then(ready, ready);
+      void awaitShared(previous).then(ready, ready);
       if (signal?.aborted) abort();
     });
     currentActivity()?.signal.throwIfAborted();
   }
-  const job = work(); pending.set(key, job);
+  const job = shareWork(work); pending.set(key, job);
   try { return await job; } finally { if (pending.get(key) === job) pending.delete(key); }
 }
 export interface SourceAudioFacts {

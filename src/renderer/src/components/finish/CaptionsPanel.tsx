@@ -1,7 +1,7 @@
 import "./captions.css";
 import { useModelAccess, ModelSignIn } from "../ModelAccess";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import type { CaptionStyle, CutVersion, TitleTrack } from "../../../../shared/schema";
+import type { CaptionAccentForm, CaptionStyle, CaptionTextEffect, CutVersion, TitleTrack } from "../../../../shared/schema";
 import { getApi } from "../../data";
 import { useActivity, ActivityProgress } from "../Activity";
 import { CAPTION_DESIGN, captionDesignOfLabel, captionDesignOfNote, type CaptionDesign } from "../../../../main/titles/design-notes";
@@ -12,6 +12,9 @@ import { FontPicker, fontOnThisMac } from "./FontPicker";
 import { titleDocument } from "../LivePlayer";
 import { FOCUS, Row, SegmentedControl, Switch, Tile } from "../ui";
 
+// CAP4: the stressed word's forms and the optional text effects, in the panel's words.
+const ACCENT_FORMS: [CaptionAccentForm, string][] = [["colour", "Colour"], ["italic", "Italic"], ["caps", "Caps"], ["bigger", "Bigger"], ["tag", "Tag"]];
+const TEXT_EFFECTS: [CaptionTextEffect, string][] = [["none", "None"], ["depth", "Depth"], ["shadow", "Shadow"], ["blur-in", "Blur in"]];
 // Real word timings, so the 1.2 s preview frame shows one spoken word ("styled") in the accent and the rest in the primary.
 const sampleWords = "This is a styled caption".split(" ").map((text, i) => ({ text, s: [0, .3, .6, .9, 1.5][i], e: [.3, .6, .9, 1.5, 1.8][i] }));
 export function CaptionLanguage({ root, cutId, version, disabled }: { root: string; cutId: string; version: CutVersion; disabled?: boolean }) {
@@ -95,12 +98,12 @@ export function CaptionSettings({ value, onChange, onPreview, notes }: {
   const fields: { key: "font" | "size" | "position" | "wordsPerLine" | "case" | "background" | "animation" | "hook"; label: string; choices: [string, string][]; hint?: string }[] = [
     { key: "font", label: "Font", choices: CAPTION_FONTS.map(f => [f, f]) },
     { key: "size", label: "Size", choices: [["s", "Small"], ["m", "Medium"], ["l", "Large"]] },
-    { key: "position", label: "Position", choices: [["bottom", "Bottom"], ["middle", "Middle"], ["top", "Top"]] },
+    { key: "position", label: "Position", choices: [["bottom", "Bottom"], ["lower", "Lower"], ["middle", "Middle"], ["top", "Top"]] },
     { key: "wordsPerLine", label: "Words per line", choices: [["1-2", "1 to 2"], ["3-4", "3 to 4"], ["line", "Full line"]] },
     { key: "case", label: "Case", choices: [["as-spoken", "As spoken"], ["upper", "Uppercase"], ["lower", "Lowercase"]] },
     { key: "background", label: "Background", choices: [["none", "None"], ["box", "Box"], ["pill", "Pill"]] },
     { key: "hook", label: "Opening caption", choices: [["auto", "Auto"], ["off", "Off"], ["all", "Throughout"]], hint: "Auto makes the opening line big. Throughout makes every standout line big." },
-    { key: "animation", label: "Animation", choices: [["none", "None"], ["pop", "Pop"], ["glide", "Glide"], ["karaoke", "Karaoke"], ["box-highlight", "Box highlight"], ["typewriter", "Typewriter"], ["pulse", "Pulse"]] },
+    { key: "animation", label: "Animation", choices: [["none", "None"], ["pop", "Pop"], ["glide", "Glide"], ["karaoke", "Karaoke"], ["box-highlight", "Box highlight"], ["typewriter", "Typewriter"], ["pulse", "Pulse"], ["fade", "Fade"]] },
   ];
   return <div data-caption-settings className="space-y-4">
     <div role="group" aria-label="Caption presets" className="flex flex-col gap-2">
@@ -117,6 +120,14 @@ export function CaptionSettings({ value, onChange, onPreview, notes }: {
       {fields.map(field => <div key={field.key} className="space-y-1"><span className="text-micro text-muted">{field.label}</span>{field.key === "font" ? <><FontPicker label={field.label} value={value.font} suggested={CAPTION_FONTS} onChange={font => change("font", font)} onPreview={font => onPreview?.(font ? { ...value, font } : null)} />
         {fontOnThisMac(value.font, CAPTION_FONTS) ? null : <p role="status" className="text-micro text-muted">{value.font} isn't on this Mac, using {DEFAULT_CAPTION_STYLE.font}.</p>}</> : <SegmentedControl variant="compact" label={field.label} value={String(value[field.key] ?? "auto")} options={field.choices.map(([value, label]) => ({ value, label }))} onChange={id => change(field.key, id as CaptionStyle[typeof field.key])} className={field.choices.length > 4 ? "!grid grid-cols-2" : ""} />}{field.hint ? <p className="text-micro text-muted">{field.hint}</p> : null}{field.key === "hook" ? notes?.hook : null}</div>)}
       {([['outline', 'Outline', 'A dark edge around every word, so captions read on bright footage.'], ['emphasis', 'Emphasis', 'Highlights the key word in each line in your accent colour.']] as const).map(([key, label, hint]) => <div key={key} className="space-y-1"><Row className="gap-2"><span className="text-micro text-muted">{label}</span><Switch aria-label={label} checked={value[key]} onChange={event => change(key, event.target.checked)} /></Row><p className="text-micro text-muted">{hint}</p>{key === "emphasis" ? notes?.emphasis : null}</div>)}
+      {/* CAP4: how the stressed word stands out (one default for the edit; a word's own menu on the timeline beats it). */}
+      <div className="space-y-1" data-caption-accent-as><span className="text-micro text-muted">Stressed words</span>
+        <SegmentedControl variant="compact" label="Stressed words" value={value.accentAs ?? "colour"} options={ACCENT_FORMS.map(([value, label]) => ({ value, label }))} onChange={id => change("accentAs", id as CaptionAccentForm)} className="!grid grid-cols-3" />
+        <p className="text-micro text-muted">How a stressed word stands out: in your accent colour, in italics, in caps, bigger, or on an accent tag that wipes on as you say it. Right-click a word on the timeline to change just that one.</p></div>
+      {/* CAP4 (31 Oct): text effects are allowed as an option he picks, never part of a preset or the default. */}
+      <div className="space-y-1" data-caption-effect><span className="text-micro text-muted">Text effect</span>
+        <SegmentedControl variant="compact" label="Text effect" value={value.effect ?? "none"} options={TEXT_EFFECTS.map(([value, label]) => ({ value, label }))} onChange={id => change("effect", id as CaptionTextEffect)} className="!grid grid-cols-2" />
+        <p className="text-micro text-muted">Off unless you pick one.</p></div>
     </div>
   </div>;
 }

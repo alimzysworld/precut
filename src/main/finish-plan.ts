@@ -47,8 +47,8 @@ export async function finishCatalog(root: string, shoot: Shoot, music: MusicTrac
     }
     return { unit: "ms", first: ms[0] ?? null, deltaRuns: runs };
   };
-  const { libraryFiles } = await import("./sound-design");
-  const sfx = (await libraryFiles([root], false)).map(({ id, name, kind, lengthS }) => ({ id, name, kind, lengthS }));
+  const { soundLibrary } = await import("./sound-design");
+  const sfx = (await soundLibrary({ bundledOnly: true })).map(({ id, name, kind, lengthS, category, tags, hitS, role }) => ({ id, name, kind, lengthS, category, tags, hitS, role }));
   return { sfx, choices: { transitions: Object.keys(kinds), sounds: Object.keys(sounds), framing: Object.keys(modes), energy: Object.keys(energies) },
     coverAtS: "offset from the start of the finished piece in seconds", clips,
     screens: shoot.clips.filter(isScreenClip).map(c => ({ clipId: c.id, durationS: c.meta?.durationS })),

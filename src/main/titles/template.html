@@ -22,6 +22,13 @@
   // Shared timing contract with titles.ts: the hold includes a complete line
   // after its last reveal, followed by a separate, quick exit.
   const ENTER_S = 0.22, EXIT_S = 0.12;
+  // CAP4: a Tag accent's fill wipes on over TAG_S from the moment its word is said; Blur in clears over BLUR_S.
+  // Both are mirrored by render.ts titleFrameKey, which treats those frames as moving.
+  const TAG_S = 0.18, BLUR_S = 0.3;
+  // CAP4: the form a stressed word takes (captions.ts accentFormOf): its own, else the caption style's, else colour.
+  const accentForm = (word, caption) => word.accent ? word.accentAs || caption?.accentAs || 'colour' : null;
+  const hexRgb = hex => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16));
+  const mixHex = (a, b, k) => { const x = hexRgb(a), y = hexRgb(b); return `rgb(${x.map((n, i) => Math.round(n + (y[i] - n) * k)).join(',')})`; };
   // ---- Opening caption styles (25 Oct, src/main/titles/opening.ts). A style is a layout plus a motion recipe:
   // entrance, emphasis on the punch word, exit. The engine (fitOpening, openingFrame) keeps every guarantee whatever
   // the style: spoken order top to bottom, no overlap, inside the safe area, a readable minimum size, and nothing
@@ -83,22 +90,125 @@
   let cues = [];
   let overlays = [];
   let mattes = [];
+  // SCN1b: a full-screen scene takes the captions' place for its span (they step aside, then resume on its last frame's
+  // next frame), unless its captions param is "stay". His words are untouched; only drawing skips them.
+  // TASTE1: the spans come from main and the live player (src/shared/caption-asides.ts captionAsides: scenes, a word
+  // scene from the start of the caption line that holds its first word, key words), the same spans render.ts keys
+  // export frames with. Without them (a still, a measurement), scenes alone, as before.
+  let asides = [];
+  const sceneAside = item => !!item && !!item.graphic && item.graphic.frame === 'full' && /data-gfx-template="scene-/.test(item.graphic.html)
+    && !/&quot;captions&quot;:&quot;stay&quot;/.test(item.graphic.html);
+  // TASTE1: a full-screen graphic replaces the picture, so what sits on the picture (a key word, anything pinned to a
+  // thing in the shot) is hidden for its span (caption-asides.ts hiddenUnderFull, the same test).
+  let fullSpans = [];
+  const onPicture = item => !!item && (!!item.pinKeys || !!item.pin || (!!item.graphic && item.graphic.template === 'key-word' && item.graphic.frame !== 'full'));
+  const underFull = (item, t) => onPicture(item) && fullSpans.some(([s, e]) => t >= s && t < e);
   const matteImages = new Map();
-  async function seekMatte(timeS) {
+  // PRO5c: caption mattes saved before PRO5c name their folder and file as two path parts, which st-media refuses
+  // (it serves <root>/<kind>/<one part>); the same file as one encoded part, the form mattes.ts writes now.
+  const matteUrl = url => {
+    const two = /^st-media:\/\/local\/([^/]+)\/finish-cache\/(person-[a-f0-9]{64})\/(\d{6}\.png)$/.exec(url);
+    return two ? `st-media://local/${two[1]}/finish-cache/${encodeURIComponent(`${two[2]}/${two[3]}`)}` : url;
+  };
+  // PRO5c: where the matte is fully opaque (background, never him): a patch the capture token is drawn through, so a
+  // capture that shows the token shows this matte applied (markCapture). Stage pixels, the patch's centre; null if
+  // the matte has no such patch (he fills the frame: then nothing behind him shows either way).
+  const spotCanvas = document.createElement('canvas'), spotContext = spotCanvas.getContext('2d', { willReadFrequently: true });
+  function opaqueSpot(img, width, height, previous) {
+    const w = img.naturalWidth, h = img.naturalHeight;
+    if (!w || !h) return null;
+    if (spotCanvas.width !== w || spotCanvas.height !== h) { spotCanvas.width = w; spotCanvas.height = h; } else spotContext.clearRect(0, 0, w, h);
+    spotContext.drawImage(img, 0, 0);
+    const alpha = spotContext.getImageData(0, 0, w, h).data;
+    // 13 x 7 stage pixels around the centre, at least 3 x 3 matte pixels: the token strip reads one pixel a block.
+    const rx = Math.max(1, Math.ceil(6 * w / width)), ry = Math.max(1, Math.ceil(3 * h / height));
+    const opaque = (cx, cy) => {
+      if (cx - rx < 0 || cy - ry < 0 || cx + rx >= w || cy + ry >= h) return false;
+      for (let y = cy - ry; y <= cy + ry; y++) for (let x = cx - rx, i = (y * w + x) * 4 + 3; x <= cx + rx; x++, i += 4) if (alpha[i] < 254) return false;
+      return true;
+    };
+    const at = (cx, cy) => ({ x: (cx + .5) * width / w, y: (cy + .5) * height / h, mx: cx, my: cy });
+    if (previous && opaque(previous.mx, previous.my)) return at(previous.mx, previous.my);
+    const step = Math.max(2, rx);
+    for (let cy = ry; cy + ry < h; cy += step) for (let cx = rx; cx + rx < w; cx += step) if (opaque(cx, cy)) return at(cx, cy);
+    return null;
+  }
+  let lastSpot = null;
+  // capture: an export seek, which also needs the matte's opaque spot (live playback never reads the matte's pixels).
+  async function seekMatte(timeS, capture) {
     const active = mattes.filter(m => timeS >= m.s && timeS < m.e).at(-1);
     if (!active) return null;
-    const url = active.frames[Math.min(active.frames.length - 1, Math.floor((timeS - active.s) * active.fps + 1e-7))];
+    const url = matteUrl(active.frames[Math.min(active.frames.length - 1, Math.floor((timeS - active.s) * active.fps + 1e-7))] ?? '');
     if (!url || !/^st-media:\/\/local\//.test(url)) throw new Error('Invalid person matte frame');
-    let pending = matteImages.get(url);
-    if (!pending) {
+    let entry = matteImages.get(url);
+    if (!entry) {
+      // The <img> is kept with its entry: while it lives, the CSS mask finds the same loaded picture in the memory cache.
       const img = document.createElement('img'); img.src = url;
-      pending = img.decode(); matteImages.set(url, pending);
+      entry = { img, decoded: img.decode(), spot: undefined };
+      matteImages.set(url, entry);
+      entry.decoded.catch(() => matteImages.delete(url));
       if (matteImages.size > 12) matteImages.delete(matteImages.keys().next().value);
     }
-    await pending;
-    return url;
+    await entry.decoded;
+    if (capture && entry.spot === undefined) entry.spot = lastSpot = opaqueSpot(entry.img, parseFloat(stage.style.width), parseFloat(stage.style.height), lastSpot);
+    return { url, spot: entry.spot ?? null };
   }
 
+  // TRK1b: a pinned item's key at a reel second, from main's pinAt keys ([x, y, scale, rotate, opacity, w] per frame of
+  // the reel's clock): the frame's own key, as the picture shows whole frames (export seeks land on frames exactly; live,
+  // the nearest frame). The keys step with the clip's own frames, so blending them would glide off the picture. A drag
+  // in progress (the item's x, y, w moved from what was sampled) moves the keys by the difference.
+  function pinKey(item, time) {
+    const keys = item.pinKeys, n = keys && Array.isArray(keys.k) ? Math.floor(keys.k.length / 6) : 0;
+    if (!n || !(keys.fps > 0)) return null;
+    const i = Math.max(0, Math.min(n - 1, Math.round((time - keys.s0) * keys.fps)));
+    const at = c => keys.k[i * 6 + c], was = keys.at || [];
+    const dx = Number.isFinite(item.x) && Number.isFinite(was[0]) ? item.x - was[0] : 0, dy = Number.isFinite(item.y) && Number.isFinite(was[1]) ? item.y - was[1] : 0;
+    const grow = Number.isFinite(item.w) && was[2] > 0 ? item.w / was[2] : 1;
+    // TRK2: a flat pin (corner pin) also has the surface's four corners for the frame.
+    const q = keys.flat && Array.isArray(keys.q) && keys.q.length >= (i + 1) * 8 ? keys.q.slice(i * 8, i * 8 + 8) : null;
+    return { x: at(0) + dx, y: at(1) + dy, scale: at(2) * grow, rotate: at(3), opacity: Math.max(0, Math.min(1, at(4))), w: at(5) * grow, ...(q ? { q, flat: keys.flat } : {}) };
+  }
+  // TRK2: the corner pin. The word's box sits on the surface (src/shared/pin-keys.ts flatBoxUnits, the same numbers), shrunk
+  // and moved to stay inside the inner 60% of it, and one perspective transform (matrix3d) maps the box onto that part
+  // of the surface's quad, so the word reads as printed on the screen. Nothing else is drawn: no blur, shadow or stroke.
+  const FLAT_INNER = .6;
+  function quadPoint(q, u, v) {
+    const [x0, y0, x1, y1, x2, y2, x3, y3] = q, sx = x0 - x1 + x2 - x3, sy = y0 - y1 + y2 - y3;
+    if (Math.abs(sx) < 1e-9 && Math.abs(sy) < 1e-9) return [x0 + (x1 - x0) * u + (x2 - x1) * v, y0 + (y1 - y0) * u + (y2 - y1) * v];
+    const dx1 = x1 - x2, dx2 = x3 - x2, dy1 = y1 - y2, dy2 = y3 - y2, den = dx1 * dy2 - dx2 * dy1 || 1e-12;
+    const g = (sx * dy2 - dx2 * sy) / den, h = (dx1 * sy - sx * dy1) / den, w = g * u + h * v + 1;
+    return [((x1 - x0 + g * x1) * u + (x3 - x0 + h * x3) * v + x0) / w, ((y1 - y0 + g * y1) * u + (y3 - y0 + h * y3) * v + y0) / w];
+  }
+  function flatBox(q, flat, aspect) {
+    let su = Math.max(.01, flat.size), sv = su * flat.aspect / Math.max(aspect, 1e-6);
+    const fit = Math.min(1, FLAT_INNER / su, FLAT_INNER / sv), lo = (1 - FLAT_INNER) / 2, hi = 1 - lo;
+    su *= fit; sv *= fit;
+    const clampTo = (n, a, b) => Math.max(a, Math.min(b, n)), u = clampTo(flat.u, lo + su / 2, hi - su / 2), v = clampTo(flat.v, lo + sv / 2, hi - sv / 2);
+    return [[u - su / 2, v - sv / 2], [u + su / 2, v - sv / 2], [u + su / 2, v + sv / 2], [u - su / 2, v + sv / 2]].map(([a, b]) => quadPoint(q, a, b));
+  }
+  function homography(from, to) {
+    const m = [];
+    for (let i = 0; i < 4; i++) { const [x, y] = from[i], [u, v] = to[i]; m.push([x, y, 1, 0, 0, 0, -u * x, -u * y, u], [0, 0, 0, x, y, 1, -v * x, -v * y, v]); }
+    for (let c = 0; c < 8; c++) {
+      let p = c;
+      for (let r = c + 1; r < 8; r++) if (Math.abs(m[r][c]) > Math.abs(m[p][c])) p = r;
+      [m[c], m[p]] = [m[p], m[c]];
+      const d = m[c][c] || 1e-12;
+      for (let k = c; k < 9; k++) m[c][k] /= d;
+      for (let r = 0; r < 8; r++) if (r !== c && m[r][c]) { const f = m[r][c]; for (let k = c; k < 9; k++) m[r][k] -= f * m[c][k]; }
+    }
+    return m.map(row => row[8]);
+  }
+  /** The box (w x h px, its own top left at 0, 0) on the surface whose corners q (frame fractions) the pin gives, on a
+   * stage of width x height: its size and the matrix3d that puts it there. */
+  function flatPlacement(pin, width, height, aspect) {
+    const q = pin.q.map((n, i) => n * (i % 2 ? height : width)), corners = flatBox(q, pin.flat, aspect);
+    const w = Math.max(1, Math.hypot(corners[1][0] - corners[0][0], corners[1][1] - corners[0][1]), Math.hypot(corners[2][0] - corners[3][0], corners[2][1] - corners[3][1])), h = w / aspect;
+    const [a, b, c, d, e, f, g, k] = homography([[0, 0], [w, 0], [w, h], [0, h]], corners);
+    const n = v => Number.isFinite(v) ? +v.toPrecision(10) : 0;
+    return { w, h, corners, matrix: `matrix3d(${[a, d, 0, g, b, e, 0, k, 0, 0, 1, 0, c, f, 0, 1].map(n).join(',')})` };
+  }
   // Pure, seek-based image layout shared by live playback and frame capture.
   function overlayLayout(item, time, width, height, aspect) {
     const active = time >= item.s && time < item.e;
@@ -114,16 +224,24 @@
     if (item.enter === 'fade') opacity = (active ? 1 : 0) * ease;
     if (item.exit !== 'none') opacity *= v;
     if (item.exit === 'pop') scale *= .8 + .2 * v;
-    const w = item.w * width, h = w / aspect;
-    return { left: item.x * width - w / 2, top: item.y * height - h / 2, width: w, height: h,
-      radius: item.corner === 'round' ? width * .03 : 0, scale, opacity, dy, rotate: item.rotate || 0 };
+    const pin = pinKey(item, time);
+    if (pin) opacity *= pin.opacity;
+    if (pin && pin.q) {
+      // TRK2: printed on a flat surface. The enter and exit moves play in the box's own plane, about its centre.
+      const place = flatPlacement(pin, width, height, aspect);
+      return { left: 0, top: 0, width: place.w, height: place.h, radius: item.corner === 'round' ? place.w * .03 : 0, scale, opacity, dy, rotate: 0, origin: '0 0',
+        transform: `${place.matrix} translate(${place.w / 2}px, ${place.h / 2}px) scale(${scale}) translate(${-place.w / 2}px, ${-place.h / 2}px) translateY(${dy}px)` };
+    }
+    const w = (pin ? pin.w : item.w) * width, h = w / aspect;
+    return { left: (pin ? pin.x : item.x) * width - w / 2, top: (pin ? pin.y : item.y) * height - h / 2, width: w, height: h,
+      radius: item.corner === 'round' ? width * .03 : 0, scale, opacity, dy, rotate: (item.rotate || 0) + (pin ? pin.rotate : 0) };
   }
   let animations = [];
   // Faces that loaded once in this page: they are validated, so later inits only need fonts.check.
   const fonts = new Set();
   // VO7-15: a caption font can be any family on this Mac, drawn by name. A family with no bundled face that is
   // not installed here draws in the default caption font instead, and fontFallback says so (never silently).
-  const BUNDLED = new Set(['Outfit', 'Inter Display', 'Inter', 'Montserrat', 'Poppins', 'Bebas Neue', 'Archivo Black', 'Caveat']);
+  const BUNDLED = new Set(['Outfit', 'Inter Display', 'Inter', 'Montserrat', 'Poppins', 'Bebas Neue', 'Archivo Black', 'Caveat', 'Instrument Serif']);
   const DEFAULT_FONT = 'Inter Display', installed = new Map();
   function onThisMac(family) {
     if (BUNDLED.has(family)) return true;
@@ -145,7 +263,11 @@
   // frame; one showing an older token (or none) is a frame drawn before it, and main captures again.
   const TOKEN_BITS = 16;
   let tokenStrip = null;
-  function markCapture(token) {
+  // PRO5c: a seek that shows something through the person matte draws the token through that same matte, each block
+  // over a patch of it that is fully opaque (seekMatte's spot). A CSS mask picture can be painted a frame after the
+  // style that names it (while it loads or decodes): a capture without the matte has no token, so main captures again,
+  // and never keeps a frame where the word behind him vanished. The strip is below the frame: no picture changes.
+  function markCapture(token, fence) {
     if (!tokenStrip) {
       tokenStrip = document.createElement('div');
       Object.assign(tokenStrip.style, { position: 'absolute', left: '0', height: '1px', display: 'flex' });
@@ -153,7 +275,15 @@
       document.body.append(tokenStrip);
     }
     Object.assign(tokenStrip.style, { top: stage.style.height, width: stage.style.width });
-    [...tokenStrip.children].forEach((bit, i) => { bit.style.background = (token >>> i) & 1 ? '#fff' : '#000'; });
+    const width = parseFloat(stage.style.width), height = parseFloat(stage.style.height), block = width / TOKEN_BITS;
+    [...tokenStrip.children].forEach((bit, i) => {
+      bit.style.background = (token >>> i) & 1 ? '#fff' : '#000';
+      const image = fence ? `url("${fence.url}")` : 'none';
+      Object.assign(bit.style, { maskImage: image, webkitMaskImage: image });
+      // The block's middle pixel (the one main reads) lands on the spot's centre.
+      if (fence) Object.assign(bit.style, { maskRepeat: 'no-repeat', webkitMaskRepeat: 'no-repeat', maskSize: `${width}px ${height}px`, webkitMaskSize: `${width}px ${height}px`,
+        maskPosition: `${(block / 2 - fence.spot.x).toFixed(3)}px ${(.5 - fence.spot.y).toFixed(3)}px`, webkitMaskPosition: `${(block / 2 - fence.spot.x).toFixed(3)}px ${(.5 - fence.spot.y).toFixed(3)}px` });
+    });
   }
 
   function animate(element, frames, delay, duration) {
@@ -313,35 +443,52 @@
   const CARD_MEDIA = /^card-[a-f0-9]{32}\.webp$/, CARD_MEDIA_SRC = 'src="#card-media"';
   const BLANK_IMAGE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
   const cardPictures = new Map();
-  async function cardPicture(item, g) {
-    if (g.template !== 'screen-card' || typeof g.media !== 'string' || !CARD_MEDIA.test(g.media) || g.html.split(CARD_MEDIA_SRC).length !== 2) throw new Error('A card names its picture wrongly.');
-    // Main's own title pages (export, stills) are handed the picture, read from the shoot's card cache.
-    if (typeof item.mediaData === 'string') {
-      if (!/^data:image\/webp;base64,[A-Za-z0-9+/=]+$/.test(item.mediaData)) throw new Error("The card's picture couldn't be read.");
-      return item.mediaData;
+  const WEBP_DATA = /^data:image\/webp;base64,[A-Za-z0-9+/=]+$/;
+  // One picture from the shoot's cache by name: handed over by main (data), or fetched from the URL the player built.
+  function shootPicture(name, data, url, blank, what) {
+    if (typeof data === 'string') {
+      if (!WEBP_DATA.test(data)) throw new Error(`${what} couldn't be read.`);
+      return data;
     }
-    if (item.mediaBlank === true && !item.mediaUrl) return BLANK_IMAGE;
-    const url = item.mediaUrl;
-    if (typeof url !== 'string' || !url.startsWith('st-media://local/') || !url.endsWith('/overlays/' + encodeURIComponent(g.media))) throw new Error("The card's picture isn't in this shoot.");
+    if (blank) return BLANK_IMAGE;
+    if (typeof url !== 'string' || !url.startsWith('st-media://local/') || !url.endsWith('/overlays/' + encodeURIComponent(name))) throw new Error(`${what} isn't in this shoot.`);
     if (!cardPictures.has(url)) {
       const loading = (async () => {
         const response = await fetch(url);
-        if (!response.ok) throw new Error("The card's picture isn't in this shoot.");
+        if (!response.ok) throw new Error(`${what} isn't in this shoot.`);
         const blob = await response.blob();
-        const data = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = () => reject(reader.error); reader.readAsDataURL(blob.type === 'image/webp' ? blob : new Blob([blob], { type: 'image/webp' })); });
-        if (typeof data !== 'string' || !/^data:image\/webp;base64,[A-Za-z0-9+/=]+$/.test(data)) throw new Error("The card's picture couldn't be read.");
-        return data;
+        const read = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = () => reject(reader.error); reader.readAsDataURL(blob.type === 'image/webp' ? blob : new Blob([blob], { type: 'image/webp' })); });
+        if (typeof read !== 'string' || !WEBP_DATA.test(read)) throw new Error(`${what} couldn't be read.`);
+        return read;
       })();
       cardPictures.set(url, loading);
       loading.catch(() => cardPictures.delete(url));
-      // A few pictures at most stay in memory; an edit shows one card at a time.
-      while (cardPictures.size > 6) cardPictures.delete(cardPictures.keys().next().value);
+      // A card, or one scene's frames (up to 32), stay in memory; an edit shows one at a time.
+      while (cardPictures.size > 40) cardPictures.delete(cardPictures.keys().next().value);
     }
     return cardPictures.get(url);
   }
+  async function cardPicture(item, g) {
+    if (g.template !== 'screen-card' || typeof g.media !== 'string' || !CARD_MEDIA.test(g.media) || g.html.split(CARD_MEDIA_SRC).length !== 2) throw new Error('A card names its picture wrongly.');
+    // Main's own title pages (export, stills) are handed the picture, read from the shoot's card cache.
+    return shootPicture(g.media, item.mediaData, item.mediaUrl, item.mediaBlank === true && !item.mediaUrl, "The card's picture");
+  }
+  // MOT1: a scene (frame wall, memories) names several frames the same way, each shown once as src="#frame-i".
+  // LOOK1: every scene may name one more, its look's picture (graphics/sanitize.ts checks which).
+  const SCENE_FRAME_TEMPLATES = ['scene-frame-wall', 'scene-memories', 'scene-beat-words', 'scene-title-slam'];
+  async function scenePictures(item, g) {
+    const frames = g.frames;
+    if (!SCENE_FRAME_TEMPLATES.includes(g.template) || !Array.isArray(frames) || !frames.length || frames.length > 33 || g.media
+      || !frames.every((name, i) => typeof name === 'string' && CARD_MEDIA.test(name) && g.html.split(`src="#frame-${i}"`).length === 2)) throw new Error('A scene names its frames wrongly.');
+    const blank = item.mediaBlank === true && !item.framesUrl;
+    const pictures = await Promise.all(frames.map((name, i) => shootPicture(name, item.framesData?.[i], item.framesUrl?.[i], blank, "A frame of the scene")));
+    let html = g.html;
+    pictures.forEach((data, i) => { html = html.split(`src="#frame-${i}"`).join(`src="${data}"`); });
+    return { ...g, html };
+  }
   function graphicHash(g, width, height) {
     let h = 2166136261;
-    for (const part of [g.html, g.css, g.js || '', g.frame, g.widthPx, g.heightPx, g.durationS, g.media || '', width, height]) {
+    for (const part of [g.html, g.css, g.js || '', g.frame, g.widthPx, g.heightPx, g.durationS, g.media || '', (g.frames || []).join(','), width, height]) {
       const text = String(part);
       for (let i = 0; i < text.length; i++) { h ^= text.charCodeAt(i); h = Math.imul(h, 16777619); }
       h ^= 124; h = Math.imul(h, 16777619);
@@ -352,7 +499,7 @@
     const g = item.graphic, full = g.frame === 'full';
     const designW = full ? width : g.widthPx, designH = full ? height : g.heightPx;
     // PRO4b: the card's picture first, so its fetch never eats the frame's load budget.
-    const source = g.media ? { ...g, html: g.html.split(CARD_MEDIA_SRC).join(`src="${await cardPicture(item, g)}"`) } : g;
+    const source = g.media ? { ...g, html: g.html.split(CARD_MEDIA_SRC).join(`src="${await cardPicture(item, g)}"`) } : g.frames ? await scenePictures(item, g) : g;
     const wrap = document.createElement('div'), frame = document.createElement('iframe');
     wrap.className = 'gfx'; wrap.dataset.graphic = item.id;
     Object.assign(wrap.style, { position: 'absolute', visibility: 'hidden', overflow: 'hidden', transformOrigin: 'center' });
@@ -374,16 +521,16 @@
     return { item, wrap, frame, full, designW, designH, aspect: designW / designH, waiting: new Map(), ticket: 0, at: null };
   }
   function drawGraphic(gfx, timeS, mask, settle) {
-    const { item, wrap, frame } = gfx, g = item.graphic, active = timeS >= item.s && timeS < item.e;
+    const { item, wrap, frame } = gfx, g = item.graphic, active = timeS >= item.s && timeS < item.e && !underFull(item, timeS);
     if (!active) { wrap.style.visibility = 'hidden'; return null; }
     const box = gfx.full ? { left: 0, top: 0, width: gfx.designW, height: gfx.designH, scale: 1, dy: 0, rotate: 0, radius: 0, opacity: 1 }
       : overlayLayout(item, timeS, gfx.stageW, gfx.stageH, gfx.aspect);
     Object.assign(wrap.style, { left: `${box.left}px`, top: `${box.top}px`, width: `${box.width}px`, height: `${box.height}px`,
-      borderRadius: `${box.radius}px`, opacity: String(box.opacity), visibility: box.opacity > 0 ? 'visible' : 'hidden',
-      transform: `translateY(${box.dy}px) rotate(${box.rotate}deg) scale(${box.scale})` });
+      borderRadius: `${box.radius}px`, opacity: String(box.opacity), visibility: box.opacity > 0 ? 'visible' : 'hidden', transformOrigin: box.origin || 'center',
+      transform: box.transform || `translateY(${box.dy}px) rotate(${box.rotate}deg) scale(${box.scale})` });
     frame.style.transform = `scale(${box.width / gfx.designW})`;
     // Behind the person: shown through the same background-only matte the behind titles use. Live without a matte, it stays in front.
-    const masked = gfx.behind && mask ? `url("${mask}")` : 'none';
+    const masked = gfx.behind && mask ? `url("${mask.url}")` : 'none';
     wrap.style.maskImage = masked; wrap.style.webkitMaskImage = masked;
     wrap.style.maskSize = wrap.style.webkitMaskSize = `${gfx.stageW}px ${gfx.stageH}px`;
     wrap.style.maskPosition = wrap.style.webkitMaskPosition = `${-box.left}px ${-box.top}px`; wrap.style.maskRepeat = wrap.style.webkitMaskRepeat = 'no-repeat';
@@ -412,6 +559,9 @@
       animations = [];
       cues = [];
       overlays = [];
+      asides = Array.isArray(options.asides) ? options.asides.filter(span => Array.isArray(span) && span.length === 2 && span.every(Number.isFinite))
+        : (options.overlays || []).filter(sceneAside).map(item => [item.s, item.e]);
+      fullSpans = (options.overlays || []).filter(item => item.graphic && item.graphic.frame === 'full' && item.e > item.s).map(item => [item.s, item.e]);
       matteImages.clear();
       // Export uses these same prepared frames for kinetic-only behind tracks.
       // Legacy title tracks retain the existing external matte compositor.
@@ -467,15 +617,20 @@
         if (!CSS.supports('color', cue.color) || (cue.accent && !CSS.supports('color', cue.accent))) {
           throw new Error(`Invalid title colour: ${cue.id}`);
         }
-        const font = `${cue.italic ? 'italic' : 'normal'} ${cue.weight} 1000px "${fontFor(cue)}"`;
-        // Faces already loaded for this text need no round trip, so a style change lays out without waiting.
-        // Latin-1 text is covered once its face has loaded; other text asks for its own subset.
-        const text = cue.text || 'H', key = /^[\u0000-\u00ff]*$/.test(text) ? font : `${font}\n${text}`;
-        if (fonts.has(key) || !BUNDLED.has(fontFor(cue))) continue;  // a family on this Mac is drawn by name, nothing to load
-        if (fonts.has(font) && document.fonts.check(font, text)) { fonts.add(key); continue; }
-        const loaded = await document.fonts.load(font, text);
-        if (!loaded.length) throw new Error(`Bundled font did not load: ${fontFor(cue)}`);
-        fonts.add(font); fonts.add(key);
+        // CAP4: an italic stressed word needs the family's italic face loaded too.
+        const caption = cue.role === 'subtitle' ? track.captionStyle : null;
+        const styles = [cue.italic ? 'italic' : 'normal', ...(!cue.italic && caption && (cue.words || []).some(w => accentForm(w, caption) === 'italic') ? ['italic'] : [])];
+        for (const style of styles) {
+          const font = `${style} ${cue.weight} 1000px "${fontFor(cue)}"`;
+          // Faces already loaded for this text need no round trip, so a style change lays out without waiting.
+          // Latin-1 text is covered once its face has loaded; other text asks for its own subset.
+          const text = cue.text || 'H', key = /^[\u0000-\u00ff]*$/.test(text) ? font : `${font}\n${text}`;
+          if (fonts.has(key) || !BUNDLED.has(fontFor(cue))) continue;  // a family on this Mac is drawn by name, nothing to load
+          if (fonts.has(font) && document.fonts.check(font, text)) { fonts.add(key); continue; }
+          const loaded = await document.fonts.load(font, text);
+          if (!loaded.length) throw new Error(`Bundled font did not load: ${fontFor(cue)}`);
+          fonts.add(font); fonts.add(key);
+        }
       }
       if (document.fonts.status !== 'loaded') await document.fonts.ready;
       if (current !== generation) return;
@@ -529,6 +684,12 @@
           exit.style.webkitTextStroke = `${cap * 0.035}px rgba(0,0,0,0.85)`;
           exit.style.paintOrder = 'stroke fill';
         }
+        // CAP4: an optional text effect he picked for his captions (never in a preset or default). Depth is an
+        // extrusion in a darker shade of the text colour; shadow a soft drop shadow; blur in is animated below.
+        if (caption?.effect === 'depth') {
+          const step = cap * .018, shade = mixHex(caption.primary, '#000000', .62);
+          exit.style.textShadow = Array.from({ length: 6 }, (_, i) => `${((i + 1) * step).toFixed(2)}px ${((i + 1) * step).toFixed(2)}px 0 ${shade}`).join(', ');
+        } else if (caption?.effect === 'shadow') exit.style.textShadow = `0 ${(cap * .06).toFixed(2)}px ${(cap * .24).toFixed(2)}px rgba(0,0,0,.6)`;
         root.append(rotated); rotated.append(enter); enter.append(exit);
         const { tokens, tail } = wordsFor(cue, caption);
         let subtitle = false;
@@ -544,7 +705,8 @@
             if (subtitle) span.style.opacity = '.85';
           }
           span.textContent = word.text; // Track content can never execute as markup.
-          if (word.accent && cue.accent) span.style.color = cue.accent;
+          const form = caption ? accentForm(word, caption) : null;
+          if (word.accent && cue.accent && (!form || form === 'colour')) span.style.color = cue.accent;
           // An accent word pops 18% while spoken. Its resting spacing is the same as a plain word's: no reserved
           // margin. While it pops, its neighbours on the line slide apart by the growth (see seek), so nothing overlaps.
           exit.append(span);
@@ -554,8 +716,14 @@
               span.style.borderRadius = `${cap * .12}px`;
               span.style.padding = `0 ${cap * .12}px`;
             }
+            // CAP4: the stressed word's shape. Tag's padding is there from the start, so the line never reflows.
+            if (form === 'italic') span.style.fontStyle = 'italic';
+            else if (form === 'caps') span.textContent = word.text.toUpperCase();
+            else if (form === 'bigger') span.style.fontSize = '1.3em';
+            // A Tag is ink on a solid fill: no depth or shadow under its letters (they muddy the ink).
+            else if (form === 'tag') { span.style.borderRadius = `${cap * .14}px`; span.style.padding = `0 ${cap * .16}px`; if (caption.effect === 'depth' || caption.effect === 'shadow') span.style.textShadow = 'none'; }
           }
-          return { element: span, s: word.s, e: word.e ?? cue.e, accent: word.accent, text: word.text };
+          return { element: span, s: word.s, e: word.e ?? cue.e, accent: word.accent, text: word.text, form };
 
         });
         exit.append(document.createTextNode(tail));
@@ -565,7 +733,7 @@
           Object.assign(maskRoot.style, { position: 'absolute', inset: '0', maskSize: '100% 100%', webkitMaskSize: '100% 100%' });
           maskRoot.append(root); stage.append(maskRoot);
         } else stage.append(root);
-        cues.push({ cue, root, maskRoot, words, cap, caption, outlined, style: track.style ?? 'flat', draw: options.layer === 'all' || options.layer === cue.layer,
+        cues.push({ cue, root, maskRoot, words, cap, caption, outlined, style: track.style ?? 'flat', draw: options.layer === 'all' || options.layer === cue.layer, rotated, shift,
           enterElement: enter, exitElement: exit, initialFont: parseFloat(root.style.fontSize),
           opening: recipe ? { recipe, role, family: fontFor(cue), s: cue.s, e: cue.e } : null });
       }
@@ -639,7 +807,8 @@
           top: Math.min(...boxes.map(b => b.top)), bottom: Math.max(...boxes.map(b => b.bottom)) };
         occupied.push({ cue: { s: Math.min(...group.lines.map(l => l.s)), e: Math.max(...group.lines.map(l => l.e)) }, box: group.box });
       }
-      const order = [...cues].filter(entry => !entry.opening).sort((a,b) => Number(b.cue.role === 'subtitle') - Number(a.cue.role === 'subtitle') ||
+      // TRK1b: a pinned title sits where its thing is, every frame; the placement below never moves it.
+      const order = [...cues].filter(entry => !entry.opening && !entry.cue.pinKeys).sort((a,b) => Number(b.cue.role === 'subtitle') - Number(a.cue.role === 'subtitle') ||
         Number(b.cue.id.startsWith('layout-title:')) - Number(a.cue.id.startsWith('layout-title:')) || a.cue.s-b.cue.s);
       for (const entry of order) {
         const {cue, root, cap, caption} = entry;
@@ -663,7 +832,8 @@
           // Include animation overshoot, slides, stroke/background and italic ink.
           const b = root.getBoundingClientRect();
           const wordMotion = caption ? Math.max(0,...entry.words.filter(w=>caption.animation === 'pulse' || w.accent).map(w=>w.element.getBoundingClientRect().width*.09)) : 0;
-          const padding = Math.max(wordMotion, cue.enter === 'pop' ? b.width*.025 : 0, fontSize * (cue.enter === 'slide-left' || cue.enter === 'slide-up' ? .8 : .28)) + (cue.enter === 'roll' ? 7 : 2);
+          const effect = caption?.effect === 'depth' ? fontSize * .14 : caption?.effect === 'shadow' ? fontSize * .35 : 0;   // CAP4
+          const padding = Math.max(wordMotion, cue.enter === 'pop' ? b.width*.025 : 0, fontSize * (cue.enter === 'slide-left' || cue.enter === 'slide-up' ? .8 : .28)) + (cue.enter === 'roll' ? 7 : 2) + effect;
           const angle = Math.abs((cue.rotate || 0)*Math.PI/180);
           const width = Math.abs(b.width*Math.cos(angle))+Math.abs(b.height*Math.sin(angle))+padding*2;
           const height = Math.abs(b.height*Math.cos(angle))+Math.abs(b.width*Math.sin(angle))+padding*2;
@@ -695,6 +865,9 @@
         const exiting = departure(cue.exit);
         if (entering) animate(enterElement,entering,cue.s,ENTER_S);
         if (exiting) animate(exitElement,exiting,cue.e-EXIT_S,EXIT_S);
+        if (entry.caption?.effect === 'blur-in') animate(entry.rotated,[{ filter: `blur(${(entry.cap*.35).toFixed(2)}px)`, opacity: 0, easing: EASE_OUT }, { filter: 'blur(0px)', opacity: 1 }],cue.s,BLUR_S);
+        // CAP4: a Tag's ink, readable on the accent fill.
+        if (entry.caption && entry.words.some(w => w.form === 'tag')) entry.tagInk = window.titleRenderer.luminance(entry.caption.accent) > .4 ? '#101014' : '#ffffff';
       }
       // Live playback starts at the playhead and needs no capture fence: the player's next frame shows it.
       const first = this.seek(options.live ? Math.max(0, options.at ?? 0) : 0);
@@ -732,7 +905,7 @@
             measure.font = `${css.fontStyle} ${css.fontWeight} ${css.fontSize} ${css.fontFamily}`;
             const ink = measure.measureText(element.textContent);
             const overhang = Math.max(0, ink.actualBoundingBoxLeft, ink.actualBoundingBoxRight - ink.width) * 1.04;
-            const effect = (style === 'shadow' ? cap * 0.5 : style === 'stroke' ? cap * 0.04 : 0) + (cue.enter === 'roll' ? 5 : 0);
+            const effect = (style === 'shadow' ? cap * 0.5 : style === 'stroke' ? cap * 0.04 : 0) + (cue.enter === 'roll' ? 5 : 0) + (caption?.effect === 'depth' ? cap * .14 : caption?.effect === 'shadow' ? cap * .35 : 0);
             const pad = overhang + effect + (caption ? cap * (caption.animation === 'pulse' ? Math.max(.3, b.width * .09 / cap) : caption.background !== 'none' ? .5 : caption.outline ? .14 : .12) : outlined ? cap * .14 : 0);
             boxes.push({ left: b.left - pad, right: b.right + pad, top: b.top - pad, bottom: b.bottom + pad });
           }
@@ -746,17 +919,17 @@
       if (token !== undefined && !(Number.isInteger(token) && token >= 0 && token < 2 ** TOKEN_BITS)) throw new Error('Invalid capture token');
       const seekTicket = ++seekGeneration;
       const ticket = generation;
-      const mask = mattes.length ? await seekMatte(timeS) : null;
+      const mask = mattes.length ? await seekMatte(timeS, token !== undefined) : null;
       if (ticket !== generation || seekTicket !== seekGeneration) return;
       let appearing = false;
       for (const overlay of overlays) {
         const { item, img, aspect, width, height } = overlay;
-        const box = overlayLayout(item, timeS, width, height, aspect);
+        const box = overlayLayout(item, timeS, width, height, aspect), shown = box.opacity > 0 && !underFull(item, timeS);
         Object.assign(img.style, { left: `${box.left}px`, top: `${box.top}px`, width: `${box.width}px`, height: `${box.height}px`,
-          borderRadius: `${box.radius}px`, visibility: box.opacity > 0 ? 'visible' : 'hidden', opacity: String(box.opacity),
-          transform: `translateY(${box.dy}px) rotate(${box.rotate}deg) scale(${box.scale})` });
-        if (box.opacity > 0 && !overlay.shown) appearing = true;
-        overlay.shown = box.opacity > 0;
+          borderRadius: `${box.radius}px`, visibility: shown ? 'visible' : 'hidden', opacity: String(box.opacity), transformOrigin: box.origin || 'center',
+          transform: box.transform || `translateY(${box.dy}px) rotate(${box.rotate}deg) scale(${box.scale})` });
+        if (shown && !overlay.shown) appearing = true;
+        overlay.shown = shown;
       }
       // VO7: one extra paint when an image first shows, so its layer is in the frame the capture reads.
       if (appearing) {
@@ -771,10 +944,13 @@
       await Promise.all(drawing);
       if (ticket !== generation || seekTicket !== seekGeneration) return;
       const openingRows = new Map(openingGroups.flatMap(group => openingFrame(group, timeS).map(row => [row.line, row])));
-      for (const { cue, root, maskRoot, words, caption, draw, opening, cap, outlined } of cues) {
+      let throughMatte = false;
+      const aside = asides.some(([s, e]) => timeS >= s && timeS < e);
+      for (const { cue, root, maskRoot, words, caption, draw, opening, cap, outlined, rotated, shift, tagInk } of cues) {
+        const stepAside = aside && (!!opening || cue.role === 'subtitle' || cue.id.startsWith('kinetic-'));
         if (opening) {
           // An opening style: placed, popped and dimmed from the pure layout, the same frame live and in export.
-          const row = draw ? openingRows.get(opening) : null;
+          const row = draw && !stepAside ? openingRows.get(opening) : null;
           root.style.visibility = row ? 'visible' : 'hidden';
           // Words inherit, so the whole phrase goes together at the handover (a visible child would outlive a hidden root).
           for (const word of words) word.element.style.visibility = 'inherit';
@@ -789,9 +965,24 @@
           }
           continue;
         }
-        const active = draw && timeS >= cue.s && timeS < cue.e;
-        root.style.visibility = active && (!maskRoot || mask) ? 'visible' : 'hidden';
-        if (maskRoot) { maskRoot.style.maskImage = mask ? `url("${mask}")` : 'none'; maskRoot.style.webkitMaskImage = maskRoot.style.maskImage; }
+        const active = draw && !stepAside && timeS >= cue.s && timeS < cue.e && !underFull(cue, timeS);
+        const pin = active ? pinKey(cue, timeS) : null;
+        if (pin && pin.q) {
+          // TRK2: a title printed on a flat surface: its own laid-out box mapped onto the surface (see flatPlacement).
+          const bw = root.offsetWidth, bh = root.offsetHeight;
+          if (bw > 0 && bh > 0) {
+            const place = flatPlacement(pin, parseFloat(stage.style.width), parseFloat(stage.style.height), bw / bh), k = bw / place.w;
+            Object.assign(root.style, { left: '0px', top: '0px', transformOrigin: '0 0', transform: `${place.matrix} scale(${1 / k})`, opacity: pin.opacity.toFixed(4) });
+            rotated.style.transform = `rotate(${(cue.rotate ?? 0).toFixed(3)}deg)`;
+          }
+        } else if (pin) {
+          Object.assign(root.style, { left: `${pin.x * parseFloat(stage.style.width)}px`, top: `${pin.y * parseFloat(stage.style.height)}px`, transformOrigin: '',
+            transform: `translate(${shift}, -50%) scale(${pin.scale.toFixed(5)})`, opacity: pin.opacity.toFixed(4) });
+          rotated.style.transform = `rotate(${((cue.rotate ?? 0) + pin.rotate).toFixed(3)}deg)`;
+        }
+        root.style.visibility = active && (!maskRoot || mask) && (!pin || pin.opacity > 0) ? 'visible' : 'hidden';
+        if (maskRoot) { maskRoot.style.maskImage = mask ? `url("${mask.url}")` : 'none'; maskRoot.style.webkitMaskImage = maskRoot.style.maskImage; }
+        if (maskRoot && mask && root.style.visibility === 'visible') throughMatte = true;
         // Word e is the end of speech, not the end of its displayed lifetime.
         for (const [index, word] of words.entries()) {
           const reveal = !caption || caption.animation === 'typewriter';
@@ -801,16 +992,25 @@
             if (cue.id.startsWith('kinetic-')) word.element.style.color = speaking || word.accent ? cue.accent || cue.color : cue.color;
             continue;
           }
-          word.element.style.color = speaking || word.accent ? caption.accent : caption.primary;
-          if (caption.animation === 'box-highlight') {
+          // CAP4: only the colour form keeps a stressed word in the accent colour at rest; the spoken word still lights up.
+          word.element.style.color = speaking || word.accent && (!word.form || word.form === 'colour') ? caption.accent : caption.primary;
+          if (caption.animation === 'box-highlight' && word.form !== 'tag') {
             word.element.style.background = speaking ? caption.accent : 'transparent';
             if (speaking) word.element.style.color = '#101014';
           }
+          if (word.form === 'tag') {
+            // The accent fill wipes on left to right as the word is said and stays; the ink eases to read on it.
+            const k = Math.max(0, Math.min(1, (timeS - word.s) / TAG_S)), eased = 1 - Math.pow(1 - k, 3);
+            Object.assign(word.element.style, { backgroundImage: k > 0 ? `linear-gradient(${caption.accent}, ${caption.accent})` : 'none', backgroundRepeat: 'no-repeat',
+              backgroundSize: `${(eased * 100).toFixed(2)}% 100%`, color: k > 0 ? mixHex(caption.primary, tagInk || '#101014', eased) : caption.primary });
+          }
           {
+            // CAP4: Fade (Film) is quiet: a stressed word does not pop.
+            const pops = caption.animation !== 'fade';
             const progress = Math.max(0, Math.min(1, (timeS - word.s) / Math.max(.01, word.e - word.s)));
-            const scale = word.accent && speaking ? 1 + .18 * Math.sin(progress * Math.PI) : 1;
+            const scale = pops && word.accent && speaking ? 1 + .18 * Math.sin(progress * Math.PI) : 1;
             // Push the line's other words out by half the popped growth each side; transform only, so no reflow.
-            const popping = words.find(other => other.accent && timeS >= other.s && timeS < other.e && other.element.offsetTop === word.element.offsetTop);
+            const popping = pops && words.find(other => other.accent && timeS >= other.s && timeS < other.e && other.element.offsetTop === word.element.offsetTop);
             let shift = 0;
             if (popping && popping !== word) {
               const p = Math.max(0, Math.min(1, (timeS - popping.s) / Math.max(.01, popping.e - popping.s)));
@@ -826,7 +1026,9 @@
           }
         }
       }
-      if (token !== undefined) markCapture(token);
+      // PRO5c: a behind graphic shown through the matte (drawGraphic) also counts.
+      if (mask && graphics.some(gfx => gfx.behind && gfx.wrap.style.visibility === 'visible')) throughMatte = true;
+      if (token !== undefined) markCapture(token, throughMatte && mask.spot ? mask : null);
       // Flush the style change, then cross a paint boundary before capturePage.
       // RAF is only a compositor fence; timeline time never comes from its clock. It is not a guarantee that the
       // frame is drawn (CAP2: under export load a capture after it read the previous seek), so export checks the token.

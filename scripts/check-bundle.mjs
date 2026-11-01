@@ -11,8 +11,11 @@
 //    LICENSE and LICENSES.chromium.html copied from the electron package).
 // 3. Every starter track in build/music/tracks.json is in Contents/Resources/music (the release is built from the public
 //    tree, where fetch-tools.sh downloads them; a build that skipped that has no music).
-// 4. Info.plist asks for macOS 14.0 or newer (LSMinimumSystemVersion), which the Swift helpers and mlx wheels need.
+// 4. SFX0: every sound in resources/sfx/manifest.json is in Contents/Resources/sfx with its manifest SHA-256, and every
+//    sound not made for precut is named in sfx/LICENSES.md.
+// 5. Info.plist asks for macOS 14.0 or newer (LSMinimumSystemVersion), which the Swift helpers and mlx wheels need.
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -63,10 +66,22 @@ for (const track of tracks) {
   seen.push(`${ok ? "ok     " : "MISSING"} music/${track.file}`);
   if (!ok) problems.push(`music/${track.file} is missing (run npm run fetch-tools, then build)`);
 }
+// SFX0: every sound in the manifest is in the bundle, byte for byte, and every one not made for precut has its licence entry
+const sounds = JSON.parse(fs.readFileSync(path.join(ROOT, "resources/sfx/manifest.json"), "utf8")).sounds;
+const soundLicences = fs.existsSync(path.join(resources, "sfx/LICENSES.md")) ? fs.readFileSync(path.join(resources, "sfx/LICENSES.md"), "utf8") : "";
+if (!soundLicences) problems.push("sfx/LICENSES.md is missing");
+let soundProblems = 0;
+for (const sound of sounds) {
+  const file = path.join(resources, "sfx", sound.file);
+  const ok = fs.existsSync(file) && (!sound.sha256 || createHash("sha256").update(fs.readFileSync(file)).digest("hex") === sound.sha256);
+  if (!ok) { soundProblems++; problems.push(`sfx/${sound.file} is missing or differs from the manifest (${sound.id})`); }
+  if (sound.source !== "precut" && soundLicences && !soundLicences.includes(sound.file)) { soundProblems++; problems.push(`sfx/${sound.file} has no entry in sfx/LICENSES.md`); }
+}
+seen.push(`${soundProblems ? "MISSING" : "ok     "} sfx: ${sounds.length} sounds, ${sounds.filter(s => !s.hidden).length} offered`);
 let minimum = "";
 try { minimum = execFileSync("/usr/bin/plutil", ["-extract", "LSMinimumSystemVersion", "raw", path.join(app, "Contents/Info.plist")]).toString().trim(); } catch { /* absent */ }
 seen.push(`${minimum === "14.0" ? "ok     " : "WRONG  "} LSMinimumSystemVersion ${minimum || "(none)"}`);
 if (minimum !== "14.0") problems.push(`LSMinimumSystemVersion is ${minimum || "missing"}, not 14.0`);
 console.log(seen.join("\n"));
 if (problems.length) { console.error(`\nThis bundle can't ship:\n- ${problems.join("\n- ")}`); process.exit(1); }
-console.log(`\nBundle complete: ${needed.size} helpers, ${new Set(licences).size} licence files, ${tracks.length} music tracks, macOS ${minimum}+.`);
+console.log(`\nBundle complete: ${needed.size} helpers, ${new Set(licences).size} licence files, ${tracks.length} music tracks, ${sounds.length} sounds, macOS ${minimum}+.`);

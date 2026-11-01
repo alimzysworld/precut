@@ -178,18 +178,21 @@ export function movePiece(root: string, cutId: string, version: number, edit: Ex
         record.sfx=[...record.sfx ?? [],...copyPoints(previous.sfx).map(item=>({...item,id:randomUUID()}))];
         record.angleCuts=[...record.angleCuts ?? [],...copyPoints(previous.angleCuts)].sort((a,b)=>a.atS-b.atS);
         if(record.soundDesign?.authored)record.soundDesign.authored.push(...copyPoints(previous.soundDesign?.authored).map(item=>({...item,id:randomUUID()})));
-        if(previous.titles && record.titles)record.titles.cues.push(...copyRanges(previous.titles.cues).map(cue=>{
+        // CH2b: the voice stays where it is (VO7-19), so its captions are not copied with the picture: a copy of them
+        // would show words the voice never says there, and the realign on open then saved a second "Duplicated" version.
+        const spoken=(words:{s:number}[])=>!words.every(w=>onVoice(w.s));
+        if(previous.titles && record.titles)record.titles.cues.push(...copyRanges(previous.titles.cues.filter(cue=>spoken(cue.words?.length ? cue.words : [cue]))).map(cue=>{
           const old=previous.titles!.cues.find(c=>c.id===cue.id)!,delta=cue.s-old.s;
           return {...cue,id:copyCueId(cue.id,delta),words:old.words?.map(w=>({...w,s:w.s+delta,e:w.e+delta}))};
         }));
         const track=record.titles as import('./titles/captions').CaptionTrack | undefined;
         const priorTrack=previous.titles as import('./titles/captions').CaptionTrack | undefined;
-        if(track?.captionSource && priorTrack?.captionSource)track.captionSource={...track.captionSource,words:[...track.captionSource.words,...copyRanges(priorTrack.captionSource.words)].sort((a,b)=>a.s-b.s),faces:[...track.captionSource.faces,...copyRanges(priorTrack.captionSource.faces)].sort((a,b)=>a.s-b.s)};
-        if(track?.kinetic && priorTrack?.kinetic)track.kinetic={...track.kinetic,lines:[...track.kinetic.lines,...copyRanges(priorTrack.kinetic.lines.map(l=>({...l,sourceS:l.s}))).map(({sourceS,...line})=>{
+        if(track?.captionSource && priorTrack?.captionSource)track.captionSource={...track.captionSource,words:[...track.captionSource.words,...copyRanges(priorTrack.captionSource.words.filter(w=>!onVoice(w.s)))].sort((a,b)=>a.s-b.s),faces:[...track.captionSource.faces,...copyRanges(priorTrack.captionSource.faces)].sort((a,b)=>a.s-b.s)};
+        if(track?.kinetic && priorTrack?.kinetic)track.kinetic={...track.kinetic,lines:[...track.kinetic.lines,...copyRanges(priorTrack.kinetic.lines.filter(l=>spoken(l.cues.flatMap((c):{s:number}[]=>c.words?.length ? c.words : [c]))).map(l=>({...l,sourceS:l.s}))).map(({sourceS,...line})=>{
           const delta=line.s-sourceS;
           return {...line,cues:line.cues.map(c=>({...c,id:copyCueId(c.id,delta),s:c.s+delta,e:c.e+delta,words:c.words?.map(w=>({...w,s:w.s+delta,e:w.e+delta}))}))};
         })].sort((a,b)=>a.s-b.s)};
-        record.bigLines=[...record.bigLines ?? [],...copyRanges(previous.bigLines?.map(l=>({...l,e:l.s}))).map(({e:_e,...line})=>line)];
+        record.bigLines=[...record.bigLines ?? [],...copyRanges(previous.bigLines?.filter(l=>!onVoice(l.s)).map(l=>({...l,e:l.s}))).map(({e:_e,...line})=>line)];
         record.titles?.cues.sort((a,b)=>a.s-b.s);
       }
       if(edit.kind==='shotOrder' && !edit.keepMyMoves && !edit.pieces)record.shotOrderResetAt=record.version;

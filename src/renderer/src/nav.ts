@@ -42,13 +42,14 @@ export function openShoot(root: string): void {
   go("wait", { shoot: root, view: "auto" });
 }
 
-/** WR2: where opening a shoot lands. Still processing: the waiting room. Finished: the tab it was last left on, else Ideas, or Footage when it has no ideas. */
+/** WR2: where opening a shoot lands. Still processing: the waiting room. POLISH1: a shoot with edits opens on Edits
+ * (its most recent edit: Precuts opens the one last worked on), whatever tab it was left on; Ideas is only where a shoot
+ * with no edits yet opens (Footage when it has no ideas either, or the tab it was left on). */
 export function shootLanding(progress: { running: boolean; waiting?: { ideasReady: number } } | undefined, ideaCount: number | undefined, remembered?: WorkspacePage, cutCount = 0): Exclude<PageId, "shoots"> {
+  if (cutCount > 0) return "precuts";
   if (!progress) return remembered ?? "clips";
-  // The waiting room is for a new shoot. One with edits opens where it was left, even while
-  // something works in the background (new footage being read, music being arranged).
-  if (progress.running && !(cutCount > 0)) return "wait";
-  if (remembered) return remembered;
+  if (progress.running) return "wait";
+  if (remembered && remembered !== "precuts") return remembered;
   return (ideaCount ?? progress.waiting?.ideasReady ?? 0) > 0 ? "ideas" : "clips";
 }
 

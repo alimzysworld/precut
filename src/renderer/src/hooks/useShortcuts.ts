@@ -20,16 +20,20 @@ export function dispatchShortcut(event: KeyboardEvent, shortcuts: Shortcut[], sc
   // Let the open hint dismiss before Escape reaches a panel or editor action.
   if (event.key === "Escape" && (event.target as Node | null)?.ownerDocument?.querySelector("[data-precut-tooltip]")) return false;
   // Terminal UI owns all keys, including Escape, /, model commands and Cmd-K.
-  // Only the explicitly registered terminal clear action can intercept one.
+  // Only the explicitly registered terminal clear action and Claude's show/hide (CH2, ⌘L) can intercept one.
   // xterm's own hidden textarea does not count as a text field; any other field does.
   const target = event.target as HTMLElement | null;
   if (target?.closest?.("[data-ask-terminal]") && !target.closest("input, select, textarea:not(.xterm-helper-textarea), [contenteditable]:not([contenteditable='false']), [role='textbox']")) {
-    const clear = shortcuts.find(s => s.id === "terminal-clear" && s.enabled !== false && s.keys.some(key => matches(event, key)));
+    const clear = shortcuts.find(s => (s.id === "terminal-clear" || s.id === "claude-toggle") && s.enabled !== false && s.keys.some(key => matches(event, key)));
     if (!clear) return false;
     event.preventDefault(); clear.handler(event); return true;
   }
   const dialogKey = !target?.closest?.("input, textarea, select, [contenteditable], [role='menu']") && !!target?.closest?.("[role='dialog']") && shortcuts.some(s => s.inDialog && s.enabled !== false && s.keys.some(key => matches(event, key)));
   const globalSearch = event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "k";
+  // CH2: ⌘L shows or hides Claude from anywhere, a text field included, like ⌘K.
+  const claudeKey = shortcuts.some(s => s.id === "claude-toggle" && s.enabled !== false && s.keys.some(key => matches(event, key)));
+  // 0.9: ⌘E exports from anywhere, Claude's composer included (it is always on screen now); ⌘E edits no text.
+  const exportKey = event.metaKey && shortcuts.some(s => s.id === "export" && s.enabled !== false && s.keys.some(key => matches(event, key)));
   const sheetKey = shortcuts.some(s => s.id.startsWith("panel-") && s.keys.some(key => matches(event, key)));
   const field = !!(event.target as HTMLElement | null)?.closest?.("input, textarea, select, [contenteditable]:not([contenteditable='false']), [role='textbox'], [role='dialog'], [role='menu']");
   const panelKey = sheetKey && !field;
@@ -49,10 +53,10 @@ export function dispatchShortcut(event: KeyboardEvent, shortcuts: Shortcut[], sc
   if (library && (!isShortcutTyping(event.target) || library.id === "library-close" || library.id === "library-search" && event.metaKey)) {
     event.preventDefault(); library.handler(event); return true;
   }
-  if (isShortcutTyping(event.target) && !globalSearch && !panelKey && !pageKey && !lookKey && !zoomKey && !timelineKey && !transcriptKey && !dialogKey) return false;
+  if (isShortcutTyping(event.target) && !globalSearch && !claudeKey && !exportKey && !panelKey && !pageKey && !lookKey && !zoomKey && !timelineKey && !transcriptKey && !dialogKey) return false;
   const ordered = [...shortcuts.filter(s => s.id !== "clipping-preview" && s.id !== "cancel-timeline-drag" && s.id !== "timeline-clear-selection" && s.id !== "viewer-pan-space"), ...shortcuts.filter(s => s.id === "clipping-preview"), ...shortcuts.filter(s => s.id === "viewer-pan-space"), ...shortcuts.filter(s => s.id === "timeline-clear-selection"), ...shortcuts.filter(s => s.id === "cancel-timeline-drag")];
   const shortcut = ordered.reverse().find(s => s.enabled !== false && (s.scope === scope || s.scope === "global") &&
-    (!isShortcutTyping(event.target) || timelineKey && (s.id==='timeline-snapping' || s.id==='timeline-audio-scrub' || s.id.startsWith('timeline-select') || s.id==='timeline-clear-selection' || s.id==='mute-clip-sound' || s.id==='remove' || s.id==='duplicate') || zoomKey && (s.id === "zoom-fit" || s.id === "viewer-pan-space") || dialogKey && s.inDialog || transcriptKey && s.id === "transcript-bleep" || lookKey && (s.id === "clipping-preview" || s.id === "bypass-look") || pageKey && s.id.startsWith("page-") || panelKey && s.id.startsWith("panel-") || s.scope === "global" && s.id === "command-search") &&
+    (!isShortcutTyping(event.target) || timelineKey && (s.id==='timeline-snapping' || s.id==='timeline-audio-scrub' || s.id.startsWith('timeline-select') || s.id==='timeline-clear-selection' || s.id==='mute-clip-sound' || s.id==='remove' || s.id==='duplicate') || zoomKey && (s.id === "zoom-fit" || s.id === "viewer-pan-space") || dialogKey && s.inDialog || transcriptKey && s.id === "transcript-bleep" || lookKey && (s.id === "clipping-preview" || s.id === "bypass-look") || pageKey && s.id.startsWith("page-") || panelKey && s.id.startsWith("panel-") || s.scope === "global" && s.id === "command-search" || claudeKey && s.id === "claude-toggle" || exportKey && s.id === "export") &&
     (!event.repeat || s.repeat) && s.keys.some(key => matches(event, key)));
   if (!shortcut) return false;
   event.preventDefault(); shortcut.handler(event); return true;
@@ -220,14 +224,16 @@ export const EDIT_PANELS = [
   { id: "sound", label: "Sound", key: "4" },
   { id: "pace", label: "Pace", key: "5" },
   { id: "clips", label: "Clips", key: "6" },
-  { id: "ask", label: "Ask", key: "7" },
   { id: "search", label: "Search", key: "/" },
 ] as const;
-export type EditsPanel = typeof EDIT_PANELS[number]["id"];
+/** CH2: Ask left the rail for Claude's own pane. "ask" stays a destination (search, links, Make it better) that
+ * shows that pane instead of opening a sheet. Its old key, 7, shows or hides Claude. */
+export type EditsPanel = typeof EDIT_PANELS[number]["id"] | "ask";
 export const CLIP_PANELS: readonly EditsPanel[] = ["look", "sound"];
-export function panelShortcuts(toggle: (panel: EditsPanel) => void, close: () => void): Shortcut[] {
+export function panelShortcuts(toggle: (panel: EditsPanel) => void, close: () => void, toggleClaude?: () => void): Shortcut[] {
   return [
     ...EDIT_PANELS.map(panel => ({ id: `panel-${panel.id}`, keys: [panel.key], label: panel.label, scope: "precuts", handler: () => toggle(panel.id) })),
+    ...(toggleClaude ? [{ id: "panel-claude", keys: ["7"], label: "Show or hide Claude", scope: "precuts", handler: toggleClaude }] : []),
     { id: "panel-close", keys: ["Escape"], label: "Close panel", scope: "precuts", handler: close },
   ];
 }

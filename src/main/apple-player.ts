@@ -203,7 +203,7 @@ function onFrameGrid(manifest: AppleManifest, timelineFps: number | undefined): 
   const spine = (manifest.video as (AppleManifest["video"][number] & { cutStart?: number; cutEnd?: number })[]).filter(v => (v.layer ?? 0) === 0);
   // An edge shared with a piece on its own clock stays where that piece is, so the two still meet.
   const fixed = spine.filter(v => v.timeMap?.length).flatMap(v => [v.timelineStart, v.timelineEnd]);
-  const grid = (t: number) => fixed.some(f => Math.abs(f - t) < 1e-4) ? t : cutFrame(t, fps, manifest.durationS) / fps;
+  const grid = (t: number) => fixed.some(f => Math.abs(f - t) < 1e-4) ? t : cutFrame(t, fps, manifest.pictureS ?? manifest.durationS) / fps;   // the picture's end, as the export cuts it (not the voice past it)
   for (const v of spine) if (!v.timeMap?.length) { v.cutStart = grid(v.timelineStart); v.cutEnd = grid(v.timelineEnd); }
 }
 /** Plans already written, by content: reopening an edit (or a tab coming back) reuses its files and manifest. */

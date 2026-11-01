@@ -8,7 +8,8 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/precut-tools.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 fetch() {
   local url=$1 checksum=$2 destination=$3
-  /usr/bin/curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$url" -o "$destination"
+  # --retry-all-errors: SourceForge's mirrors drop connections mid-download (curl 35, 1 Nov); the sha256 below still decides.
+  /usr/bin/curl --proto '=https' --tlsv1.2 -fsSL --retry 5 --retry-all-errors --retry-delay 3 "$url" -o "$destination"
   echo "$checksum  $destination" | /usr/bin/shasum -a 256 -c -
 }
 # FFM1: precut's own ffmpeg and ffprobe, built from pinned source by scripts/build-ffmpeg.sh, which also writes the
@@ -42,7 +43,7 @@ cp -R "$work/Image-ExifTool-13.59/." build/tools/exiftool/
 chmod 755 build/tools/exiftool/exiftool
 # /usr/bin/perl is available on factory macOS, independently of PATH.
 /usr/bin/sed -i '' '1s|.*|#!/usr/bin/perl|' build/tools/exiftool/exiftool
-for name in subject matte voice record-words smart-frames quality place power-watch screen-read; do
+for name in subject matte voice record-words smart-frames quality place power-watch screen-read track; do
   speech_flags=()
   if [ "$name" = record-words ]; then
     speech_flags=(-Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$PWD/pipeline/record-words.plist")
@@ -52,7 +53,7 @@ for name in subject matte voice record-words smart-frames quality place power-wa
 done
 # AV1b: the Apple player's helper and its in-process addon, from one composition builder (checks its own outputs).
 bash scripts/build-apple-player.sh
-for name in ffmpeg ffprobe uv subject matte voice record-words smart-frames quality place power-watch screen-read; do
+for name in ffmpeg ffprobe uv subject matte voice record-words smart-frames quality place power-watch screen-read track; do
   /usr/bin/lipo "build/tools/$name" -verify_arch arm64
   # System frameworks/libraries only: no Homebrew or build-machine dylibs.
   if /usr/bin/otool -L "build/tools/$name" | tail -n +2 | awk '{print $1}' | /usr/bin/grep -Ev '^(/System/Library/|/usr/lib/)' ; then
@@ -69,5 +70,5 @@ build/tools/ffprobe -version | head -n 1
 build/tools/uv --version
 build/tools/exiftool/exiftool -ver
 # Local sources are pinned by the release's source tree; record their hashes too.
-/usr/bin/shasum -a 256 pipeline/subject.swift pipeline/matte.swift pipeline/voice.swift pipeline/record-words.swift pipeline/smart-frames.swift pipeline/quality.swift pipeline/place.swift pipeline/power-watch.swift pipeline/screen-read.swift pipeline/apple-composition.swift pipeline/apple-look.swift pipeline/apple-player.swift pipeline/apple-view.swift pipeline/apple-addon.c pipeline/record-words.plist build/tools/{ffmpeg,ffprobe,uv,subject,matte,voice,record-words,smart-frames,quality,place,power-watch,screen-read,apple-player,apple-player.node} "$ffbuild/ffmpeg-source-$ffversion.tar.gz" > build/tools/SHA256SUMS
+/usr/bin/shasum -a 256 pipeline/subject.swift pipeline/matte.swift pipeline/voice.swift pipeline/record-words.swift pipeline/smart-frames.swift pipeline/quality.swift pipeline/place.swift pipeline/power-watch.swift pipeline/screen-read.swift pipeline/track.swift pipeline/apple-composition.swift pipeline/apple-look.swift pipeline/apple-player.swift pipeline/apple-view.swift pipeline/apple-addon.c pipeline/record-words.plist build/tools/{ffmpeg,ffprobe,uv,subject,matte,voice,record-words,smart-frames,quality,place,power-watch,screen-read,track,apple-player,apple-player.node} "$ffbuild/ffmpeg-source-$ffversion.tar.gz" > build/tools/SHA256SUMS
 echo 'precut tools verified and ready.'

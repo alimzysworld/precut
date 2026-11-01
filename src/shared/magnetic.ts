@@ -11,17 +11,21 @@ export type MagneticSpan = { piece: number; startS: number; endS: number; offset
  * belongs to the same item, rather than accidentally following its new neighbour. */
 export function magneticTime(before: MagneticSpan[], after: MagneticSpan[]) {
   const duration = Math.max(0,...after.map(p=>p.endS));
+  // A shift is a difference of sums, so 29.8 + 1.2 comes out 31.000000000000004: an item ending on a frame would then
+  // hold one frame more (a scene snapped to its frames, after a pause). A time a few ulps off a whole nanosecond is that
+  // noise, so it goes back to the nanosecond; any other time (28.633333333333333, a frame) is kept exactly.
+  const ns = (t: number) => { const r = Math.round(t * 1e9) / 1e9; return Math.abs(r - t) < 1e-12 ? r : t; };
   const owner = (t: number) => before.find(p => t >= p.startS - 1e-7 && t < p.endS - 1e-7) ?? before.at(-1);
   const point = (t: number) => {
     const old = owner(t), next = after.find(p => p.piece === old?.piece);
-    return old && next ? Math.max(next.startS, Math.min(next.endS, next.startS + t - old.startS - (next.offsetS ?? 0))) : t;
+    return old && next ? ns(Math.max(next.startS, Math.min(next.endS, next.startS + t - old.startS - (next.offsetS ?? 0)))) : t;
   };
   const range = <T extends { s: number; e: number }>(item: T): T => {
     const old = owner(item.s), next = after.find(p => p.piece === old?.piece);
     if (!old || !next) return item;
     const shift = next.startS-old.startS-(next.offsetS ?? 0);
-    const s = Math.max(next.startS, Math.min(next.endS, item.s+shift));
-    return { ...item, s, e: Math.max(s, Math.min(duration, item.e+shift)) };
+    const s = ns(Math.max(next.startS, Math.min(next.endS, item.s+shift)));
+    return { ...item, s, e: ns(Math.max(s, Math.min(duration, item.e+shift))) };
   };
   return { point, range };
 }

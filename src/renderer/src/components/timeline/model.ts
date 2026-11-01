@@ -41,6 +41,27 @@ export function retimeOverlay(item: Pick<OverlayItem, "s" | "e">, mode: "move" |
   const s = Math.max(0, Math.min(duration - length, item.s + delta));
   return { s, e: s + length };
 }
+/** REL09e: where each sound block's label may sit (px from the block's left, and its width), or null when it has no
+ *  room, so labels never draw over one another. Shorter blocks place first (they sit on top); each label takes a
+ *  slot of about 8 px a letter in the first free stretch of its own block, after the slots already taken. */
+export function soundLabelSlots(blocks: { s: number; e: number; label: string }[], scale: number, minPx = 20) {
+  const order = blocks.map((b, i) => i).sort((x, y) => (blocks[x].e - blocks[x].s) - (blocks[y].e - blocks[y].s) || blocks[x].s - blocks[y].s || x - y);
+  const taken: [number, number][] = [], slots: ({ left: number; width: number } | null)[] = blocks.map(() => null);
+  if (!(scale > 0)) return slots;
+  for (const i of order) {
+    const { s, e, label } = blocks[i], want = (label.length * 8 + 16) / scale;
+    let at = s, slot: [number, number] | null = null;
+    for (const [a, b] of [...taken].sort((x, y) => x[0] - y[0])) {
+      if (b <= at) continue;
+      if ((Math.min(a, e) - at) * scale >= minPx) { slot = [at, Math.min(a, e)]; break; }
+      at = Math.max(at, b);
+    }
+    if (!slot && (e - at) * scale >= minPx) slot = [at, e];
+    if (slot) { const width = Math.min(slot[1] - slot[0], want); slots[i] = { left: (slot[0] - s) * scale, width: width * scale }; taken.push([slot[0], slot[0] + width]); }
+    else taken.push([s, Math.min(e, s + want)]);   // hidden: its own place still keeps longer blocks' labels off it
+  }
+  return slots;
+}
 export function soundBlocks(draft?: DraftTimeline | null) {
   return [
     ...(draft?.joins ?? []).filter(join => join.choice.sound).map(join => ({ id: `join-${join.index}`, s: join.atS, e: Math.min(draft!.durationS, join.atS + .3), label: join.choice.sound!, join: join.index })),

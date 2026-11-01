@@ -11,7 +11,8 @@ import { usePageActive } from "../../hooks/usePageActivity";
 import { useNav } from "../../nav";
 import { useAskWorkspace } from "./askWorkspace";
 
-export function AskPanel({ root, cutId, version, screenContext }: { root: string; cutId?: string; version: number; screenContext?: AskScreenContext }) {
+export function AskPanel({ root, cutId, version, screenContext, autoFocus = true }: { root: string; cutId?: string; version: number; screenContext?: AskScreenContext;
+  /** CH2: false in Claude's pane, which is open with the page rather than opened to type. */ autoFocus?: boolean }) {
   const modelReady = useModelAccess();
   const active = usePageActive();
   const { page } = useNav();
@@ -34,7 +35,7 @@ export function AskPanel({ root, cutId, version, screenContext }: { root: string
     if (!host.current) return;
     const element = host.current;
     void import("./ask-terminal-view").then(module => module.mountTerminal(element, api, latest.current,
-      snapshot => { if (live) setSession(snapshot); }, error => { if (live) showError(error); }))
+      snapshot => { if (live) setSession(snapshot); }, error => { if (live) showError(error); }, { focus: autoFocus }))
       .then(mounted => { if (live) view.current = mounted; else mounted.dispose(); })
       .catch(error => { if (live) showError(error); });
     return () => { live = false; view.current?.dispose(); view.current = undefined; };

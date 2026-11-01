@@ -34,7 +34,7 @@ export function visualLayout(p:LayoutPicture,time:number,w:number,h:number):{reg
   }
   let radius=p.layoutRadius??0,opacity=1;
   if(p.layoutShapeKeys?.length){const keys=p.layoutShapeKeys,right=keys.findIndex(k=>k.t>=time);if(right<=0){const k=keys[right<0?keys.length-1:0];radius=k.radius;opacity=k.opacity;}else{const a=keys[right-1],b=keys[right],u=(time-a.t)/(b.t-a.t||1);radius=a.radius+(b.radius-a.radius)*u;opacity=a.opacity+(b.opacity-a.opacity)*u;}}
-  return {region,circle:next?!!(region as Box|undefined)?.circle:!p.layoutShapeKeys&&!!p.layoutCircle,radius:next?.radius??radius,opacity:next?1:opacity,background:next?(first===p.layoutSlot?next.background:undefined):p.layoutBackground,image:p.layoutImage,preview:!!next,visible:(!next||!!region)&&!(candidate&&p.layoutDeparting),order:next&&p.layoutSlot?order.indexOf(p.layoutSlot):p.layer};
+  return {region,circle:next?!!(region as Box|undefined)?.circle:!p.layoutShapeKeys&&!!p.layoutCircle,radius:next?.radius??radius,opacity:next?((next.swap?p.layoutSlot==='b':p.layoutSlot==='a')?next.opacity??1:1):opacity,background:next?(first===p.layoutSlot?next.background:undefined):p.layoutBackground,image:p.layoutImage,preview:!!next,visible:(!next||!!region)&&!(candidate&&p.layoutDeparting),order:next&&p.layoutSlot?order.indexOf(p.layoutSlot):p.layer};
 }
 /** Pointer math shared by the viewer and performance checks. */
 export function dragBox(box:Box,dx:number,dy:number,corner?:string,aspect=1):Box {

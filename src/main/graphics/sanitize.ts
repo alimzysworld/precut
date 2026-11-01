@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import type { MotionGraphic } from "../../shared/schema";
 import { CARD_MEDIA, CARD_MEDIA_SRC, CARD_TEMPLATE } from "./templates";
+import { SCENE_FRAME, SCENE_FRAME_TEMPLATES, SCENE_LIMITS, SCENE_TEMPLATES, frameSrc } from "./scenes";
+import { clampMotion } from "../../shared/motion";
+import { clampLook, lookMedia } from "../../shared/look";
 
 // GFX1: everything a graphic is allowed to contain. The sandbox (CSP, no network, no storage, no real clocks, a
 // frame budget) is the real wall; these checks turn the common mistakes into plain, fixable messages before any
@@ -100,6 +103,28 @@ export function sanitizeGraphic(input: unknown): MotionGraphic {
     if (html.split(`src="${CARD_MEDIA_SRC}"`).length !== 2) fail("A card shows its picture once.");
     out.media = g.media as string;
   }
+  // MOT1: a scene's frames are handles in the same cache, each shown once (src="#frame-i"); the title page draws them in.
+  // LOOK1: any scene may show one more, its look's picture (the shot under it, an image, a design kept as a texture), last.
+  const lookPicture = g.look && typeof g.look === "object" ? lookMedia(clampLook(g.look)) : undefined;
+  if (g.frames !== undefined && g.frames !== null) {
+    const own = SCENE_FRAME_TEMPLATES.includes(out.template ?? "") ? SCENE_LIMITS.memoryFrames : 0, scene = SCENE_TEMPLATES.some(t => t.id === out.template);
+    if (!scene || (!own && !lookPicture) || !Array.isArray(g.frames) || !g.frames.length || g.frames.length > own + (lookPicture ? 1 : 0)
+      || !g.frames.every(f => typeof f === "string" && SCENE_FRAME.test(f)) || new Set(g.frames).size !== g.frames.length) fail("Only a frame wall or memories scene can show frames from the shoot.");
+    if (out.media) fail("A graphic shows a card picture or scene frames, not both.");
+    if (!(g.frames as string[]).every((_, i) => html.split(`src="${frameSrc(i)}"`).length === 2)) fail("A scene shows each of its frames once.");
+    if (lookPicture && (g.frames as string[]).at(-1) !== lookPicture) fail("A scene's look shows its picture as its last frame.");
+    out.frames = [...g.frames as string[]];
+  }
+  // LOOK1: a scene's background, type and finish, every value inside its range.
+  if (g.look !== undefined && g.look !== null) {
+    if (typeof g.look !== "object" || Array.isArray(g.look) || !SCENE_TEMPLATES.some(t => t.id === out.template)) fail("Only a scene has a look.");
+    out.look = clampLook(g.look);
+  }
+  // MOT1: time and feel, every knob kept inside its range.
+  if (g.motion !== undefined && g.motion !== null) {
+    if (typeof g.motion !== "object" || Array.isArray(g.motion)) fail("motion must be an object.");
+    out.motion = clampMotion(g.motion);
+  }
   if (g.words !== undefined && g.words !== null) {
     if (!Array.isArray(g.words) || g.words.length > GRAPHIC_LIMITS.words) fail("The words list is too long.");
     out.words = (g.words as unknown[]).map(word => {
@@ -113,5 +138,5 @@ export function sanitizeGraphic(input: unknown): MotionGraphic {
 
 /** What makes two graphics render identically (words and the template name only matter for re-timing). */
 export function graphicKey(g: MotionGraphic): string {
-  return createHash("sha256").update(JSON.stringify([g.html, g.css, g.js ?? "", g.widthPx, g.heightPx, g.durationS, g.frame, g.layer ?? "front", ...(g.media ? [g.media] : [])])).digest("hex");
+  return createHash("sha256").update(JSON.stringify([g.html, g.css, g.js ?? "", g.widthPx, g.heightPx, g.durationS, g.frame, g.layer ?? "front", ...(g.media ? [g.media] : []), ...(g.frames?.length ? [g.frames.join(",")] : [])])).digest("hex");
 }

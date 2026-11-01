@@ -7,6 +7,7 @@ import { sourceAudioInput, mapSourceAudioGraph } from './source-audio';
 import { voiceoverAudio } from './voiceover-audio';
 import { JOIN_FADE_S, voiceJoinFades } from '../shared/voice-edit';
 import { voiceFilter } from './audio';
+import { fadeOutStart } from './join-audio';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { EditorInput } from './editors';
@@ -68,7 +69,7 @@ function automation(layer: EditorAudioClip) {
   const expression = expressionFor(0, keys.length - 1);
   return `aeval=exprs='val(0)*(${expression})|val(1)*(${expression})',volume=${layer.muted ? 0 : 10**((layer.gainDb ?? 0)/20)}` +
     (layer.fadeInS ? `,afade=t=in:d=${layer.fadeInS}` : '') +
-    (layer.fadeOutS ? `,afade=t=out:st=${layer.d - layer.fadeOutS}:d=${layer.fadeOutS}` : '');
+    (layer.fadeOutS ? `,afade=t=out:st=${fadeOutStart(layer.d, layer.fadeOutS)}:d=${layer.fadeOutS}` : '');
 }
 
 /** Prepare portable sources, leaving gain, redaction and fades editable. DSP
@@ -125,7 +126,7 @@ export async function prepareEditorAudio(i: EditorInput, folder: string, voice: 
     } finally { await fs.rm(script, { force: true }); }
   });
   const dry = await mix([...voice, ...clips], 'editor-dry-voice');
-  const effects = await prepareDesignSounds(i.root, plan, version);
+  const effects = await prepareDesignSounds(i.root, plan, version, i.template.fps);
   const effectClips: EditorAudioClip[] = [];
   for (const [n, effect] of effects.entries()) {
     const sourceDuration = (await measureSourceAudio(i.root, effect.file)).durationS;
@@ -176,8 +177,8 @@ export async function prepareEditorAudio(i: EditorInput, folder: string, voice: 
   }
   for(const clip of effectClips){clip.gainDb=(clip.gainDb ?? 0)+laneDb(version,'effects');clip.muted=laneMuted(version,'effects');}
   clips.push(...effectClips);
-  const arranged = await (await import('./music-space')).musicForEdit(i.root,{music:version.music,assembly:{cutList:cuts,reel:i.opts?.reel ?? {cuts:[],why:''}}},plan,true,(await import('./music-arrange')).arrangedMusic);
-  const music = arranged?.arrangement ? arranged.music : playableMusic(i.root, version.music !== undefined ? version.music : i.opts?.reel?.music);  // ONB1b: a missing file is left out, as live does
+  const arranged = await (await import('./music-space')).musicForEdit(i.root,{...version,music:version.music,assembly:{cutList:cuts,template:i.template,reel:i.opts?.reel ?? {cuts:[],why:''}}},plan,true,(await import('./music-arrange')).arrangedMusic);
+  const music = playableMusic(i.root, arranged.music);  // ONB1b: a missing file is left out, as live does
   if (music) {
     const musicEnd = Math.min(duration,music.endS ?? duration);
     const sourceFile = path.resolve(i.root,music.file);

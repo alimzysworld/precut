@@ -228,6 +228,10 @@ export function finishCut(root: string, cutId: string, version: number, opts: Fi
       retimeVersion(record, beforeFx, planFx(assembly.cutList, assembly.template.fps, record));
       prepareEnergy(record, assembly, energy, (await getPreferences()).output.height);
       const beforeBeat = planFx(assembly.cutList, assembly.template.fps, record);
+      if (opts.transition !== undefined) {
+        const { setJoinSound } = await import('./sound-attachments');
+        for (const j of beforeBeat.joins) if (j.auto) setJoinSound(record, beforeBeat, j.index, opts.transition.sound);
+      }
       if (opts.cutToBeat === true) await applyMusicCutPlan(root, record, assembly);
       const afterFx = planFx(assembly.cutList, assembly.template.fps, record);
       if (opts.cutToBeat !== true) retimeVersion(record, beforeBeat, afterFx);

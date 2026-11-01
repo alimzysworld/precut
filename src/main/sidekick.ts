@@ -1,3 +1,4 @@
+import { needsSoundResolution, migrateSounds as migrateSoundList } from './sound-attachments';
 import { withShootWriter, shootHasOtherWriter, trackSave, WriterBusyError, ownsOpenShoot } from "./writer-lock";
 import { validateSavedContent } from "./cut-validation";
 import { isDeepStrictEqual } from "node:util";
@@ -118,6 +119,10 @@ export function finishStoredVersion<T>(root: string, cutId: string, version: num
     if (!create && readViews.has(previous)) readViews.set(record, readViews.get(previous)!);
     currentActivity()?.update({ target: { cutId, version: record.version } });
     const result = await finishingDraft.run({ root, cutId, source: previous.version, record, assembly, previous }, () => work(record, assembly, previous.version));
+    migrateSounds(record);
+    // PRO5: a word asked to sit behind him is checked against his outline on the frames it covers, after every change.
+    if (record.overlays?.some(o => o.graphic?.layer === "behind" || o.graphic?.behindNote) || (record.titles as { personMattes?: { behindWord?: true }[] } | null | undefined)?.personMattes?.some(m => m.behindWord))
+      await (await import("./titles/mattes")).holdBehindWords(root, record, record.assembly ?? assembly, previous);
     if(create)await (await import('./music-arrange')).pinMusicForHandEdit(root,previous,record);
     signal?.throwIfAborted();
     if (create) { cut.versions.push(record); builtFrom.set(record, previous.version); }
@@ -165,6 +170,7 @@ export async function renderStoredPreview(root: string, cutId: string, record: S
 export async function prepareStoredPreview(root: string, cutId: string, record: StoredVersion,
   assembly: StoredVersion["assembly"], previous: StoredVersion | undefined): Promise<void> {
   if (batchDraft.getStore()) return;
+  migrateSounds(record);
   const structure = (v: StoredVersion) => JSON.stringify([v.assembly.cutList.map(c=>({piece:c.piece,clip:c.seg?.clip.id,in:c.inFrames,out:c.outFrames,length:c.durTimelineFrames})),v.assembly.reel.broll.map(o=>({...o,seg:{...o.seg,clip:{...o.seg.clip,transcript:undefined}}})),
     v.overlays?.map(o=>[o.id,o.sound,o.s,o.e]),v.sfx?.map(s=>[s.id,s.file]),[v.audio?.clean ?? true,v.audio?.denoise ?? .6,v.audio?.auto ?? true,v.audio?.breaths ?? true],v.energy,v.faceMatch,v.framing,v.transition,v.joins,v.layouts,v.angleCuts,v.pieceFx?.flatMap((p,piece)=>p && [p.speed,p.reverse,p.framing,p.background].some(value=>value!==undefined) ? [{piece,speed:p.speed,reverse:p.reverse,framing:p.framing,background:p.background}] : []) ?? []]);
   if (previous && structure(previous) === structure({...record,assembly})) {
@@ -221,6 +227,17 @@ export async function prepareStoredPreview(root: string, cutId: string, record: 
       console.warn("Could not prepare edit playback:", error);
     }).finally(() => preparingPreviews.delete(key));
   }));
+}
+
+function migrateSounds(record: StoredVersion): StoredVersion {
+  if (!needsSoundResolution(record)) return record;
+  return migrateSoundList(record, planFx(record.assembly.cutList, record.assembly.template.fps, record), record.assembly.template.fps);
+}
+function legacySoundVersion(version: StoredVersion): StoredVersion {
+  const balanced = legacyBalanceVersion(version);
+  if (!balanced.assembly) return balanced;
+  const migrated = migrateSounds({ ...balanced, warnings: [...balanced.warnings ?? []] });
+  return JSON.stringify([balanced.sfx, balanced.joins, balanced.transition, balanced.overlays]) === JSON.stringify([migrated.sfx, migrated.joins, migrated.transition, migrated.overlays]) ? balanced : migrated;
 }
 
 // ---- VO7-1: append-friendly history writes (revisions.ts commit is the caller).
@@ -311,7 +328,7 @@ export async function loadRevision(root: string, cutId: string, version: number,
       const shoot = options?.light ? await sharedIndex(root) : await currentIndex(root), fields = headFields(head);
       await trashedSourceCheck(logged, shoot);
       const hydrated = hydrateCut({ ...fields, storage: structuredClone(fields.storage), cutId, versions: [logged] } as unknown as StoredCut, shoot).versions[0];
-      const record = legacyBalanceVersion(await repairVoiceStarts(hydrated));
+      const record = legacySoundVersion(await repairVoiceStarts(hydrated));
       if (!record?.assembly) throw new Error("Could not find that edit version's saved assembly.");
       if (options?.light || options?.view) return record;
       const loaded = { ...record, assembly: await freshen(root, record.assembly, shoot) };
@@ -325,7 +342,7 @@ export async function loadRevision(root: string, cutId: string, version: number,
     const shoot = options?.light ? await sharedIndex(root) : await currentIndex(root), slim = JSON.parse(entry.text.slice(...entry.spans[index]));
     await trashedSourceCheck(slim, shoot);
     const hydrated = hydrateCut({ ...Object.fromEntries(entry.after), cutId, versions: [slim] } as unknown as StoredCut, shoot).versions[0];
-    const record = legacyBalanceVersion(await repairVoiceStarts(hydrated));
+    const record = legacySoundVersion(await repairVoiceStarts(hydrated));
     if (!record?.assembly) throw new Error("Could not find that edit version's saved assembly.");
     if (options?.light || options?.view) return record;
     const loaded = { ...record, assembly: await freshen(root, record.assembly, shoot) };
@@ -346,7 +363,7 @@ async function extendPublic(root: string, file: string, prior: { identity: strin
   const shoot = await currentIndex(root), slim = JSON.parse(json);
   await trashedSourceCheck(slim, shoot);
   const hydrated = hydrateCut({ ...Object.fromEntries(after), cutId: prior.cut.cutId, versions: [slim] } as unknown as StoredCut, shoot).versions[0];
-  const projected = legacyBalanceVersion(await repairVoiceStarts(hydrated, shoot ? new Map() : undefined));
+  const projected = legacySoundVersion(await repairVoiceStarts(hydrated, shoot ? new Map() : undefined));
   if (identity !== await cutIdentity(root, file)) return;
   publicSnapshots.delete(file);
   publicSnapshots.set(file, { identity, cut: { ...prior.cut, versions: [...prior.cut.versions, structuredClone(publicVersion(projected))] } });
@@ -462,7 +479,7 @@ async function migrateEdit(root: string, file: string, shoot: Shoot | undefined)
   // Readers see each version's public view (hydrated, repaired, made public): it must be the same string before and after.
   const view = async (fields: Record<string, unknown>, version: Record<string, unknown>, starts?: Map<string, number>) => {
     const hydrated = hydrateCut({ ...fields, versions: [version] } as unknown as StoredCut, shoot).versions[0];
-    return JSON.stringify(publicVersion(legacyBalanceVersion(await repairVoiceStarts(hydrated, starts))));
+    return JSON.stringify(publicVersion(legacySoundVersion(await repairVoiceStarts(hydrated, starts))));
   };
   let fields: Record<string, unknown> | null = null;
   const before = shoot ? new Map<string, number>() : undefined, after = shoot ? new Map<string, number>() : undefined;
@@ -569,9 +586,9 @@ export async function loadDraftVersion(root: string, cutId: string, version: num
       if (text && at !== undefined && at >= 0 && fileIdentity(await fs.stat(file)) === text.identity) {
         const selected = JSON.parse(text.text.slice(...text.spans[at])) as StoredVersion, fields = Object.fromEntries(text.after) as { storage?: unknown };
         await trashedSourceCheck([selected], current);
-        return legacyBalanceVersion(await repairVoiceStarts(hydrateCut({ ...fields, storage: structuredClone(fields.storage), cutId, versions: [selected] } as unknown as StoredCut, current).versions[0]));
+        return legacySoundVersion(await repairVoiceStarts(hydrateCut({ ...fields, storage: structuredClone(fields.storage), cutId, versions: [selected] } as unknown as StoredCut, current).versions[0]));
       }
-      return legacyBalanceVersion(await repairVoiceStarts(await readCutVersion(file, version, current, { ownedIndex: true })));
+      return legacySoundVersion(await repairVoiceStarts(await readCutVersion(file, version, current, { ownedIndex: true })));
     });
   if (!record?.assembly) throw new Error("Could not find that edit version's saved assembly.");
   const loaded={ ...record, assembly: await freshen(root, record.assembly, current) };
@@ -664,6 +681,7 @@ function storedView(v: StoredVersion): StoredVersion {
   if (contentKey(v) !== view.content) throw new Error("Saved edit content needs a new version with a base.");
   const stored = { ...view.stored };
   for (const key of ["previewRev", "preview", "finished", "warnings", "voiceMixNeedsMeasure", "autoLayouts", "sfx"] as const) {
+    if (key === "sfx" && (v.sfx?.some(s => s.legacyMix) || JSON.stringify([view.stored.joins, view.stored.transition, view.stored.overlays]) !== JSON.stringify([v.joins, v.transition, v.overlays]))) continue;
     if (Object.hasOwn(v, key)) (stored as unknown as Record<string, unknown>)[key] = v[key];
     else delete stored[key];
   }
@@ -686,6 +704,7 @@ export async function settleSnapshot(root: string, saved: StoredCut, latest: Sto
       throw error;
     });
   if (latest.assembly) {
+    migrateSounds(latest);
     latest.keptBeats = anchorKeptBeats(latest,await keptBeatsFor(root, saved, latest.version));
     latest.keptBeatOrigin = latest.version;
   }
@@ -868,7 +887,7 @@ async function readCut(root: string, id: string, current?: Shoot): Promise<Store
       const versions: StoredVersion[] = [];
       let slice = performance.now();
       for (const version of cut.versions) {
-        const projected = legacyBalanceVersion(await repairVoiceStarts(version, starts));
+        const projected = legacySoundVersion(await repairVoiceStarts(version, starts));
         if (projected !== version) readViews.set(projected, { stored: version, content: contentKey(projected) });
         versions.push(projected);
         if (performance.now() - slice > 8) { await new Promise<void>(resolve => setImmediate(resolve)); slice = performance.now(); }

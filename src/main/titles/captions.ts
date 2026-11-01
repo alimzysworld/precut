@@ -1,9 +1,12 @@
 export { timedCaptionWords } from "../../shared/caption-words";
-import type { CaptionStyle, CutVersion, Preferences, Shoot, TitleCue, TitleTrack } from "../../shared/schema";
+import type { CaptionAccentForm, CaptionStyle, CaptionTextEffect, CutVersion, Preferences, Shoot, TitleCue, TitleTrack } from "../../shared/schema";
+// CAP4: the stressed word's forms and the optional text effects (schema.ts CaptionAccentForm, CaptionTextEffect).
+export const CAPTION_ACCENT_FORMS: readonly CaptionAccentForm[] = ["colour", "italic", "caps", "bigger", "tag"];
+export const CAPTION_TEXT_EFFECTS: readonly CaptionTextEffect[] = ["none", "depth", "shadow", "blur-in"];
 import { transcriptGroups, transcriptText } from "./text";
 import { isOpeningStyle } from "./opening";
 
-export const CAPTION_FONTS = ["Outfit", "Inter Display", "Montserrat", "Poppins", "Bebas Neue", "Archivo Black", "Caveat"] as const;
+export const CAPTION_FONTS = ["Outfit", "Inter Display", "Montserrat", "Poppins", "Bebas Neue", "Archivo Black", "Caveat", "Instrument Serif"] as const;
 const base: CaptionStyle = { preset: "clean", primary: "#ffffff", accent: "#F7C204", font: "Inter Display", size: "m", position: "bottom", wordsPerLine: "3-4", case: "as-spoken", background: "none", outline: false, animation: "none", emphasis: false, hook: "auto" };
 export const CAPTION_PRESETS: { name: string; style: CaptionStyle }[] = [
   { name: "Clean", style: base },
@@ -18,6 +21,9 @@ export const CAPTION_PRESETS: { name: string; style: CaptionStyle }[] = [
   { name: "Bubble", style: { ...base, preset: "bubble", font: "Poppins", background: "pill", animation: "pop" } },
   { name: "Minimal", style: { ...base, preset: "minimal", size: "s", wordsPerLine: "line" } },
   { name: "Lower third", style: { ...base, preset: "lower-third", font: "Montserrat", wordsPerLine: "line" } },
+  // CAP4 (the Life Of Riza x Canva reference): small warm white serif, short lines, lower middle, the stressed word in
+  // italics, a soft fade in and out. The accent colour matches the text, so a spoken word never flashes a colour.
+  { name: "Film", style: { ...base, preset: "film", primary: "#F6F2EA", accent: "#F6F2EA", font: "Instrument Serif", size: "s", position: "lower", animation: "fade", emphasis: true, accentAs: "italic" } },
 ];
 export const DEFAULT_CAPTION_STYLE = base;
 /** VO7-15: a font family name that is safe inside a quoted CSS or canvas font string. Any family on this Mac
@@ -30,13 +36,21 @@ export function isCaptionStyle(value: unknown): value is CaptionStyle {
   const v = value as CaptionStyle;
   return [...CAPTION_PRESETS.map(p => p.style.preset), "custom"].includes(v.preset) &&
     /^#[0-9a-f]{6}$/i.test(v.primary) && /^#[0-9a-f]{6}$/i.test(v.accent) && isFontFamilyName(v.font) &&
-    ["s", "m", "l"].includes(v.size) && ["bottom", "middle", "top"].includes(v.position) &&
+    ["s", "m", "l"].includes(v.size) && ["bottom", "lower", "middle", "top"].includes(v.position) &&
     ["1-2", "3-4", "line"].includes(v.wordsPerLine) && ["as-spoken", "upper", "lower"].includes(v.case) &&
     ["none", "box", "pill"].includes(v.background) && typeof v.outline === "boolean" && typeof v.emphasis === "boolean" &&
-    ["none", "pop", "glide", "karaoke", "box-highlight", "typewriter", "pulse"].includes(v.animation) &&
-    (v.hook === undefined || ["auto", "off", "all"].includes(v.hook)) && (v.hookStyle === undefined || isOpeningStyle(v.hookStyle));
+    ["none", "pop", "glide", "karaoke", "box-highlight", "typewriter", "pulse", "fade"].includes(v.animation) &&
+    (v.hook === undefined || ["auto", "off", "all"].includes(v.hook)) && (v.hookStyle === undefined || isOpeningStyle(v.hookStyle)) &&
+    (v.accentAs === undefined || isAccentForm(v.accentAs)) && (v.effect === undefined || CAPTION_TEXT_EFFECTS.includes(v.effect));
 }
-export type CaptionWord = { text: string; s: number; e: number; piece?: number; accent?: boolean; estimated?: boolean };
+export const isAccentForm = (value: unknown): value is CaptionAccentForm => (CAPTION_ACCENT_FORMS as readonly unknown[]).includes(value);
+/** CAP4: the form a stressed word takes: its own, else the style's, else colour (null when the word is not stressed). */
+export function accentFormOf(word: { accent?: boolean; accentAs?: CaptionAccentForm }, style: Pick<CaptionStyle, "accentAs"> | null | undefined): CaptionAccentForm | null {
+  return word.accent ? word.accentAs ?? style?.accentAs ?? "colour" : null;
+}
+/** CAP4: a Big word's line is this much larger than the style's size, in caps. */
+export const BIG_WORD_SCALE = 1.9;
+export type CaptionWord = { text: string; s: number; e: number; piece?: number; accent?: boolean; estimated?: boolean; accentAs?: CaptionAccentForm; big?: boolean };
 export type CaptionSource = { words: CaptionWord[]; safeArea: CaptionSafeArea; faces: { s: number; e: number; box: CaptionSafeArea }[] };
 // Private finishing metadata travels with the track; the shared schema stays owned by Claude.
 // style: an opening caption style (opening.ts); absent = the model placed each cue itself (designs before 25 Oct).
@@ -63,6 +77,20 @@ export function carryEmphasis<W extends IdentifiedWord>(accented: W[], words: W[
   // Overlap beyond float noise: a shared boundary is not an overlap, or emphasis spreads to a neighbour on every save.
   return words.flatMap((w, i) => accented.some(old => old.takeWord ? same(old, w) : !w.takeWord && old.s < w.e - 1e-6 && old.e > w.s + 1e-6) ? [String(i)] : []);
 }
+/** CAP4: a word's own accent form and Big mark follow it when its words are rebuilt (a voiceover heard again, a picture
+ * edit that moved it): voice words by take-word identity, others by time, as carryEmphasis. So does an accent he set on
+ * the word himself (an explicit true or false), which key words alone could not keep when Emphasis is off. Words
+ * without a match, and every word when nothing old has a mark, come back as they are (the same objects). */
+type Marks = { accentAs?: CaptionAccentForm; big?: boolean; accent?: boolean };
+export function carryWordMarks<W extends IdentifiedWord & Marks>(old: readonly (IdentifiedWord & Marks)[] | undefined, words: W[]): W[] {
+  const marked = (old ?? []).filter(w => w.accentAs || w.big || typeof w.accent === "boolean");
+  if (!marked.length) return words;
+  const same = (a: IdentifiedWord, b: IdentifiedWord) => !!a.takeWord && a.takeWord === b.takeWord && a.occurrence === b.occurrence;
+  return words.map(w => {
+    const from = marked.find(o => o.takeWord ? same(o, w) : !w.takeWord && o.s < w.e - 1e-6 && o.e > w.s + 1e-6);
+    return from ? { ...w, ...(typeof from.accent === "boolean" && w.accent === undefined ? { accent: from.accent } : {}), ...(from.accentAs ? { accentAs: from.accentAs } : {}), ...(from.big ? { big: true } : {}) } : w;
+  });
+}
 /** 0.7.1: a saved track's key words, as indices into `words`. Emphasis indexes the track's own caption words; when the
  * words have changed since (a picture edit moved the voice, a word was cut) the accented words carry over by take-word
  * id or time, and an index past the words is dropped. Saved data never throws here. */
@@ -83,26 +111,32 @@ export function buildCaptionTrack(words: CaptionWord[], previous: TitleTrack | n
   const used = new Set(titles.map(c => c.id));
   const cues: TitleCue[] = [];
   const transform = (text: string) => style.case === "upper" ? text.toUpperCase() : style.case === "lower" ? text.toLowerCase() : text;
+  // CAP4: a run of Big words is its own line, in caps; every other line takes the style's case.
+  const caseOf = (words: { big?: boolean }[]) => words.length && words.every(w => w.big) ? (text: string) => text.toUpperCase() : transform;
   const max = style.wordsPerLine === "1-2" ? 2 : style.wordsPerLine === "3-4" ? 4 : Infinity;
   let phrase: (CaptionWord & { indices: number[] })[] = [], end = 0;
   const flush = () => {
     if (!phrase.length) return;
-    const size = { s: .024, m: .034, l: .046 }[style.size];
-    const y = style.position === "top" ? safe.top + size * 1.5 : style.position === "middle" ? (safe.top + safe.bottom) / 2 : safe.bottom - size * 1.5;
+    const big = phrase.every(w => w.big);
+    const size = { s: .024, m: .034, l: .046 }[style.size] * (big ? BIG_WORD_SCALE : 1);
+    const y = style.position === "top" ? safe.top + size * 1.5 : style.position === "middle" ? (safe.top + safe.bottom) / 2
+      : style.position === "lower" ? safe.top + (safe.bottom - safe.top) * .72 : safe.bottom - size * 1.5;
     let id = `caption-${cues.length}`;
     while (used.has(id)) id += "-c";
     used.add(id);
     cues.push({ id, role: "subtitle", layer: "front", s: phrase[0].s, e: end,
-      text: transcriptText(phrase.map(w => transform(w.text))), words: phrase.map(w => ({ text: w.text, s: w.s, e: w.e, estimated: w.estimated, accent: w.accent ?? (style.emphasis && w.indices.some(index => emphasis.includes(String(index)))) })),
+      text: transcriptText(phrase.map(w => caseOf(phrase)(w.text))), words: phrase.map(w => ({ text: w.text, s: w.s, e: w.e, estimated: w.estimated, accent: w.accent ?? (style.emphasis && w.indices.some(index => emphasis.includes(String(index)))),
+        ...(isAccentForm(w.accentAs) ? { accentAs: w.accentAs } : {}), ...(w.big ? { big: true } : {}) })),
       x: style.preset === "lower-third" ? safe.left + .02 : (safe.left + safe.right) / 2, y,
       align: style.preset === "lower-third" ? "left" : "center", size, weight: style.font === "Caveat" ? 700 : style.preset === "minimal" ? 600 : 800, italic: false,
-      color: style.primary, accent: style.accent, enter: style.animation === "pop" ? "pop" : style.animation === "glide" ? "slide-up" : "none", exit: "none" });
+      color: style.primary, accent: style.accent, enter: big ? "scale" : style.animation === "pop" ? "pop" : style.animation === "glide" ? "slide-up" : style.animation === "fade" ? "fade" : "none",
+      exit: style.animation === "fade" ? "fade" : "none" });
     phrase = []; end = 0;
   };
   transcriptGroups(words.map((word, index) => ({ ...word, index })), word => word.text, (a, b) => a.piece === b.piece).forEach(({ text, tokens }) => {
     const word = { ...tokens[0], text, s: Math.min(...tokens.map(w => w.s)), e: Math.max(...tokens.map(w => w.e)), indices: tokens.map(w => w.index) };
     const last = phrase.at(-1);
-    if (last && word.s >= end && (phrase.length >= max || phrase.map(w => w.text).join(" ").length + word.text.length + 1 > 32 ||
+    if (last && word.s >= end && (!!word.big !== !!last.big || phrase.length >= max || phrase.map(w => w.text).join(" ").length + word.text.length + 1 > 32 ||
       word.s - last.e >= .35 || word.piece !== last.piece || /[.!?,;:]["'’”)]?$/u.test(last.text))) flush();
     phrase.push(word); end = Math.max(end, word.e);
   });
@@ -123,7 +157,7 @@ export function buildCaptionTrack(words: CaptionWord[], previous: TitleTrack | n
   for (const cue of cues) {
     let run: NonNullable<TitleCue["words"]> = [];
     const flushRun = () => {
-      if (run.length) normal.push({ ...cue, id: `${cue.id}-${normal.length}`, s: run[0].s, e: Math.max(...run.map(w => w.e)), text: transcriptText(run.map(w => transform(w.text))), words: run });
+      if (run.length) normal.push({ ...cue, id: `${cue.id}-${normal.length}`, s: run[0].s, e: Math.max(...run.map(w => w.e)), text: transcriptText(run.map(w => caseOf(run)(w.text))), words: run });
       run = [];
     };
     for (const word of cue.words ?? []) {

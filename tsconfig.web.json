@@ -17,5 +17,5 @@
       "@shared/*": ["src/shared/*"]
     }
   },
-  "include": ["src/main/footage-stars.ts", "src/main/library-filters.ts", "src/main/filmed-time.ts", "src/main/library-ranking.ts", "src/main/library-span.ts", "src/main/titles/bleep-presentation.ts", "src/main/titles/lower-thirds.ts", "src/main/live-sound-types.ts", "src/main/post-places.ts", "src/main/layout-math.ts", "src/main/titles/captions.ts", "src/main/titles/design-notes.ts", "src/main/titles/opening.ts", "src/main/titles/text.ts", "src/main/basics.ts", "src/main/mixer.ts", "src/main/graphics/templates.ts", "src/main/graphics/icons.ts", "src/renderer/src/**/*", "src/shared/**/*"]
+  "include": ["src/main/footage-stars.ts", "src/main/library-filters.ts", "src/main/filmed-time.ts", "src/main/library-ranking.ts", "src/main/library-span.ts", "src/main/titles/bleep-presentation.ts", "src/main/titles/lower-thirds.ts", "src/main/live-sound-types.ts", "src/main/post-places.ts", "src/main/layout-math.ts", "src/main/titles/captions.ts", "src/main/titles/design-notes.ts", "src/main/titles/opening.ts", "src/main/titles/text.ts", "src/main/basics.ts", "src/main/mixer.ts", "src/main/graphics/templates.ts", "src/main/graphics/scenes.ts", "src/main/graphics/icons.ts", "src/renderer/src/**/*", "src/shared/**/*"]
 }

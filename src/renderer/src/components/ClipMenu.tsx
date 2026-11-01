@@ -10,7 +10,8 @@ import { rotationItems, observeRotationShoot, previewRotation, rotationClip, rot
 
 export { rotationItems } from "./clipRotation";
 const queues = new Map<string, Promise<unknown>>();
-export function ClipMenu({ shoot, onShootChange, history, children, onReplace, canReplace, onAutoCorrect, onShotOrder, selectedClipIds = [] }: {
+export function ClipMenu({ shoot, onShootChange, history, children, onReplace, canReplace, onAutoCorrect, onShotOrder, onShowWhatISay, selectedClipIds = [] }: {
+  onShowWhatISay?: (piece: number) => void;  // BROLL2: cutaways for what is said over these clips
   selectedClipIds?: string[];
   onShotOrder?: (piece: number) => void;
   onAutoCorrect?: (piece: number) => Promise<unknown>;
@@ -80,6 +81,7 @@ export function ClipMenu({ shoot, onShootChange, history, children, onReplace, c
       {context.target.dataset.replacePiece !== undefined && canReplace?.(Number(context.target.dataset.replacePiece)) ? <MenuOption type="button" role="menuitem" className="block w-full rounded-lg px-3 py-2 text-left text-small outline-none hover:bg-ink/[0.06] focus:bg-ink/[0.08]" onClick={() => { onReplace?.(Number(context.target.dataset.replacePiece), context.target); setContext(undefined); }}>Replace</MenuOption> : null}
       {context.target.dataset.replacePiece !== undefined && onAutoCorrect ? <MenuOption type="button" role="menuitem" className="block w-full rounded-lg px-3 py-2 text-left text-small hover:bg-ink/[0.06] focus:bg-ink/[0.08]" onClick={() => { const piece=Number(context.target.dataset.replacePiece); setContext(undefined); void onAutoCorrect(piece).catch(e=>setError(e instanceof Error ? e.message : "Could not auto correct. Try again.")); }}>Auto correct this clip</MenuOption> : null}
       {context.target.dataset.replacePiece !== undefined && onShotOrder ? <MenuOption type="button" role="menuitem" className="block w-full rounded-lg px-3 py-2 text-left text-small hover:bg-ink/[0.06] focus:bg-ink/[0.08]" onClick={()=>{onShotOrder(Number(context.target.dataset.replacePiece));setContext(undefined);}}>Put in shot order</MenuOption> : null}
+      {context.target.dataset.replacePiece !== undefined && onShowWhatISay ? <MenuOption type="button" role="menuitem" className="block w-full rounded-lg px-3 py-2 text-left text-small outline-none hover:bg-ink/[0.06] focus:bg-ink/[0.08]" onClick={() => { onShowWhatISay(Number(context.target.dataset.replacePiece)); setContext(undefined); }}>Show what I say here</MenuOption> : null}
       {rotationItems(clip).map(label => <MenuOption key={label} type="button" role="menuitem" className="block w-full rounded-lg px-3 py-2 text-left text-small hover:bg-ink/[0.06] focus:bg-ink/[0.08] outline-none" onClick={() => turn(label)}>{label}</MenuOption>)}
       <MenuOption type="button" role="menuitem" className="block w-full rounded-lg px-3 py-2 text-left text-small hover:bg-ink/[0.06] focus:bg-ink/[0.08] outline-none" onClick={() => void changeIncluded()}>{clip.leftOut ? 'Put back' : 'Leave out of this video'}</MenuOption>
     </ContextMenu>}

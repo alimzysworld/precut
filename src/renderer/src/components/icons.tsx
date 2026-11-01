@@ -224,3 +224,8 @@ export function Rotate(props: IconProps) {
   return <Icon {...props}><path d="M20 9a8 8 0 1 0-1 9M20 3v6h-6" /></Icon>;
 }
 export function Grip(props: IconProps) { return <Icon {...props}><circle cx="9" cy="5" r="1" fill="currentColor" stroke="none"/><circle cx="15" cy="5" r="1" fill="currentColor" stroke="none"/><circle cx="9" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="9" cy="19" r="1" fill="currentColor" stroke="none"/><circle cx="15" cy="19" r="1" fill="currentColor" stroke="none"/></Icon>; }
+// CH2: Claude's pane. Chat is its title mark; SidebarRight is the macOS and VS Code right-sidebar glyph that shows and hides it.
+export function Chat(props: IconProps) { return <Icon {...props}><path d="M5.5 5h13A1.5 1.5 0 0 1 20 6.5v8a1.5 1.5 0 0 1-1.5 1.5H12l-4.5 3.5V16h-2A1.5 1.5 0 0 1 4 14.5v-8A1.5 1.5 0 0 1 5.5 5Z" /><path d="M8.5 10.5h7" /></Icon>; }
+export function SidebarRight(props: IconProps) { return <Icon {...props}><rect x="3.5" y="4.5" width="17" height="15" rx="2.5" /><path d="M14.5 4.5v15M16.8 8.5h1.4M16.8 11.5h1.4" /></Icon>; }
+// POLISH1: its mirror, for the edits sidebar at the window's left.
+export function SidebarLeft(props: IconProps) { return <Icon {...props}><rect x="3.5" y="4.5" width="17" height="15" rx="2.5" /><path d="M9.5 4.5v15M5.8 8.5h1.4M5.8 11.5h1.4" /></Icon>; }

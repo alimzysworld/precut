@@ -1,7 +1,8 @@
 import { clipName } from "../shared/clip-name";
+import { sanitizePin } from "../shared/pin-keys";
 import { planFx, mapTime } from "./edits-fx";
 import { createHash, randomUUID } from "node:crypto";
-import { buildCaptionTrack, isCaptionStyle, validateEmphasis, carryEmphasis, DEFAULT_CAPTION_STYLE, type CaptionSource, type CaptionTrack } from "./titles/captions";
+import { buildCaptionTrack, isCaptionStyle, validateEmphasis, carryEmphasis, carryWordMarks, DEFAULT_CAPTION_STYLE, type CaptionSource, type CaptionTrack } from "./titles/captions";
 import { isCaptionCue, timedCaptionWords } from "../shared/caption-words";
 import { validateKineticDesign, kineticNeeds, updateBigLines } from "./titles/kinetic";
 import { DEFAULT_OPENING_STYLE, OPENING_STYLE_BRIEFS, isOpeningCue, type OpeningStyle } from "./titles/opening";
@@ -476,10 +477,13 @@ export function validateTitleTrack(value: unknown, input: TitlesInput, options: 
         return { text: w.text, s: w.s, e: w.e, ...(w.accent !== undefined ? { accent: w.accent } : {}) };
       });
     }
+    // TRK1b: a title pinned to a thing in the shot keeps its pin (knobs clamped; a wrong shape is refused like any other).
+    let pin: TitleCue["pin"];
+    if (v.pin !== undefined && v.pin !== null) { try { pin = sanitizePin(v.pin); } catch { return fail(`${v.id} has an invalid pin.`); } }
     return { id: v.id, s: v.s, e: v.e, role: v.role, text: v.text, layer: v.layer, x: v.x, y: v.y,
       align: v.align, size: v.size, weight: v.weight, italic: v.italic, color: v.color,
       ...(v.accent !== undefined ? { accent: v.accent } : {}), ...(v.rotate !== undefined ? { rotate: v.rotate } : {}),
-      enter: v.enter, exit: v.exit, ...(words ? { words } : {}) } as TitleCue;
+      enter: v.enter, exit: v.exit, ...(words ? { words } : {}), ...(pin ? { pin } : {}) } as TitleCue;
   });
   const emphasis = value.emphasis === undefined ? [] : validateEmphasis(value.emphasis, input.words);
   const subtitles = buildSubtitleCues(input.words, cues, cues, tolerance);
@@ -878,6 +882,7 @@ export async function styleCaptions(root: string, shoot: Shoot, previous: CutVer
   // Designed titles already made the emphasis decision in their own response.
   const oldWords = (prior as CaptionTrack | undefined)?.captionSource?.words;
   const accented = oldWords && prior?.emphasis?.flatMap(id => oldWords[Number(id)] ? [oldWords[Number(id)]] : []);
+  if (oldWords?.length) input.words = carryWordMarks(oldWords as TimedWord[], input.words as TimedWord[]);   // CAP4: own accent forms and Big follow their words
   const carried = accented ? carryEmphasis(accented as TimedWord[], input.words as TimedWord[])
     : prior?.emphasis ?? (prior?.cues.some(c => c.role === "title" && !c.id.startsWith("kinetic-")) ? [] : undefined);
   // Emphasis on with no key words yet (an edit made with it off keeps an empty list): the model picks them now,
@@ -986,7 +991,8 @@ export async function captionsFollowVoiceover(root: string, record: CutVersion, 
     const mine = (prior!.captionSource?.words ?? timedCaptionWords(prior).map(({ text, s, e, accent }) => ({ text, s, e, accent }))) as TimedWord[];
     const under = (w: { s: number; e: number }) => narrated.spans.some(span => w.s < span.e - epsilon && w.e > span.s + epsilon);
     const heard = voiceGroups(narrated.words, corrections);
-    const words = [...mine.filter(w => !fromVoice(w) && !under(w)), ...heard].sort((a, b) => a.s - b.s || a.e - b.e);
+    // CAP4: a word's own accent form and Big mark follow it, as its accent does.
+    const words = carryWordMarks(mine, [...mine.filter(w => !fromVoice(w) && !under(w)), ...heard].sort((a, b) => a.s - b.s || a.e - b.e));
     const accented = (prior!.emphasis ?? []).flatMap(id => mine[Number(id)] ? [mine[Number(id)]] : []);
     const track = { ...buildCaptionTrack(words, { ...prior!, emphasis: carryEmphasis(accented, words) }, prior!.captionStyle, prior!.captionSource?.safeArea, record.bigLines), captionWordsEdited: true } as VoiceCaptionTrack;
     record.titles = stampVoice(track, corrections, beyond, voiceAddedOf(prior));
@@ -1063,7 +1069,8 @@ export async function rebuildSubtitles(shoot: Shoot, version: CutVersion, templa
     const oldWords = (prior as CaptionTrack).captionSource?.words as TimedWord[] | undefined;
     const accented = (oldWords ? (prior.emphasis ?? []).flatMap(id => oldWords[Number(id)] ? [oldWords[Number(id)]] : []) :
       prior.cues.flatMap(c => (c.words ?? []).filter(w => w.accent))) as TimedWord[];
-    return stampVoice(buildCaptionTrack(input.words, { ...prior, emphasis: carryEmphasis(accented, input.words), captionSource: source } as CaptionTrack, prior.captionStyle, input.safeArea, version.bigLines), corrections, input.beyond, added);
+    const marked = carryWordMarks(oldWords, input.words as TimedWord[]);   // CAP4
+    return stampVoice(buildCaptionTrack(marked, { ...prior, emphasis: carryEmphasis(accented, marked), captionSource: source } as CaptionTrack, prior.captionStyle, input.safeArea, version.bigLines), corrections, input.beyond, added);
   }
   return stampVoice({ ...prior, ...{ captionSource: source }, cues: [...prior.cues.filter(c => c.role !== "subtitle"),
     ...buildSubtitleCues(input.words, prior.cues, prior.cues)].sort((a,b) => a.s-b.s) } as DesignedTitleTrack, corrections, input.beyond, added);

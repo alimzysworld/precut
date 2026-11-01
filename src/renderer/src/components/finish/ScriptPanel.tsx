@@ -22,6 +22,7 @@ import { playSpans, stopAudition } from "../planAudio";
 import { voiceSource } from "../voiceoverModel";
 import { Button, InlineError } from "../ui";
 import { Pause, Play, Voice } from "../icons";
+import { showWhatISay } from "../ShowWhatISay";  // BROLL2
 
 type Point = { w: number; o: number };
 type Sel = { a: Point; f: Point };
@@ -749,6 +750,7 @@ export function ScriptPanel({ shoot: inputShoot, version: savedVersion, time = 0
       <div className="script-footer">
         <p className="script-status" role="status">{status}</p>
         {selectedCut.length ? <Button type="button" variant="primary" className="script-restore" onMouseDown={event => event.preventDefault()} onClick={() => restoreWords(selected)}>Restore</Button> : null}
+        {!range && selectedLive.length && !selectedCut.length ? <button type="button" className="script-chip" data-show-what-i-say-script onMouseDown={event => event.preventDefault()} onClick={() => { const chosen = selectedLive.map(i => doc.words[i]); showWhatISay(Math.min(...chosen.map(w => w.start)), Math.max(...chosen.map(w => w.end))); }}>Show what I say</button> : null}
         {!range ? <button type="button" className="script-toggle" role="switch" aria-checked={showCuts} onClick={() => { setShowCuts(on => !on); setDots(null); }}><span className="script-switch" aria-hidden="true" />Show cuts</button> : null}
       </div>
       {offer ? <div className="script-tools script-offer"><span>Use “{offer.correction}” for the same word elsewhere in this shoot?</span><button type="button" className="script-chip" onClick={() => void fixAll()}>Fix all {offer.words.length}</button><button type="button" className="script-chip" onClick={() => setOffer(null)}>Dismiss</button></div> : null}

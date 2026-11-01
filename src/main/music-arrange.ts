@@ -207,13 +207,40 @@ async function request(root:string,record:ArrangeRecord,fx:FxPlan) {
   const anchor=(music as Music).pinnedArrangement;
   const shaped=!!anchor && /^[a-f0-9]{64}$/.test(anchor.key) && Number.isFinite(anchor.durationS) && anchor.durationS>0 && anchor.durationS<=1800;
   const pinned=!!anchor && shaped && (anchor.source===source || anchor.source===oldSource || !String(anchor.source).startsWith(PIN_FORM) && await movedOldPin(root,file,anchor.key));
-  if(anchor && pinned && await pinFits(root,file,anchor.durationS,fx.durationS,anchor.key))
-    return {music:music as Music,file,...anchor,source,scope,installed};
+  // SCN1b: a pause held in the pinned arrangement: the same parts, the bed playing on under each pause, the rest after it.
+  const holds=(anchor?.holds ?? []).filter(h=>Number.isFinite(h.atS) && h.atS>=0 && Number.isFinite(h.s) && h.s>0);
+  if(anchor && pinned && holds.length && Math.abs(anchor.durationS+holds.reduce((n,h)=>n+h.s,0)-fx.durationS)<2e-3)
+    return {music:music as Music,file,key:digest([12,anchor.key,holds]),source,durationS:fx.durationS,packet:anchor.packet,moments:anchor.moments,storyKey:anchor.storyKey,scope,installed,held:{base:anchor.key,baseS:anchor.durationS,holds} as Held|null};
+  if(anchor && pinned && !holds.length && await pinFits(root,file,anchor.durationS,fx.durationS,anchor.key))
+    return {music:music as Music,file,...anchor,source,scope,installed,held:null as Held|null};
   // V63: a refit for a new length keeps the pinned story decision (its moments
   // retime onto this edit), so a trim never buys another model call.
   const storyKey=moments ? pinned && anchor?.storyKey ? anchor.storyKey : digest([2,identity,installed,storyIdentity(record,fx)]) : null;
   const key=digest([11,installed,scope,identity,Math.round(fx.durationS*48000)/48000,music.startS,!!music.fit,!!music.followStory,packet,storyKey]);
-  return {music:music as Music,file,key,source,durationS:fx.durationS,packet,moments,storyKey,scope,installed};
+  return {music:music as Music,file,key,source,durationS:fx.durationS,packet,moments,storyKey,scope,installed,held:null as Held|null};
+}
+type Held={base:string;baseS:number;holds:{atS:number;s:number}[]};
+/** SCN1b: the base arrangement's parts with each pause held in it (in the order they were made, each on the clock it
+ *  was made on): the part playing at the pause carries on through it from where it was, then the arrangement resumes
+ *  from that same point, so everything before is sample for sample the same and everything after follows his voice. */
+export function heldParts(parts:MusicPart[],holds:{atS:number;s:number}[],trackS:number):MusicPart[] {
+  let out=[...parts].sort((a,b)=>a.atS-b.atS);
+  for(const {atS:a,s:P} of holds){
+    const next:MusicPart[]=[];
+    const at=out.findIndex(p=>p.atS<=a+1e-9 && p.atS+(p.sourceE-p.sourceS)>a+1e-9);
+    const before=at<0 ? [...out].reverse().find(p=>p.atS+(p.sourceE-p.sourceS)<=a+1e-9) : out[at];
+    const cut=before ? (at<0 ? before.sourceE : before.sourceS+(a-before.atS)) : 0;
+    const from=Math.max(0,Math.min(cut,trackS-P));
+    for(const [i,p] of out.entries()){
+      if(i===at){
+        if(cut>p.sourceS+1e-9)next.push({...p,sourceE:cut});
+        next.push({sourceS:from,sourceE:from+P,atS:a,section:p.section},{...p,sourceS:cut,atS:a+P});
+      } else next.push(p.atS>=a-1e-9 ? {...p,atS:p.atS+P} : p);
+    }
+    if(at<0)next.push({sourceS:from,sourceE:from+P,atS:a,section:before?.section ?? 0});
+    out=next.sort((x,y)=>x.atS-y.atS);
+  }
+  return out;
 }
 /** A hand edit carries the original request, so even pending work/relaunch uses
  * exactly the old clock. No media or model work runs in the save transaction. */
@@ -228,7 +255,7 @@ export async function pinMusicForHandEdit(root:string,previous:StoredVersion,rec
   if(JSON.stringify(clock(previous,oldFx))===JSON.stringify(clock(record,nextFx)))return;
   const r=await request(root,previous,oldFx);if(!r)return;
   const {key,source,durationS,packet,moments,storyKey}=r;
-  record.music={...after,pinnedArrangement:{key,source,durationS,packet,moments,storyKey}};
+  record.music={...after,pinnedArrangement:r.held ? {key:r.held.base,source,durationS:r.held.baseS,packet,moments,storyKey,holds:r.held.holds} : {key,source,durationS,packet,moments,storyKey}};
   // V63: a length change past one beat pins the refit for the new length instead,
   // keeping the accepted story decision.
   if(await pinFits(root,r.file,r.durationS,nextFx.durationS,r.key))return;
@@ -303,10 +330,14 @@ export async function arrangedMusic(root:string,record:ArrangeRecord,fx:FxPlan,w
           // A story the model can't decide never stops the music (or an export): it fits the length without
           // following the story, and says so. The story's one request stays spent, as chooseStory records it.
           let decision:Awaited<ReturnType<typeof chooseStory>>|null=null,storyNote:string|undefined;
-          if(r.moments && r.storyKey)try{decision=await chooseStory(r.scope,cache,r.storyKey,r.moments,measurements,!!stems,activity.signal);}
+          // SCN1b: a held arrangement is its base arrangement's parts with the pauses in it: no story call, no refit.
+          const base=r.held ? await fs.readFile(path.join(cache,`arrange-${r.held.base}.json`),'utf8').then(t=>JSON.parse(t) as MusicArrangement).catch(()=>null) : null;
+          if(r.held && !base)throw Error('The music held under the pause needs its arrangement. Play the edit once before the pause, or fit the music again.');
+          if(!base && r.moments && r.storyKey)try{decision=await chooseStory(r.scope,cache,r.storyKey,r.moments,measurements,!!stems,activity.signal);}
           catch(error){if(error instanceof SupersededStory || activity.signal.aborted)throw error;storyNote=STORY_UNAVAILABLE;console.warn('[music] arranged without the story:',error);}
-          const shape=decision && r.moments ? retimeStory(decision,r.moments) : [];
-          const parts=arrangeBars(measurements,r.durationS,r.music.startS,shape);
+          const shape=base && r.held ? base.shape.map(p=>({...p,atS:p.atS+r.held!.holds.filter(h=>h.atS<=p.atS+1e-9).reduce((n,h)=>n+h.s,0)})) : decision && r.moments ? retimeStory(decision,r.moments) : [];
+          const parts=base && r.held ? heldParts(base.parts,r.held.holds,measurements.durationS) : arrangeBars(measurements,r.durationS,r.music.startS,shape);
+          if(base){decision={summary:base.summary,alreadyFits:base.alreadyFits} as never;storyNote=base.storyNote;}
           const spec=path.join(staging,'render.json');
           await fs.writeFile(spec,JSON.stringify({file:r.file,sources:stems,parts,shape,durationS:r.durationS,directory:staging}));
           await processAudio(['-I',helper,'render',spec]);

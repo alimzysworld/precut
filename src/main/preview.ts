@@ -52,7 +52,7 @@ import { currentActivity, runActivity, threads } from "./activity";
 import { gradeFilter, neutralGrade, gradeForLook, gradeForPiece, cameraConversionFilter, pieceGradeFilter } from "./grade";
 import { DEFAULT_AUDIO_FINISH, normalizeAudio, voiceFilter, prepareVoicePiece, loudnessFilter, measureLoudness, type PreparedVoice, type LoudnessMeasurement } from "./audio";
 import { measureSourceAudio } from "./voice-isolation";
-import { planFx, joinChoices, fxPictures, fxSetpts, fxAudioSegments, type FxItem, type FxPlan, type FxVersion } from "./edits-fx";
+import { planFx, joinChoices, fxPictures, fxSetpts, fxAudioSegments, matchComposes, type FxItem, type FxPlan, type FxVersion, type MatchedFraming } from "./edits-fx";
 import { soundDuration } from "./sfx";
 import { prepareDesignSounds, type PreparedEffect } from "./sound-design";
 import { renderTitleTrack, titleStream } from "./titles/render";
@@ -147,6 +147,18 @@ export function cutFraming(cuts: CutItem[], fps: number, out: { w: number; h: nu
       y: bounded(b.y * meta.height - screenY * h, 0, meta.height - h), w, h }, duration: faceMatch === "snap" || energy === "off" ? 0 : .6 };
   });
   return plans;
+}
+
+/** FACE1: each face-matched cut's framing in source fractions, for fxPictures to compose with the craft pass (a punch on
+ * either side of the cut). Motion-framed cuts (rects) keep their own composed rects. */
+export function matchedFraming(cuts: CutItem[], plans: (CutFraming | undefined)[]): (i: number) => MatchedFraming | undefined {
+  return i => {
+    const plan = plans[i], meta = cuts[i]?.seg?.clip.meta;
+    if (!plan?.match || plan.rects || !meta) return undefined;
+    const unit = (r: FrameRect) => ({ x: r.x / meta.width, y: r.y / meta.height, w: r.w / meta.width, h: r.h / meta.height });
+    const planned = { ...plan, match: undefined };
+    return { from: unit(plan.match.from), duration: plan.match.duration, planned: t => { const r = framingRectAt(planned, t); return r && unit(r); } };
+  };
 }
 
 /** Select matching per spine join, leaving transcript sub-item joins intact. */
@@ -383,7 +395,7 @@ export async function renderPreview(root: string, cutList: CutItem[], opts: Prev
 export interface FinishingPreviewOptions {
   name: string;
   template: Pick<Template, "width" | "height" | "fps">;
-  version: Pick<CutVersion, "clipSoundMuted" | "clipSoundDefaultOn" | "laneLevels" | "laneMuted" | "voiceover" | "titles" | "grade" | "audio" | "energy" | "faceMatch" | "music" | "framing" | "pieceFx" | "transition" | "joins" | "overlays" | "sfx" | "bigLines" | "bleeps" | "lowerThirds" | "layouts" | "angleCuts"> & { assembly?: import('./sidekick').StoredVersion['assembly'] };
+  version: Pick<CutVersion, "pieces" | "clipSoundMuted" | "clipSoundDefaultOn" | "laneLevels" | "laneMuted" | "voiceover" | "titles" | "grade" | "audio" | "energy" | "faceMatch" | "music" | "framing" | "pieceFx" | "transition" | "joins" | "overlays" | "sfx" | "bigLines" | "bleeps" | "lowerThirds" | "layouts" | "angleCuts"> & { assembly?: import('./sidekick').StoredVersion['assembly'] };
   reel?: ReelAssembly;
   full?: boolean;
   still?: { t: number }; // N9: one finished picture, no sound
@@ -702,7 +714,7 @@ export async function cachedDraftSound(root: string, cuts: CutItem[], opts: Fini
     if (sound) files.add(await resource(`resources/sfx/${sound.file}`));
   }
   files.add(tool('ffmpeg'));
-  const arrangeRecord={music:opts.version.music,assembly:opts.version.assembly ?? {cutList:cuts,reel:opts.reel ?? {cuts:[],why:''}}};
+  const arrangeRecord={music:opts.version.music,assembly:opts.version.assembly ?? {cutList:cuts,template:{fps:opts.template.fps},reel:opts.reel ?? {cuts:[],why:''}}};
   const arrangementKey=music?.fit || music?.followStory ? await (await import('./music-arrange')).musicArrangementKey(root,arrangeRecord,fx) : null;
   // The sound used an arrangement made without the model's story decision: whoever asked (an export) says so.
   const noteArrangement = async (file: string) => {
@@ -710,7 +722,7 @@ export async function cachedDraftSound(root: string, cuts: CutItem[], opts: Fini
     if (notes && arrangementKey) { const note = (await (await import('./music-arrange')).readMusicArrangement(root,arrangeRecord,fx))?.storyNote; if (note) notes.add(note); }
     return file;
   };
-  const key = digest({ revision: 5, arrangementKey, clipSoundDefaultOn:opts.version.clipSoundDefaultOn,laneLevels:opts.version.laneLevels,laneMuted:opts.version.laneMuted,clipSoundMuted:opts.version.clipSoundMuted,pieceFx:opts.version.pieceFx,attached:opts.reel?.broll, voiceover: opts.version.voiceover, audio: opts.version.audio, music, sfx: opts.version.sfx, bleeps: opts.version.bleeps,
+  const key = digest({ revision: 6, arrangementKey, clipSoundDefaultOn:opts.version.clipSoundDefaultOn,laneLevels:opts.version.laneLevels,laneMuted:opts.version.laneMuted,clipSoundMuted:opts.version.clipSoundMuted,pieceFx:opts.version.pieceFx,attached:opts.reel?.broll, voiceover: opts.version.voiceover, audio: opts.version.audio, music, sfx: opts.version.sfx, bleeps: opts.version.bleeps,
     items: fx.items, joins: fx.joins.map(j => ({ atS: j.atS, sound: j.choice.sound })), duration: fx.durationS,
     cuts: cuts.map(c => ({ in: c.inFrames, out: c.outFrames, fps: c.clipFpsR, length: c.durTimelineFrames,
       seg: c.seg && { line: c.seg.lineIndex, words: c.seg.speechWords, file: c.seg.clip.file, sound: c.seg.clip.sound, meta: c.seg.clip.meta, transcript: c.seg.clip.transcript } })),
@@ -744,7 +756,7 @@ export async function draftSoundMaster(root: string, cuts: CutItem[], opts: Fini
 async function prepareDraftSound(root: string, cuts: CutItem[], opts: FinishingPreviewOptions, voiceOnly = false, referencePass = false, measure?: SoundMeasure): Promise<string> {
   currentActivity()?.signal.throwIfAborted();
   const fps = opts.template.fps, fx = planFx(cuts, fps, opts.version), duration = fx.durationS;
-  const effects = voiceOnly ? [] : await prepareDesignSounds(root, fx, opts.version);
+  const effects = voiceOnly ? [] : await prepareDesignSounds(root, fx, opts.version, opts.template.fps);
   let reference: LoudnessMeasurement | undefined;
   const chosenMusic = voiceOnly ? null : finishingMusic(root, opts);
   const musicFader = chosenMusic && chosenMusic.gainDb !== -18;
@@ -797,8 +809,8 @@ async function prepareDraftSound(root: string, cuts: CutItem[], opts: FinishingP
     }
   }
   // Cache music's channel measurements too, but preserve its stereo image.
-  const arranged = voiceOnly ? null : await (await import('./music-space')).musicForEdit(root,{music:opts.version.music,assembly:opts.version.assembly ?? {cutList:cuts,reel:opts.reel ?? {cuts:[],why:''}}},fx,true,(await import('./music-arrange')).arrangedMusic);
-  const music = arranged?.arrangement ? arranged.music : voiceOnly ? null : finishingMusic(root, opts);
+  const arranged = voiceOnly ? null : await (await import('./music-space')).musicForEdit(root,{...opts.version,music:opts.version.music,assembly:opts.version.assembly ?? {cutList:cuts,template:{fps:opts.template.fps},reel:opts.reel ?? {cuts:[],why:''}}},fx,true,(await import('./music-arrange')).arrangedMusic);
+  const music = voiceOnly || !arranged?.music ? null : playableMusic(root, { ...arranged.music, gainDb: arranged.music.gainDb ?? chosenMusic?.gainDb ?? -18 });
   if (music) await measureSourceAudio(root, path.resolve(root, music.file));
   const stems = music && music.duck !== false && music.stemDucking !== false ? (arranged?.arrangement ? arranged.arrangement.stems : await musicStems(root,path.resolve(root,music.file),true,{s:music.startS,e:music.startS+duration})) : undefined;
   for (const effect of effects) await measureSourceAudio(root, effect.file);
@@ -985,7 +997,7 @@ export function renderFxPictures(cuts: CutItem[], fps: number, plans: (CutFramin
     }) : null;
     return { startS, endS: startS + length, inS, layer: 0, clipId: clip?.id ?? '', proxy: '', lut: '', piece: cut.piece ?? i, frame };
   });
-  return fxPictures(pictures, cuts, fps, fx);
+  return fxPictures(pictures, cuts, fps, fx, matchedFraming(cuts, plans));
 }
 /** AV4: the export's spine, written to NUT (which keeps no colour tags), in one known coding. See renderParts. */
 export const SPINE_CODING = "scale=out_color_matrix=bt601:out_range=full";
@@ -1036,6 +1048,8 @@ export async function renderFinishingPreview(root: string, cuts: CutItem[], opts
   const fullScale = shortSide / Math.min(width, height);
   const w = opts.full ? Math.round(width * fullScale / 2) * 2 : 960;
   const h = opts.full ? Math.round(height * fullScale / 2) * 2 : Math.round(w * height / width / 2) * 2;
+  // TRK2: a locked clip's track is read first (tracked again if the cache was cleared, waited for): never a lock dropped.
+  if (opts.version.pieceFx?.some(f => f?.lock)) await (await import('./tracking/lock')).loadLockTracks(root, opts.version.pieceFx, cuts.flatMap(c => c.seg ? [c.seg.clip] : []), true);
   const fx = planFx(cuts, fps, opts.version), out = { w, h }, duration = fx.durationS;
   // EXP2: a still needs one frame. Render real picture only for the piece holding it
   // and the piece before (a dissolve into it), stand in black for earlier pieces and
@@ -1059,14 +1073,23 @@ export async function renderFinishingPreview(root: string, cuts: CutItem[], opts
   const energy = opts.version.energy ?? "subtle", beats = energyBeats(cuts, fps), plans = joinFraming(cuts, fps, opts.version.layouts?.some(Boolean) ? reference : out, energy, opts.version, motions, reference);
   const fxPictures = renderFxPictures(cuts, fps, plans, fx);
   const angleFrames = opts.version.angleCuts?.length && opts.version.assembly ? anglePictures(fxPictures, { ...opts.version, assembly: opts.version.assembly }, motions, reference) : [];
+  // TRK1b: pinned graphics and titles follow their thing through the export's own pictures (the same pinAt the viewers
+  // use). A track that was cleared is made again first: the export waits for it, never draws a pin unpinned.
+  if (opts.version.overlays?.some(o => o.pin) || opts.version.titles?.cues.some(c => c.pin)) {
+    const { withClipTransforms } = await import('../shared/clip-transform');
+    const pinned = await (await import('./tracking/pin')).pinForExport(root, opts.version.overlays ?? [], opts.version.titles, withClipTransforms(angleFrames.length ? angleFrames : fxPictures, opts.version.pieceFx),
+      { width: w, height: h, fps }, opts.version.assembly?.shoot.clips ?? cuts.flatMap(c => c.seg ? [c.seg.clip] : []));
+    opts = { ...opts, version: { ...opts.version, overlays: pinned.overlays, titles: pinned.titles ?? opts.version.titles } };
+  }
   const layoutFrames = opts.version.layouts?.some(Boolean) ? splitLayoutTransitions(layoutPictures(angleFrames.length ? angleFrames : fxPictures, {
     layouts: opts.version.layouts, titles: opts.version.titles, pieceFx: opts.version.pieceFx, assembly: opts.version.assembly ?? { shoot: { root, clips: cuts.flatMap(c => c.seg ? [c.seg.clip] : []) } as import('../shared/schema').Shoot, template: opts.template as Template } as import('./sidekick').StoredVersion['assembly']
   })) : [];
+  const composes = matchComposes(fx, matchedFraming(cuts, plans));   // FACE1: matched across a punch, framed in fxPictures
   const fxPlans = plans.map((plan, i) => {
     const picture = fxPictures[i], clip = cuts[i].seg?.clip;
-    const moving = !!fx.craft?.motions?.some(m => m.item === i);   // PRO3b: an authored punch on this cut
-    const changed = fx.items[i].reverse || picture.blur || fx.craft?.scales[i] !== 1 || fx.craft?.punches.length || moving || Math.abs(picture.endS - picture.startS - cuts[i].durTimelineFrames / fps) > 1e-7;
-    // A clip that fills the frame as shot has no framing plan; its punch still needs the rects, from a whole-frame plan.
+    const moving = !!fx.craft?.motions?.some(m => m.item === i) || !!fx.items[i].lock;   // PRO3b: an authored punch on this cut; TRK2: a locked frame
+    const changed = fx.items[i].reverse || picture.blur || fx.craft?.scales[i] !== 1 || fx.craft?.punches.length || moving || Math.abs(picture.endS - picture.startS - cuts[i].durTimelineFrames / fps) > 1e-7 || composes[i];
+    // A clip that fills the frame as shot has no framing plan; its punch (or lock) still needs the rects, from a whole-frame plan.
     if (!plan && moving && clip?.meta && picture.frame) plan = { scale: 1, push: 0, x: .5, y: .5, elapsed: 0, duration: picture.endS - picture.startS, crop: null } as CutFraming;
     return plan && clip && picture.frame && changed ? { ...plan, rects: picture.frame.map(k => ({ t: k.t - picture.startS, x: k.x * clip.meta!.width, y: k.y * clip.meta!.height, w: k.w * clip.meta!.width, h: k.h * clip.meta!.height })) } : plan;
   });

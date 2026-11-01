@@ -1,9 +1,9 @@
 import { Checkbox } from "./ui";
 import { Tile, InlineError, Row } from "./ui";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, Export, EditorResolve, EditorPremiere, EditorFinalCut, EditorCapCut } from "./icons";
 import { MusicNotes, Play, Pause } from "@phosphor-icons/react";
-import { LookStrip, type LookChoice } from "./FinishPanel";
+import { type LookChoice } from "./FinishPanel";
 import { motion } from "framer-motion";
 import type { Engine, ExportTarget, FirstRunDownloads, Preferences, SetupCheck, StarterTrack, TerminalSetup, TerminalStep } from "../../../shared/schema";
 import { getApi, isFixtureMode } from "../data";
@@ -73,8 +73,6 @@ export function useSetup() {
 }
 
 type SetupProps = Pick<ReturnType<typeof useSetup>, "checks" | "checking" | "error" | "refresh" | "ready"> & { onContinue: () => void };
-type SetupLook = Awaited<ReturnType<ReturnType<typeof getApi>["renderSampleLooks"]>>[number];
-type Sample = "daylight" | "warm" | "night" | "shoot";
 export { POST_PLACES as postPlaces, type PostPlace } from "../../../main/post-places";
 import { POST_PLACES as postPlaces, normalizePostPlaces, postingPreferences as postPreferences, type PostPlace } from "../../../main/post-places";
 export { postPreferences };
@@ -112,59 +110,37 @@ export function EditorChoices({ value, onChange, disabled }: { value: ExportTarg
   </fieldset>;
 }
 
-/** Keep every rendered gallery in memory so changing frames never clears a ready one. */
-export function SampleLookPicker({ value, disabled, onChoose, onReady }: { value: LookChoice; disabled?: boolean; onChoose: (value: LookChoice) => Promise<boolean>; onReady?: (ready: boolean) => void }) {
-  const [sample, setSample] = useState<Sample>("daylight");
-  const [galleries, setGalleries] = useState<Partial<Record<Sample, SetupLook[]>>>({});
-  const [errors, setErrors] = useState<Partial<Record<Sample, string>>>({});
-  const [attempt, setAttempt] = useState(0);
-  const [frame, setFrame] = useState<{ root: string; clipId: string; t: number } | null>(null);
-  useEffect(() => {
-    let active = true;
-    const api = getApi();
-    async function load(id: Sample, render: () => Promise<SetupLook[]>) {
-      try {
-        const gallery = await render();
-        if (!gallery.length || !gallery.some(look => look.id === "clean") || gallery.some(look => !look.image)) throw Error("Missing previews");
-        if (active) { setGalleries(previous => ({ ...previous, [id]: gallery })); setErrors(previous => ({ ...previous, [id]: undefined })); }
-      } catch { if (active) setErrors(previous => ({ ...previous, [id]: "Could not load this frame. Try again, or skip for now." })); }
-    }
-    void (async () => {
-      await load("daylight", () => api.renderSampleLooks("daylight"));
-      if (!active) return;
-      // The activity bus queues these behind the first frame and playback.
-      await Promise.all([load("warm", () => api.renderSampleLooks("warm")), load("night", () => api.renderSampleLooks("night"))]);
-    })();
-    void api.listShoots().then(async entries => {
-      const shoots = await Promise.all(entries.filter(entry => entry.online).map(entry => api.loadShoot(entry.root).catch(() => null)));
-      const first = shoots.filter((shoot): shoot is NonNullable<typeof shoot> => Boolean(shoot))
-        .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
-        .map(shoot => ({ shoot, clip: shoot.clips.find(clip => clip.meta && clip.meta.durationS > 0 && clip.meta.width > 0 && clip.meta.height > 0) })).find(entry => entry.clip);
-      if (active && first?.clip) setFrame({ root: first.shoot.root, clipId: first.clip.id, t: Math.min(3, first.clip.meta!.durationS / 2) });
-    }).catch(() => {});
-    return () => { active = false; };
-  }, [attempt]);
-  useEffect(() => {
-    if (sample !== "shoot" || !frame || galleries.shoot) return;
-    let active = true;
-    void getApi().renderLookPreviews(frame.root, frame.clipId, frame.t).then(gallery => {
-      if (!gallery.length || gallery.some(look => !look.image)) throw Error("Missing previews");
-      if (active) setGalleries(previous => ({ ...previous, shoot: gallery }));
-    }).catch(() => { if (active) setErrors(previous => ({ ...previous, shoot: "Could not load your shoot frame. Try another sample." })); });
-    return () => { active = false; };
-  }, [sample, frame, attempt]);
-  const gallery = galleries[sample];
-  useEffect(() => { onReady?.(Boolean(gallery?.length)); }, [gallery, onReady]);
-  return <div className="space-y-4">
-    <div role="group" aria-label="Sample frame" className="flex flex-wrap justify-center gap-1 rounded-2xl bg-ink/[0.035] p-1">
-      {(["daylight", "warm", "night", ...(frame ? ["shoot"] : [])] as Sample[]).map(id => <Tile type="button" key={id} disabled={disabled} aria-pressed={sample === id} onClick={() => setSample(id)}
-        className={`rounded-xl px-4 py-2 text-small ${sample === id ? "bg-[var(--selection-fill)] text-ink" : "text-muted hover:text-ink"} ${FOCUS}`}>{id === "shoot" ? "On a frame from your first shoot" : { daylight: "Daylight", warm: "Warm", night: "Night" }[id]}</Tile>)}
-    </div>
-    {gallery ? <LookStrip t={0} suppliedImages={gallery} value={value} disabled={disabled} mode="stage" onChoose={onChoose} />
-      : errors[sample] ? <div className="py-8 text-center"><InlineError className="text-small text-danger">{errors[sample]}</InlineError><Button className="mt-3" onClick={() => { setErrors({}); setAttempt(n => n + 1); }}>Try again</Button></div>
-      : <div role="status" className="py-12 text-center text-small text-muted">Preparing looks on your {sample === "shoot" ? "shoot" : sample} frame…</div>}
-  </div>;
+/** POLISH1: the first run's "How do you want your videos?". The finished video comes first and is on by default; the
+ * editors are extras ("Also open in"). It stores the same export targets as Settings (mp4 plus any editors). */
+export function VideoChoices({ value, onChange, disabled }: { value: ExportTarget[]; onChange: (value: ExportTarget[]) => void; disabled?: boolean }) {
+  const [icons, setIcons] = useState<Awaited<ReturnType<ReturnType<typeof getApi>["appIcons"]>> | null>(null);
+  useEffect(() => { let active = true; void getApi().appIcons().then(result => { if (active) setIcons(result); }).catch(() => {}); return () => { active = false; }; }, []);
+  const toggle = (id: ExportTarget) => onChange(value.includes(id) ? value.filter(entry => entry !== id) : [...value, id]);
+  const editors = exportChoices.filter(editor => editor.id !== "mp4")
+    .sort((a, b) => Number(!!icons?.[b.id as Exclude<ExportTarget, "mp4">]?.installed) - Number(!!icons?.[a.id as Exclude<ExportTarget, "mp4">]?.installed));
+  const row = (on: boolean) => `flex cursor-pointer items-center gap-3 rounded-2xl px-4 py-3 text-small ${on ? "bg-[var(--selection-fill)]" : "bg-ink/[0.035]"}`;
+  return <fieldset disabled={disabled} className="space-y-2"><legend className="sr-only">How you want your videos</legend>
+    <label data-video-choice="mp4" className={row(value.includes("mp4"))}>
+      <Checkbox aria-label="The finished video" checked={value.includes("mp4")} onChange={() => toggle("mp4")} className={`size-4 accent-accent ${FOCUS}`} />
+      <Export size={28} className="text-muted" />
+      <span className="flex min-w-0 flex-1 flex-col"><span className="font-medium">The finished video</span><span className="text-micro text-muted">Captions, look and sound done, ready to post</span></span>
+    </label>
+    <p className="m-0 px-1 pt-3 text-micro text-muted">Also open in</p>
+    {editors.map(editor => {
+      const app = icons?.[editor.id as Exclude<ExportTarget, "mp4">];
+      const Mark = { resolve: EditorResolve, premiere: EditorPremiere, finalcut: EditorFinalCut, capcut: EditorCapCut }[editor.id as Exclude<ExportTarget, "mp4">];
+      return <label key={editor.id} data-video-choice={editor.id} className={row(value.includes(editor.id))}>
+        <Checkbox aria-label={`Also open in ${editor.name}`} checked={value.includes(editor.id)} onChange={() => toggle(editor.id)} className={`size-4 accent-accent ${FOCUS}`} />
+        {app?.icon ? <img src={app.icon} alt="" className="size-8 object-contain" /> : <Mark size={28} className="text-muted" />}
+        <span className="flex-1 font-medium">{editor.name}</span>
+        {app?.installed && <span className="text-micro text-good">Installed</span>}
+      </label>;
+    })}
+  </fieldset>;
 }
+
+export { SampleLookPicker, prepareSetupLooks, forgetSetupLooks } from "./finish/SampleLookPicker";
+import { SampleLookPicker, prepareSetupLooks } from "./finish/SampleLookPicker";
 
 // ---- ONB2: the first run (briefs/ONB2-first-run.md, approved prototype docs/plans/onboarding/prototype.html).
 // Welcome, AI (optional), terminal, music, where you post, editors, look. Continue is never blocked; Skip skips one step.
@@ -185,9 +161,8 @@ export default function Setup({ checks, refresh, onContinue }: SetupProps) {
   const [starter, setStarter] = useState<{ on: boolean; tracks: StarterTrack[] } | null>(null);
   // Where you post, editors, look
   const [places, setPlaces] = useState<PostPlace[]>([]);
-  const [targets, setTargets] = useState<ExportTarget[]>([]);
+  const [targets, setTargets] = useState<ExportTarget[]>(["mp4"]);  // POLISH1: the finished video is on by default
   const [choice, setChoice] = useState<LookChoice>({ preset: "clean", words: null, intensity: .7 });
-  const [lookReady, setLookReady] = useState(false);
   const [preferencesReady, setPreferencesReady] = useState(false);
   // AI
   const [engine, setEngine] = useState<Engine | "none">("claude");
@@ -212,6 +187,8 @@ export default function Setup({ checks, refresh, onContinue }: SetupProps) {
     void safely(() => api.getEngineChoice ? api.getEngineChoice() : api.getEngine()).then(value => { if (mounted.current && value) { setEngine(value); if (value === "none") setPicked(true); } });
     // First-run downloads start at once and keep going while the person sets up.
     void safely(() => api.startFirstRunDownloads());
+    // POLISH1: the look step's galleries render now, so they are ready by the last step.
+    void prepareSetupLooks().catch(() => {});
     const poll = async () => { const value = await safely(() => api.firstRunDownloads()); if (mounted.current && value) setDownloads(value); };
     void poll();
     const timer = window.setInterval(() => void poll(), 2000);
@@ -304,9 +281,8 @@ export default function Setup({ checks, refresh, onContinue }: SetupProps) {
   const skip = () => { if (busy || actionPending.current) return; advance(); };
   const pillOf = (target: Engine) => enginePill(engines.find(row => row.id === target), target, phases[target]);
   const chosenReady = engine === "none" || pillOf(engine) === "ready";
-  const terminalStarted = Object.values(terminal).some(value => value?.steps.command);
-  const canNext = !busy && (id === "post" ? places.length > 0 : id === "editors" ? targets.length > 0 : id === "look" ? lookReady && preferencesReady : true);
-  const nextLabel = busy ? "Working…" : id === "welcome" ? "Get started" : id === "look" ? "Finish" : id === "ai" && !chosenReady ? "Skip for now" : id === "terminal" && !terminalStarted ? "Not now" : "Continue";
+  const canNext = !busy && (id === "post" ? places.length > 0 : id === "editors" ? targets.length > 0 : id === "look" ? preferencesReady : true);
+  const nextLabel = busy ? "Working…" : id === "welcome" ? "Get started" : id === "look" ? "Finish" : id === "ai" && !chosenReady ? "Skip for now" : "Continue";
   const [help, setHelp] = useState(false);
   const shortcuts = useShortcuts("setup", [
     { id: "setup-next", keys: ["Cmd+Enter"], label: "Continue setup", scope: "setup", enabled: canNext, handler: () => void next() },
@@ -315,21 +291,23 @@ export default function Setup({ checks, refresh, onContinue }: SetupProps) {
   ]);
   const line = downloadLine(downloads);
   const wide = id === "look" || id === "welcome";
+  // POLISH1: the name sits beside the window's traffic lights, on their line. The step scrolls from its top: centring
+  // with auto margins (never align-items) keeps a tall step (the look gallery) reachable all the way up.
   return <main data-setup-step={id} className="flex h-dvh flex-col overflow-hidden text-body text-ink">
-    <div className="flex shrink-0 items-center gap-2 px-6 pt-4 text-small font-semibold text-muted"><span>precut</span></div>
-    <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto px-6 py-4">
+    <div className="flex h-[60px] shrink-0 items-center pl-[100px] pr-6 text-small font-semibold text-muted" style={{ WebkitAppRegion: "drag" } as React.CSSProperties}><span>precut</span></div>
+    <div data-setup-scroll className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 py-4">
       <motion.section key={id} aria-labelledby="setup-title" initial={{ opacity: 0, y: reduced ? 0 : 8 }} animate={{ opacity: 1, y: 0 }} transition={reduced ? instant : spring.sheet}
-        className={`flex w-full flex-col gap-5 ${wide ? "max-w-[760px]" : "max-w-[620px]"}`}>
+        className={`m-auto flex w-full flex-col gap-5 ${id === "look" ? "max-w-[1040px]" : wide ? "max-w-[760px]" : "max-w-[620px]"}`}>
         {id === "welcome" ? <Welcome />
           : id === "ai" ? <AiStep engine={picked || (engine !== "none" && pillOf(engine) === "ready") ? engine : null} engines={engines} pillOf={pillOf} busy={busy} note={aiNote} onChoose={choose} onAction={engineAction} />
           : id === "terminal" ? <TerminalSetupStep setups={terminal} busy={settingUp} onSetUp={setUp} />
           : id === "music" ? <MusicStep folder={musicFolder} onFolder={setMusicFolder} starter={starter} onStarter={async on => { setStarter(previous => previous ? { ...previous, on } : previous); await safely(() => getApi().setStarterMusic ? getApi().setStarterMusic!(on) : Promise.resolve()); }} />
           : <>
-            <header><h1 id="setup-title" className="m-0 font-display text-[26px] font-bold leading-tight tracking-tight">{{ post: "Where do you post?", editors: "Which editor do you finish in?", look: "Pick your look" }[id]}</h1>
-              <p className="m-0 mt-2 max-w-[52ch] text-[16px] text-muted">{{ post: "Choose all that apply. Your main place sets the caption safe area.", editors: "Choose one or more. These will be selected when you export.", look: "The same look in three kinds of light. Change it any time, per edit." }[id]}</p></header>
+            <header><h1 id="setup-title" className="m-0 font-display text-[26px] font-bold leading-tight tracking-tight">{{ post: "Where do you post?", editors: "How do you want your videos?", look: "Pick your look" }[id]}</h1>
+              <p className="m-0 mt-2 max-w-[52ch] text-[16px] text-muted">{{ post: "Choose all that apply. Your main place sets the caption safe area.", editors: "precut makes the finished video for you. If you also like to finish in an editor, it can open the edit there too.", look: "Choose how your edits look. Change it any time, per edit." }[id]}</p></header>
             {id === "post" ? <PostPlaces value={places} onChange={setPlaces} disabled={busy} />
-              : id === "editors" ? <EditorChoices value={targets} onChange={setTargets} disabled={busy} />
-              : <SampleLookPicker value={choice} disabled={busy} onReady={setLookReady} onChoose={async value => { setChoice(value); return true; }} />}
+              : id === "editors" ? <VideoChoices value={targets} onChange={setTargets} disabled={busy} />
+              : <SampleLookPicker value={choice} disabled={busy} onChoose={async value => { setChoice(value); return true; }} />}
           </>}
         {actionError && <InlineError className="m-0 text-small text-danger">{actionError}</InlineError>}
         {help && <div className="rounded-2xl bg-ink/[0.035] p-3 text-small">{shortcuts.filter(shortcut => shortcut.enabled !== false).map(shortcut => <p key={shortcut.id} className="flex justify-between gap-4"><span>{shortcut.label}</span><kbd className="font-mono text-micro">{shortcut.keys.join(" / ")}</kbd></p>)}</div>}
@@ -346,7 +324,7 @@ export default function Setup({ checks, refresh, onContinue }: SetupProps) {
       </div>
       <div className="flex items-center gap-1.5">
         {step > 0 && <Button variant="ghost" disabled={busy} title="Back (Alt+Left)" onClick={() => { setActionError(null); setStep(step - 1); }}>Back</Button>}
-        {(id === "music" || id === "post" || id === "editors" || id === "look") && <Button variant="ghost" disabled={busy} onClick={skip}>Skip</Button>}
+        {(id === "music" || id === "post" || id === "editors" || id === "look") && <Button variant={id === "look" ? "secondary" : "ghost"} disabled={busy} onClick={skip}>Skip</Button>}
         <Button variant="primary" disabled={!canNext} onClick={() => void next()} title="Continue (Cmd+Enter)" className="px-6 py-2.5 text-[14px]">{nextLabel}</Button>
       </div>
     </footer>
@@ -414,23 +392,36 @@ export function AiStep({ engine, engines, pillOf, busy, note, onChoose, onAction
 }
 
 const TERMINAL_ITEMS: Record<TerminalStep, (label: string) => string> = { command: () => "Add the precut command", connect: label => `Connect precut to ${label}`, skill: () => "Install the precut skill", check: label => `Check ${label} can see it` };
-/** "Use precut from your terminal": Claude Code and Codex, four checked steps each, a first prompt, and a command to copy on any failure. */
+const TERMINAL_DOING: Record<TerminalStep, (label: string) => string> = { command: () => "Adding the precut command", connect: label => `Connecting precut to ${label}`, skill: () => "Installing the precut skill", check: label => `Checking ${label} can see it` };
+/** "Use precut from your terminal": Claude Code and Codex. POLISH1: calm and plain. Setting up says so in one line;
+ * done, the card is one line ("precut now works in Claude Code") with the first ask to copy as a quiet second line;
+ * a failure shows the steps and the command to run by hand. Continue (the footer) is the one primary action. */
 export function TerminalSetupStep({ setups, busy, onSetUp }: { setups: Partial<Record<"claude" | "codex", TerminalSetup>>; busy: "claude" | "codex" | null; onSetUp: (agent: "claude" | "codex") => void }) {
   return <>
     <header><h1 id="setup-title" className="m-0 font-display text-[26px] font-bold leading-tight tracking-tight">Use precut from your terminal</h1>
-      <p className="m-0 mt-2 max-w-[52ch] text-[16px] text-muted">precut also works from Claude Code and Codex. Say what you want, and precut reads the footage and makes the edit, even with the app closed.</p></header>
+      <p className="m-0 mt-2 max-w-[52ch] text-[16px] text-muted">precut also works in Claude Code and Codex. Say what you want there and precut makes the edit, even with this app closed. Set up the ones you use, or just continue.</p></header>
     <div className="flex flex-col gap-2.5">{(["claude", "codex"] as const).map(agent => {
       const setup = setups[agent], label = ENGINE_INFO[agent].label;
-      const started = !!setup && Object.values(setup.steps).some(Boolean);
-      const failed = setup && (Object.keys(TERMINAL_ITEMS) as TerminalStep[]).find(name => setup.steps[name] && !setup.steps[name]!.ok);
-      return <div key={agent} data-terminal={agent} className="flex flex-col gap-2.5 rounded-2xl bg-surface p-4">
+      const names = Object.keys(TERMINAL_ITEMS) as TerminalStep[];
+      const failed = setup && names.find(name => setup.steps[name] && !setup.steps[name]!.ok);
+      const working = busy === agent;
+      const state = working ? "working" : setup?.done ? "done" : failed ? "failed" : "idle";
+      if (state === "done") return <div key={agent} data-terminal={agent} data-terminal-state="done" className="flex flex-col gap-1.5 rounded-2xl bg-surface px-4 py-3">
+        <div className="flex items-center gap-3"><EngineMark engine={agent} size={28} />
+          <span role="status" className="min-w-0 flex-1 font-semibold">precut now works in {label}</span>
+          <Check size={16} className="shrink-0 text-good" aria-hidden="true" /></div>
+        <AskLine text={setup!.prompt} />
+      </div>;
+      const doing = working ? names.find(name => !setup?.steps[name]?.ok) ?? "check" : null;
+      return <div key={agent} data-terminal={agent} data-terminal-state={state} className="flex flex-col gap-2.5 rounded-2xl bg-surface p-4">
         <div className="flex items-center gap-3"><EngineMark engine={agent} /><span className="flex min-w-0 flex-1 flex-col"><span className="font-semibold">{label}</span>
-          {setup && !setup.installed && <span className="text-[13px] text-muted">{label} isn't on this Mac yet.</span>}</span>
-          {setup?.done ? <span className={`${PILL_BASE} bg-good-soft text-good`}>Set up</span>
-            : busy === agent ? <span role="status" className={`${PILL_BASE} bg-ink/[0.06] text-muted`}><ProgressRing pct={null} label="Setting up" className="text-muted" />Setting up</span>
-            : <Button variant={failed ? "secondary" : "primary"} disabled={!!busy} onClick={() => onSetUp(agent)} className="!px-3.5 !py-1.5">{failed ? "Try again" : "Set it up"}</Button>}
+          {working ? <span role="status" className="text-[13px] text-muted">{TERMINAL_DOING[doing!](label)}…</span>
+            : failed ? <span className="text-[13px] text-muted">Couldn't finish setting this up.</span>
+            : setup && !setup.installed ? <span className="text-[13px] text-muted">{label} isn't on this Mac yet.</span> : null}</span>
+          {working ? <span className={`${PILL_BASE} bg-ink/[0.06] text-muted`}><ProgressRing pct={null} label="Setting up" className="text-muted" />Setting up</span>
+            : <Button variant="secondary" disabled={!!busy} onClick={() => onSetUp(agent)} className="!px-3.5 !py-1.5">{failed ? "Try again" : "Set it up"}</Button>}
         </div>
-        {started && <div className="flex flex-col gap-1.5 text-small text-muted">{(Object.keys(TERMINAL_ITEMS) as TerminalStep[]).map(name => {
+        {failed && <div className="flex flex-col gap-1.5 text-small text-muted">{names.map(name => {
           const result = setup!.steps[name];
           return <div key={name} data-terminal-step={name} data-ok={result ? String(result.ok) : undefined} className="flex items-start gap-2.5">
             <span aria-hidden="true" className={`w-3.5 shrink-0 text-center ${result?.ok ? "text-good" : result ? "text-danger" : "text-muted/60"}`}>{result?.ok ? <Check size={13} className="inline" /> : result ? "!" : "·"}</span>
@@ -438,17 +429,27 @@ export function TerminalSetupStep({ setups, busy, onSetUp }: { setups: Partial<R
           </div>;
         })}</div>}
         {setup?.copy && <CopyLine text={setup.copy} label="Run this instead" />}
-        {setup?.done && <CopyLine text={setup.prompt} label="Try this" />}
       </div>;
     })}</div>
   </>;
+}
+function copyText(text: string, done: (ok: boolean) => void) {
+  try { void navigator.clipboard.writeText(text).then(() => done(true), () => done(false)); } catch { done(false); }
+}
+/** POLISH1: the first ask, as a quiet line under "precut now works in ...": the words and a small Copy. */
+function AskLine({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return <div data-copy data-terminal-ask className="flex min-w-0 items-center gap-2 pl-[40px] text-[13px] text-muted">
+    <span className="min-w-0 flex-1 truncate">Try <span className="font-mono text-[12.5px] text-ink/80">{text}</span></span>
+    <Button variant="ghost" onClick={() => copyText(text, ok => { setCopied(ok); if (ok) window.setTimeout(() => setCopied(false), 1600); })} className="!px-2.5 !py-1 !text-[12px]">{copied ? "Copied" : "Copy"}</Button>
+  </div>;
 }
 function CopyLine({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false);
   return <div className="flex flex-col gap-1"><span className="text-micro text-muted">{label}</span>
     <div data-copy className="flex min-w-0 items-center justify-between gap-3 rounded-xl bg-[#0b0b0f] px-3.5 py-2.5 font-mono text-[13px] text-[#c9d4ff]">
       <span className="min-w-0 break-all">{text}</span>
-      <Button variant="secondary" onClick={() => { try { void navigator.clipboard.writeText(text).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1600); }, () => setCopied(false)); } catch { setCopied(false); } }} className="!py-1">{copied ? "Copied" : "Copy"}</Button>
+      <Button variant="secondary" onClick={() => copyText(text, ok => { setCopied(ok); if (ok) window.setTimeout(() => setCopied(false), 1600); })} className="!py-1">{copied ? "Copied" : "Copy"}</Button>
     </div></div>;
 }
 

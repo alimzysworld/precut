@@ -3,6 +3,9 @@ import type { CutEdit, MotionGraphic, OverlayItem, TitleTrack } from "../../../.
 import { buildFromTemplate, graphicSource, graphicTemplates, templateInfo, type TemplateParam } from "../../../../main/graphics/templates";
 import { Plus } from "../icons";
 import { Button, FOCUS, SectionHeader } from "../ui";
+import { MotionControls, type MotionSource } from "./MotionControls";
+import { LookControls } from "./LookControls";
+import { overlaySessionFor, pinWaiting, startPick, cancelPick, usePinState } from "../OverlayHandles";
 
 // GFX1: the hands-on side of motion graphics. A starter is built here (it is plain text, no rendering) and sent through
 // the same overlay edit as an image; the app draws and checks it, so a bad one comes back as a plain message.
@@ -50,8 +53,20 @@ function fromText(param: TemplateParam, text: string): unknown {
   return text;
 }
 
-/** The starter's own fields, and the composition source for anyone who wants to write it by hand. */
-export function GraphicDesign({ item, busy, onEdit }: { item: OverlayItem; busy: boolean; onEdit: (edit: CutEdit) => unknown }) {
+/** TRK1c: "Stick to something": the stage picks the thing on the paused frame (OverlayHandles), main follows it. Once
+ *  pinned, the Tracking group in the Motion section has the rest (Pick again, Unstick). */
+function StickAction({ item, busy }: { item: OverlayItem; busy: boolean }) {
+  const { pick } = usePinState(), session = overlaySessionFor(item.id), picking = pick?.itemId === item.id;
+  if (item.pin || item.graphic?.frame === "full") return null;
+  return <div data-stick-action className="space-y-1">
+    <Button aria-pressed={picking} disabled={busy || !session || (!picking && pinWaiting(session))} onClick={() => picking ? cancelPick() : session && startPick(session, item)}>{picking ? "Picking the thing…" : "Stick to something"}</Button>
+    <p className="text-[11px] text-muted">{picking ? "Box the thing on the video. Return sticks it, Esc cancels." : "Pin it to a thing in the shot, so it moves with it."}</p>
+  </div>;
+}
+
+/** The starter's own fields, the Motion section for anything that moves (MOT1b), and the composition source for anyone
+ *  who wants to write it by hand. */
+export function GraphicDesign({ item, busy, onEdit, motion, onPreview }: { item: OverlayItem; busy: boolean; onEdit: (edit: CutEdit) => unknown; motion?: MotionSource | null; onPreview?: (graphic: MotionGraphic) => void }) {
   const graphic = item.graphic as MotionGraphic, source = graphicSource(graphic), info = source && templateInfo(source.template);
   const [values, setValues] = useState<Record<string, string>>(() => Object.fromEntries((info?.params ?? []).map(p => [p.name, asText(p, source?.params[p.name] ?? p.default)])));
   const [code, setCode] = useState<{ html: string; css: string; js: string } | null>(null);
@@ -67,6 +82,10 @@ export function GraphicDesign({ item, busy, onEdit }: { item: OverlayItem; busy:
         : p.type === "list" || p.type === "data" ? <textarea rows={Math.min(6, Math.max(2, values[p.name].split("\n").length))} disabled={busy} value={values[p.name]} onChange={event => setValues(v => ({ ...v, [p.name]: event.target.value }))} className={field} />
         : <input type="text" inputMode={p.type === "number" ? "decimal" : "text"} disabled={busy} value={values[p.name]} onChange={event => setValues(v => ({ ...v, [p.name]: event.target.value }))} className={field} />}</label>)}
       <Button disabled={busy} onClick={apply}>Update graphic</Button></div> : null}
+    <StickAction item={item} busy={busy} />
+    <MotionControls item={item} source={motion} busy={busy} onEdit={onEdit} onPreview={onPreview} />
+    {/* LOOK1: a scene's look, beside its motion. Shuffle offers the edit's caption colours as the brand's. */}
+    <LookControls item={item} busy={busy} onEdit={onEdit} onPreview={onPreview} brand={[themeOf((motion?.titles ?? null) as TitleTrack | null).accent, themeOf((motion?.titles ?? null) as TitleTrack | null).ink].filter((c): c is string => typeof c === "string")} />
     {code ? <div className="space-y-2">{(["html", "css", "js"] as const).map(key => <label key={key} className="block space-y-1 text-[11px] text-muted"><span>{key.toUpperCase()}</span>
       <textarea aria-label={`Graphic ${key}`} spellCheck={false} rows={key === "js" ? 6 : 8} disabled={busy} value={code[key]} onChange={event => setCode({ ...code, [key]: event.target.value })} className={`${field} font-mono text-[11px] leading-snug`} /></label>)}
       <div className="flex gap-2"><Button variant="primary" disabled={busy} onClick={() => void send({ ...graphic, html: code.html, css: code.css, ...(code.js.trim() ? { js: code.js } : { js: undefined }) })}>Apply</Button><Button disabled={busy} onClick={() => setCode(null)}>Close</Button></div></div>

@@ -234,7 +234,7 @@ export interface ObservePacket {
   mix: { stepS: number; db: number[] };
   overview: { sheet: string; tilesS: number[] };
   candidates: Candidate[];
-  library: { sound: string; name: string; kind: string; role: string | null; hitS: number; lengthS: number }[];
+  library: { category?: string; tags?: string[]; sound: string; name: string; kind: string; role: string | null; hitS: number; lengthS: number }[];
 }
 
 const SENTENCE_END = /[.!?…]["'’”)]?$/;
@@ -343,10 +343,10 @@ export async function observe(root: string, cutId: string, version: number, dir:
 /** The bundled sounds a director may place: the trailer set and the soft thuds, with their measured hits. */
 export async function soundLibraryForDirector(): Promise<ObservePacket["library"]> {
   const { soundLibrary } = await import("./sound-design");
-  const all = await soundLibrary();
-  return all.filter(s => s.id.startsWith("lib:v3-") || /impactsoft-heavy-00[0-1]/.test(s.id)).map(s => {
+  const all = await soundLibrary({ bundledOnly: true });
+  return all.map(s => {
     const x = s as unknown as { id: string; name: string; kind: string; role?: string; hitS?: number; lengthS?: number };
-    return { sound: x.id.slice(4), name: x.name, kind: x.kind, role: x.role ?? null, hitS: x.hitS ?? 0, lengthS: x.lengthS ?? 0 };
+    return { category: s.category, tags: s.tags, sound: x.id.slice(4), name: x.name, kind: x.kind, role: x.role ?? null, hitS: x.hitS ?? 0, lengthS: x.lengthS ?? 0 };
   });
 }
 

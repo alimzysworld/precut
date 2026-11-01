@@ -1,3 +1,4 @@
+import { coupledSoundShape } from './sound-attachments';
 /** Keep each atempo stage inside FFmpeg's pitch-preserving 0.5..2 range. */
 export function tempoChain(speed: number): string {
   if (!Number.isFinite(speed) || speed <= 0) throw new Error("Invalid speed.");
@@ -22,8 +23,11 @@ export function musicVoiceSpace(music: string, speech: string, output: string): 
 }
 
 /** V23c: all delivery paths consume the same prepared music and source clock. */
-export async function musicForEdit(root: string, record: import('./music-arrange').ArrangeRecord, fx: import('./edits-fx').FxPlan, wait: boolean, arrange: typeof import('./music-arrange').arrangedMusic) {
-  const music = record.music !== undefined ? record.music : record.assembly.reel.music;
+export async function musicForEdit(root: string, record: import('./music-arrange').ArrangeRecord & { assembly: { template?: { fps: number } } }, fx: import('./edits-fx').FxPlan, wait: boolean, arrange: typeof import('./music-arrange').arrangedMusic) {
+  const base = record.music !== undefined ? record.music : record.assembly.reel.music;
+  const soundRecord = record as import('./sidekick').StoredVersion;
+  const shape = base ? coupledSoundShape(soundRecord, fx, soundRecord.assembly.template?.fps ?? 30, 'shape' in base ? base.shape ?? [] : []) : [];
+  const music = base && (shape.length ? { ...base, shape } : base);
   if (!music) return { music: null, arrangement: null };
   const arrangement = await arrange(root, record, fx, wait);
   return { music: arrangement ? { ...music, file: arrangement.file, startS: 0 } : { ...music } as import('../shared/schema').CutVersion['music'], arrangement };

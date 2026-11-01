@@ -2,6 +2,9 @@
 // AI judge fills `judgement` and `takes`. Every slice codes against this file.
 // Stored at <shoot>/.sidething/index.json
 
+import type { Motion } from "./motion";
+import type { Look, LookChange } from "./look";
+
 export const SCHEMA_VERSION = 1;
 
 export type ClipKind = "talking" | "broll" | "setup" | "unknown";
@@ -266,6 +269,7 @@ export interface MusicArrangementAnchor {
   key: string; source: string; durationS: number; storyKey: string | null;
   packet: { reason: string; durationS: number; beats: { atS: number; endS: number; words: string; id: string }[] } | null;
   moments: { reason: string; durationS: number; narration?: string[]; beats: { atS: number; endS: number; words: string; id: string; description?: string }[] } | null;
+  holds?: { atS: number; s: number }[];         // SCN1b: pauses inserted into this arrangement (reel seconds, length): its bed plays on under each, then the rest follows
 }
 export interface CutVersion {
   balances?: Record<string, ClipBalance>;
@@ -466,6 +470,13 @@ export interface Api {
   listVersionMilestones?(root: string, cutId: string): Promise<RevisionMilestone[]>;  // the version menu: only the moments that matter
   saveVersion?(root: string, cutId: string, name?: string): Promise<RevisionMilestone>;  // ⌘S: flags the current revision as a saved version
   restoreVersion?(root: string, cutId: string, version: number): Promise<{ cutId: string; version: number }>;  // one undoable commit whose content equals that milestone
+  // TRK1c: the hands-on pin (stage and inspector), the same handlers and request shape as MCP pin_graphic, update_pin and unpin.
+  // LOOK1: a scene's look changed (pictures from the shoot, the auto dim measured): the edit to send, not saved.
+  lookEdit?(root: string, cutId: string, version: number, input: { itemId: string; all?: boolean; change: LookChange; file?: string }): Promise<{ edit: CutEdit | null; changed: string[]; notes: string[]; look: Look | null }>;
+  pinEdit?(root: string, cutId: string, version: number, name: "pin_graphic" | "update_pin" | "unpin", input: Record<string, unknown>): Promise<{ cutId: string; version: number; id: string; heldS?: number; lost?: string; lostAtS?: number; tracked?: boolean }>;
+  onPinProgress?(cb: (e: { cutId: string; itemId: string; pct: number }) => void): () => void;  // how far the tracker is, 0 to 100
+  // TRK2: the hands-on locked frame (the clip inspector's Lock group and the stage's pick), the MCP's lock_on, update_lock and unlock.
+  lockEdit?(root: string, cutId: string, version: number, name: "lock_on" | "update_lock" | "unlock", input: Record<string, unknown>): Promise<{ cutId: string; version: number; piece: number; zoom?: number; need?: number; capped?: boolean; note?: string; lost?: string; lostAtS?: number; tracked?: boolean }>;
   // VO7-4: measured waveform peaks for a sound file, computed once in the main process and cached per shoot.
   getPeaks?(root: string, file: string, from?: number, to?: number): Promise<PeakSlice>;  // file: shoot-relative or absolute; from/to in source seconds
   listEngines(fresh?: boolean): Promise<{ id: "claude" | "codex" | "muse"; installed: boolean; signedIn: boolean | null; version: string | null; apiKey?: boolean }[]>;  // ONB1: fresh skips the 60 s cache. ONB2: apiKey = signed in with a key, not the subscription
@@ -515,7 +526,7 @@ export interface Api {
   extensions(): Promise<ExtensionInfo[]>;    // J7: add-ons and connections ("VS Code for video"): what exists, what's installed, sizes
   installExtension(id: string): Promise<ExtensionInfo>;   // J7: runs on the activity bus (progress, cancelable); downloads only from the manifest's pinned official URLs, checksummed
   removeExtension(id: string): Promise<ExtensionInfo>;    // J7: deletes its files under user data; a connection forgets its key
-  soundLibrary(): Promise<{ id: string; name: string; kind: SfxItem["kind"]; lengthS: number; url: string; role?: SoundRole; hitS?: number }[]>;  // J2: bundled sounds plus the person's generated ones
+  soundLibrary(): Promise<{ id: string; name: string; kind: SfxItem["kind"]; lengthS: number; url: string; role?: SoundRole; hitS?: number; category?: string; tags?: string[] }[]>;  // J2: bundled sounds plus the person's generated ones
   soundKey(op: "status" | "clear" | { set: string }): Promise<{ elevenlabs: boolean }>;  // J3: the person's own ElevenLabs key, kept in the macOS keychain (safeStorage), never in files or logs
   generateSound(root: string, prompt: string, seconds: number): Promise<{ file: string; name: string }>;  // J3: ElevenLabs sound generation on the person's key; saved into <root>/.sidething/sfx/ and the library
   renderSampleLooks(sample: "daylight" | "warm" | "night" | "skyline", preset?: string): Promise<{ id: string; name: string; description: string; image: string }[]>;  // O1: the gallery on one of the bundled stock frames (onboarding, Settings), cached; H9: "skyline" = the Look panel tiles
@@ -552,6 +563,7 @@ export interface Api {
   addMusicTracks(files: string[]): Promise<void>;     // N5: dropped or picked tracks, referenced read-only where they are (never copied, moved or edited); listMusic includes them
   pickMusicTracks(): Promise<string[]>;               // N5: a file dialog for audio files
   pickOverlayFiles(): Promise<string[]>;              // N4: a file dialog for images
+  showWhatYouSay?(root: string, cutId: string, version: number, options: { s: number; e: number; maxShots?: number; prefer?: import("./broll-plan").BrollPrefer }): Promise<import("./broll-plan").BrollPlan & { cutId: string; version: number }>;  // BROLL2: the proposal for a stretch; applies nothing, no model call
   exportTo(root: string, cutId: string, version: number, targets: ExportTarget[], aspects?: SkillFormat["aspect"][]): Promise<{ folder: string; results: { target: ExportTarget; aspect: SkillFormat["aspect"]; ok: boolean; path?: string; error?: string; warnings?: string[] }[] }>;  // D6: one export, several editors and formats; each result honest on its own. warnings: what finished plain because a model couldn't answer
   getBrief(root: string): Promise<ShootBrief>;                                   // WR: defaults to empty lists, asked: false
   setBrief(root: string, brief: ShootBrief): Promise<ShootBrief>;                // WR: a change after ideas exist becomes a request ("Brief changed: ...")
@@ -575,6 +587,7 @@ export interface Api {
   chatAnswer(root: string, requestId: string, decision: "once" | "always" | "deny"): Promise<void>;  // an approval card
   onChat(cb: (root: string, turn: ChatTurn) => void): () => void;   // every new or changed turn
   onNavigate?(cb: (hash: string) => void): () => void;       // a clicked notification asks to go somewhere
+  onMenu?(cb: (command: string) => void): () => void;        // POLISH1: an app menu item the window acts on ("toggle-edits-sidebar")
   onOpenVersion?(cb: (e: { root: string; cutId: string; version: number }) => void): () => void;  // V64: Ask (MCP open_version) puts this saved version on screen, waiting for pause or drag end like the version list
   passIdea(root: string, messageId: string, index: number, passed: boolean): Promise<void>;
   junkReview(root: string): Promise<{ clips: { clipId: string; file: string; reason: string; sizeBytes: number }[]; sizeBytes: number }>;  // ST1: the judge's junk picks still on disk, minus ones the person kept
@@ -592,7 +605,7 @@ export interface Api {
 // swap a voice piece to another take of the same line, drop a piece, or put a removed filler back.
 export type CutEdit =
   | { kind: "shotOrder"; pieces?: number[]; keepMyMoves?: boolean } // V47: sort selected slots, or the whole edit, in one version
-  | { kind: "captionWord"; index: number; text?: string; s?: number; e?: number; accent?: boolean } // V38: edit-clock words, no picture rebuild
+  | { kind: "captionWord"; index: number; text?: string; s?: number; e?: number; accent?: boolean; accentAs?: CaptionAccentForm | null; big?: boolean } // V38: edit-clock words, no picture rebuild. CAP4: accentAs = this word's accent form (null = the edit's), big = the word stands alone, big and in caps
   | { kind: "retimeCaptions" } // V38: local speech timing
   | { kind: "duplicate"; pieces: number[] } // V33: exact selected occurrences, one version
   | { kind: "move"; piece: number; to: number; words?: { last: number; s?: number; e?: number; at?: number } }  // TL1: final zero-based position on the magnetic spine. SCRIPT2 words: pieces piece..words.last hold the moved words (split first at clip seconds s in the first and e in the last, each snapped to a gap between words); `to` is then where they go: before piece `to` of this version (pieces.length = the end), or inside it at clip seconds `at`, split there first
@@ -695,6 +708,24 @@ export interface SfxItem {
   reason?: string;                              // why precut put it here, shown in place
   role?: SoundRole;                             // PRO3a: placed at its role's level against the edit's voice; gainDb then trims it (0 = the role's level). Absent = the J2 loudness level
 }
+// SFX1: identity stays in source time; atS remains a resolved cache for older clients.
+export type SoundAnchor =
+  | { to: "join"; piece: ProducePieceRef }
+  | { to: "graphic"; id: string; edge: "in" | "out" }
+  | { to: "element"; id: string; element: string; edge: "in" | "land" | "out" }
+  | { to: "word"; piece: ProducePieceRef; sourceS: number }
+  | { to: "punch"; piece: ProducePieceRef; at: number }
+  | { to: "time"; at: ProduceAnchor };
+export interface SfxItem {
+  sound?: string;
+  anchor?: SoundAnchor | null;
+  offsetFrames?: number;
+  stretch?: boolean;
+  sourceHitS?: number;
+  sourceLengthS?: number;
+  legacyMix?: "synth" | "scene" | "placed";
+  startOffsetS?: number;
+}
 // PRO3a: where a sound sits in the mix, loudest first: hit (a landing), accent (whoosh, pop, land), ui (click, tick), ambience (a bed).
 export type SoundRole = "hit" | "accent" | "ui" | "ambience";
 
@@ -706,7 +737,9 @@ export type SoundRole = "hit" | "accent" | "ui" | "ambience";
 // pass is theirs (handed): Less, More and Remove leave it alone and say so.
 export interface ProducePieceRef { id: string; clipId: string; s: number; e: number }  // a spine piece: its id and clip; s/e (source seconds) tell repeated occurrences apart
 export interface ProduceAnchor { piece: ProducePieceRef; sourceS: number }                // a reel time held as the source second of the piece under it, so it moves with the picture as precut's ripple moves items
-export type ProduceSlot = "span" | "fx" | "join" | "layout" | "punch" | "sound" | "graphic" | "word" | "music";
+// SCN2: pause = the time a pause scene adds: the shot that grows ({ s, e } source span) and the music held under it
+// (held: the seconds held, null when the music isn't fitted); its split stays, playing straight through when it's out.
+export type ProduceSlot = "span" | "fx" | "join" | "layout" | "punch" | "sound" | "graphic" | "word" | "music" | "pause";
 export interface ProduceMove {
   slot: ProduceSlot;
   label: string;                 // plain words for the row: "the cut at 0:49"
@@ -727,7 +760,9 @@ export interface ProducePass {
   removed?: number;              // the version Remove made; absent = the pass is in the edit
   note?: { version: number; text: string };  // what the last Less, More or Remove kept of the person's, shown on that version only
 }
-export type ProduceMoveEdit = CutEdit | { kind: "punch"; piece: number; scale: number | null } | { kind: "musicMark"; mark: import("./music-shape").MusicShapeMark } | MotionEdit;
+export type ProduceMoveEdit = CutEdit | { kind: "punch"; piece: number; scale: number | null } | { kind: "musicMark"; mark: import("./music-shape").MusicShapeMark } | MotionEdit
+  | { kind: "pause"; atS: number; lengthS: number };   // SCN2: stop his voice at atS (reel seconds, a gap between his words) for lengthS, under the pause scene the same group adds there
+
 // PRO3b: motion moves in edit seconds, resolved on the draft they run on (src/main/motion-edits.ts). clipPunch and
 // clipExposure set a clip's whole list (null clears it), keeping its other settings; piece absent = the clip under the
 // first atS. cutOnWord moves the cut into `piece` (absent: the nearest cut) so that shot starts `frames` frames before
@@ -775,6 +810,8 @@ export interface LayoutChoice {
   bubble?: { corner: "tl" | "tr" | "bl" | "br"; size: number };   // size = fraction of frame width, 0.2..0.45
   title?: string;
   note?: string;                                // placeholder: what the shot is
+  opacity?: number;                             // BROLL2: the top picture's opacity in an over layout (clip-over-camera: a over b), 0.2..0.95; absent = solid
+  cutaway?: { phrase: string; word?: number };  // BROLL2: a "Show what I say" cutaway: the words it shows (word = caption index of the named thing)
 }
 // UL5: copy for posting, in the person's voice. One per platform asked for.
 export interface PostCopy { platform: "reels" | "tiktok" | "shorts" | "youtube" | "linkedin" | "x"; title?: string; caption: string; hashtags: string[]; chapters?: { atS: number; title: string }[]; at: string }
@@ -786,6 +823,9 @@ export interface ClipTransform {
   crop?: { l?: number; r?: number; t?: number; b?: number };
   flipH?: boolean; flipV?: boolean; constrain?: boolean;
 }
+/** TRK2: what a clip's locked frame costs (zoom, capped, the note in plain words) and where its thing was lost. tracking:
+ * its track is being made again (the clip plays as framed until then). */
+export interface LockSummary { piece: number; zoom: number; need: number; capped: boolean; note: string; thing?: string; lost?: string; lostAtS?: number; tracking?: boolean }
 export interface PieceFx {
   transform?: ClipTransform; // V46: after framing, inside each layout picture; absent preserves the picture
 
@@ -800,6 +840,7 @@ export interface PieceFx {
   look?: PieceLook | null;                      // H5: this clip's own look on top of the edit's; absent/null = follows the edit
   punches?: PiecePunch[];                       // PRO3b: punches on any clip (b-roll too), each locked to the source frame it lands on
   exposure?: PieceExposure[];                   // PRO3b: exposure keys on the picture (a flash), each locked to the source frame it starts on
+  lock?: import("./pin-keys").PieceLock;      // TRK2: the picture steadies on a picked thing (after framing, before the clip transform)
 }
 // PRO3b: a punch lands on the frame showing source second sourceS. settle (the default, the launch video's): it lands
 // at scale and eases to 1 over `frames` frames (out cubic), times (1 + creep x frames since the hit) so it never sits
@@ -830,6 +871,8 @@ export interface OverlayItem {
   enter: "pop" | "slide-up" | "fade" | "none";
   exit: "pop" | "fade" | "none";
   sound: TransitionSound | null;                // plays on enter
+  pin?: import("./pin-keys").PinChoice;         // TRK1: locked to a thing in the shot (source space); x, y, w stay the placement at the pick frame
+  pinKeys?: import("./pin-keys").PinKeys;       // TRK1b: drawing only (never saved): the pin sampled per frame through the pictures it shows on
 }
 // GFX1 (briefs/GFX1-graphics.md): an animated composition the agent wrote. It is a pure function of time:
 // the renderer sets t (seconds into the graphic) for every frame, so playback, scrubbing and export are frame-exact.
@@ -844,6 +887,9 @@ export interface MotionGraphic {
   words?: { text: string; atS: number }[];      // spoken cues it is synced to (reel seconds), for re-timing when the cut changes
   template?: string;                            // the starter it came from, if any
   media?: string;                               // PRO4b: a card's picture, a file in the shoot's own cache (card-<hash>.webp); drawn in by the title page
+  frames?: string[];                            // MOT1: a scene's pictures, files in the same cache, drawn in by the title page; the html shows frame i once as src="#frame-i"
+  motion?: Motion;                              // MOT1 (shared/motion.ts): when each element lands and how; the template draws from it, so tools change numbers, not code
+  look?: Look;                                  // LOOK1 (shared/look.ts): a scene's background, type and finish; absent = drawn on black as before looks
 }
 export interface CoverChoice { t: number; auto: boolean; title: string | null }  // t = reel seconds; title drawn in the edit's caption style
 
@@ -856,7 +902,7 @@ export interface TitleCue {
   s: number; e: number;
   role: "title" | "subtitle";                   // a designed graphic, or a running subtitle line
   text: string;
-  words?: { text: string; s: number; e: number; accent?: boolean; estimated?: boolean }[];  // per-word timing for word-by-word reveals
+  words?: { text: string; s: number; e: number; accent?: boolean; estimated?: boolean; accentAs?: CaptionAccentForm; big?: boolean }[];  // per-word timing for word-by-word reveals. CAP4: accentAs overrides the style's for this word; big = its own big caps line
   layer: "front" | "behind";                    // behind = the speaker passes in front of it (needs a person matte)
   x: number; y: number;                         // anchor point
   align: "left" | "center" | "right";
@@ -868,6 +914,8 @@ export interface TitleCue {
   rotate?: number;                              // degrees
   enter: "pop" | "slide-up" | "slide-left" | "type" | "fade" | "scale" | "roll" | "none";  // J1: roll = the word rolls in on a 3D drum (a big-word opener)
   exit: "fade" | "slide-down" | "pop" | "none";
+  pin?: import("./pin-keys").PinChoice;         // TRK1: locked to a thing in the shot (source space); x, y stay the anchor at the pick frame
+  pinKeys?: import("./pin-keys").PinKeys;       // TRK1b: drawing only (never saved)
 }
 export interface TitleTrack {
   font: string;                                 // a bundled family name
@@ -1139,7 +1187,9 @@ export interface DraftTimeline {
   look: { preset: LookPreset; intensity: number } | null;   // the saved choice, for the controls
   titles: TitleTrack | null;
   joins?: { index: number; atS: number; choice: JoinChoice; auto: boolean; between: ["voice" | "broll", "voice" | "broll"] }[];  // N2b: one per join on the spine, for the storyboard's transition cards
-  overlays?: (OverlayItem & { url: string; mediaUrl?: string })[];   // N4: drawn in the titles layer, live and in the export
+  overlays?: (OverlayItem & { url: string; mediaUrl?: string; framesUrl?: string[] })[];   // N4: drawn in the titles layer, live and in the export
+  pinTracks?: Record<string, import('./pin-keys').TrackFile>;  // TRK1b: the tracks the version's pins read, by pinTrackId (a missing one is being tracked again)
+  locks?: LockSummary[];                        // TRK2: each locked clip's cost and loss, for the clip inspector's Lock group
   loudness?: { lufs: number; truePeakDb: number; target: number } | null;  // S1: measured on the draft mix (the same chain as export); null while measuring
   cover?: (CoverChoice & { image: string | null }) | null;  // N9: image = still of that frame with its title
 }
@@ -1232,16 +1282,23 @@ export interface CaptionStyle {
   accent: string;                               // key word / active word colour, #rrggbb
   font: string;                                 // a bundled family
   size: "s" | "m" | "l";
-  position: "bottom" | "middle" | "top";        // always inside the safe area, nudged off the face
+  position: "bottom" | "lower" | "middle" | "top";  // always inside the safe area, nudged off the face. CAP4: lower = lower middle (Film)
   wordsPerLine: "1-2" | "3-4" | "line";
   case: "as-spoken" | "upper" | "lower";
   background: "none" | "box" | "pill";
   outline: boolean;
-  animation: "none" | "pop" | "glide" | "karaoke" | "box-highlight" | "typewriter" | "pulse";
+  animation: "none" | "pop" | "glide" | "karaoke" | "box-highlight" | "typewriter" | "pulse" | "fade";  // CAP4: fade = a soft fade in and out, no word pop (Film)
   emphasis: boolean;                            // highlight the key words (from the titles call); captions-only edits: one small cached call
   hook?: "auto" | "off" | "all";               // J1: big kinetic captions. auto (default for new edits) = precut makes the opening punch line big, then normal captions; all = kinetic throughout; off = never
   hookStyle?: "build-up";                       // 25 Oct: the opening caption's style (src/main/titles/opening.ts); absent = build-up. Ready for a style picker
+  accentAs?: CaptionAccentForm;                 // CAP4: how a stressed (accented) word stands out; absent = colour. A word's own accentAs beats it
+  effect?: CaptionTextEffect;                   // CAP4: optional text effect, never in a preset or default; absent = none. Recorded for OPN1's titles too
 }
+// CAP4: the stressed word changes shape, not only colour. colour = the accent colour (before CAP4, the only form);
+// italic, caps and bigger keep the primary colour; tag = an accent fill behind the word that wipes on as it is said.
+export type CaptionAccentForm = "colour" | "italic" | "caps" | "bigger" | "tag";
+// CAP4 (31 Oct): extruded depth, a soft text shadow and blur in are allowed as an option he picks, off by default.
+export type CaptionTextEffect = "none" | "depth" | "shadow" | "blur-in";
 
 // D8: what the person asked for while (or after) precut works. Each request becomes its own ideas and,
 // when the footage can carry it, an edit; automatic suggestions still happen alongside.

@@ -19,7 +19,7 @@ import { renderNotes, captionExportNotes } from "./render-notes";
 import { makeReel, reelCatalog, compositeReelPreview, type ReelAssembly } from "./reel";
 import type { Clip, ClipFiller, PrecutKind, Shoot, Template, ReelOptions, PrecutResult, TakeAttempt, Word, CutVersion } from "../shared/schema";
 
-export type ExportFinishing = Pick<CutVersion, "clipSoundMuted" | "clipSoundDefaultOn" | "laneLevels" | "laneMuted" | "voiceover" | "titles" | "grade" | "audio" | "finished" | "framing" | "pieceFx" | "transition" | "joins" | "faceMatch" | "overlays" | "cutToBeat" | "sfx" | "energy" | "bleeps" | "lowerThirds" | "angleCuts" | "layouts"> & Partial<Pick<CutVersion, "music">> & { jumpScales?: (number | null)[] };
+export type ExportFinishing = Pick<CutVersion, "pieces" | "clipSoundMuted" | "clipSoundDefaultOn" | "laneLevels" | "laneMuted" | "voiceover" | "titles" | "grade" | "audio" | "finished" | "framing" | "pieceFx" | "transition" | "joins" | "faceMatch" | "overlays" | "cutToBeat" | "sfx" | "energy" | "bleeps" | "lowerThirds" | "angleCuts" | "layouts"> & Partial<Pick<CutVersion, "music">> & { jumpScales?: (number | null)[] };
 
 /** Existing Sidekick callers identify their saved version by title/version and
  * preview. Read finishing from that exact saved assembly without changing it. */
@@ -43,7 +43,7 @@ export async function savedExportFinishing(root: string, cuts: CutItem[], opts: 
       const preview = opts.existingPreview && version.preview && path.basename(opts.existingPreview) === path.basename(version.preview);
       if (!(named || preview) || !version.assembly || signature(version.assembly.cutList) !== wanted) continue;
       if (version.clipSoundDefaultOn || version.laneLevels || version.laneMuted || version.clipSoundMuted !== undefined || version.voiceover || version.angleCuts?.length || version.layouts?.some(Boolean) || version.titles || version.grade || version.audio || version.finished || version.framing || version.pieceFx || version.transition || version.joins || version.cutToBeat || version.music !== undefined || version.sfx?.length) matches.push({
-        clipSoundDefaultOn:version.clipSoundDefaultOn,laneLevels:version.laneLevels,laneMuted:version.laneMuted,clipSoundMuted:version.clipSoundMuted, voiceover: version.voiceover, titles: version.titles, grade: version.grade, audio: version.audio, music: version.music, finished: version.finished, energy: version.energy, layouts: version.layouts, angleCuts: version.angleCuts,
+        pieces:version.pieces,clipSoundDefaultOn:version.clipSoundDefaultOn,laneLevels:version.laneLevels,laneMuted:version.laneMuted,clipSoundMuted:version.clipSoundMuted, voiceover: version.voiceover, titles: version.titles, grade: version.grade, audio: version.audio, music: version.music, finished: version.finished, energy: version.energy, layouts: version.layouts, angleCuts: version.angleCuts,
         jumpScales: (version as ExportFinishing).jumpScales,
         transition: version.transition, joins: version.joins, faceMatch: version.faceMatch, cutToBeat: version.cutToBeat, overlays: version.overlays, sfx: version.sfx, bleeps: version.bleeps, lowerThirds: version.lowerThirds,
         ...(version.framing ? { framing: version.framing } : {}), ...(version.pieceFx ? { pieceFx: version.pieceFx } : {}),
@@ -1259,6 +1259,24 @@ function removeWhenBack(root: string, id: ShootId, folder: string): void {
   }, 5000);
   timer.unref?.();
 }
+/** REL09e: why a render tool stopped, in its own words without paths: the first line of its output that says it, the
+ * filter named (afade) instead of ffmpeg's label for it ([Parsed_afade_177 @ 0x...]). A filter it would not run is
+ * precut's own graph, so the same edit stops the same way every time: "Try again" was untrue (NAT09, 245 s then that). */
+export function toolStopped(text: string): string | null {
+  const run = /(?:^|[\/\s])(ffmpeg|ffprobe) (?:exited \S+|input failed)[:\s]/.exec(text);
+  if (!run) return null;
+  let filter = '';
+  const said = text.slice(run.index + run[0].length).split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('at '))
+    .map(line => line.replace(/^\[(\w+?)(?:_\d+)? @ 0x[0-9a-f]+\]\s*/i, (_, name: string) => { if (/^Parsed_/.test(name) && !filter) filter = name.replace(/^Parsed_/, ''); return ''; }))
+    .find(line => !/^(Error\s*:\s*)?Invalid argument$/i.test(line));
+  // A file it names keeps only its name ("IMG_1.MOV: Invalid data..."); a reason still holding a path is left out.
+  const named = said?.replace(/^.*\/([^/]+?: )/, '$1').slice(0, 200), reason = named?.includes('/') ? undefined : named;
+  const where = reason ? ` (${filter ? `${filter}: ` : ''}${reason})` : '';
+  const report = 'report it at github.com/alimzysworld/precut/issues with this message';
+  if (filter || /Error (applying|initializing|reinitializing)|Unable to parse|No such filter|Failed to configure/i.test(reason ?? ''))
+    return `Could not export: precut gave ffmpeg a step it could not run${where}. Exporting again will stop the same way, so please ${report}.`;
+  return `Could not export: ffmpeg stopped while rendering this edit${where}. Try again, and if it stops the same way, please ${report}.`;
+}
 async function plainExportFailure(error: unknown, ctx: { root: string; id: ShootId; folder: string; record?: ExportRecord }): Promise<{ message: string; missing?: string[] }> {
   const e = (error && typeof error === "object" ? error : {}) as NodeJS.ErrnoException & { dest?: string };
   const code = typeof e.code === "string" ? e.code : undefined;
@@ -1278,6 +1296,8 @@ async function plainExportFailure(error: unknown, ctx: { root: string; id: Shoot
   if (code) return { message: "Could not export this video. Try again." };
   // precut's own messages are already plain; a tool's output is not (it names files and folders).
   const text = error instanceof Error ? error.message : "";
+  const stopped = toolStopped(text);
+  if (stopped) return { message: stopped };
   const leaks = !text || [ctx.root, os.tmpdir(), os.homedir()].some(place => text.includes(place)) || /(^|[\s'"(])\/[^\s'"]+\//.test(text);
   return { message: leaks ? "Could not export this video. Try again." : text };
 }

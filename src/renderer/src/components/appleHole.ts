@@ -5,6 +5,10 @@
 // layer with the rect cut out (a polygon clip with an even-odd hole, rounded like the
 // viewer); ancestors above the full-window ground just stop painting (nothing shows them).
 // Captions, titles, the play bar and every control are content, so they stay on top.
+// FS1: in full screen the viewer sits in the top layer over a transparent ::backdrop, so the rest of the page (the
+// editor, still laid out underneath) would show through the hole. While the viewer is full screen, everything
+// outside the full screen element is hidden (data-apple-fullscreen on <html>), and the marks are read again. Whatever
+// element is full screen (the stage, or the player around it) keeps a clear ::backdrop, so only the hole's ground paints.
 
 const STYLE_ID = "precut-apple-hole";
 const CSS = `
@@ -13,7 +17,11 @@ const CSS = `
 [data-apple-backdrop]::before{clip-path:var(--apple-hole)}
 [data-apple-backdrop]::backdrop{background:transparent!important}
 [data-apple-clear],[data-apple-picture]{background:transparent!important}
+[data-apple-fullscreen] body :not(:fullscreen,:fullscreen *){visibility:hidden!important}
+[data-apple-fullscreen] :fullscreen{visibility:visible!important}
+[data-apple-fullscreen] :fullscreen::backdrop{background:transparent!important}
 `;
+const FULLSCREEN = "data-apple-fullscreen";
 
 export interface HoleRect { x: number; y: number; width: number; height: number }
 
@@ -46,7 +54,7 @@ export function createAppleHole(picture: HTMLElement) {
   }
   let marked: { el: HTMLElement; kind: "backdrop" | "clear" | "picture" }[] = [];
   let lastKey = "";
-  const release = () => {
+  const unmark = () => {
     for (const { el } of marked) {
       el.removeAttribute("data-apple-backdrop"); el.removeAttribute("data-apple-clear"); el.removeAttribute("data-apple-picture");
       el.style.removeProperty("--apple-hole"); el.style.removeProperty("--apple-backdrop-color"); el.style.removeProperty("--apple-backdrop-image");
@@ -55,7 +63,7 @@ export function createAppleHole(picture: HTMLElement) {
   };
   /** Find what paints over the picture, with fresh colours (the theme may have changed). */
   const mark = () => {
-    release();
+    unmark();
     const view = doc.defaultView!;
     marked.push({ el: picture, kind: "picture" });
     let ground = false;
@@ -88,5 +96,13 @@ export function createAppleHole(picture: HTMLElement) {
   };
   /** The theme changed: read the colours again. */
   const refresh = () => { mark(); lastKey = ""; return update(); };
+  // FS1: full screen in or out changes what fills the window (the ground) and what the page may show around the viewer.
+  const fullscreen = () => {
+    doc.documentElement.toggleAttribute(FULLSCREEN, !!doc.fullscreenElement?.contains(picture));
+    if (picture.isConnected) refresh();
+  };
+  doc.addEventListener("fullscreenchange", fullscreen);
+  doc.documentElement.toggleAttribute(FULLSCREEN, !!doc.fullscreenElement?.contains(picture));
+  const release = () => { doc.removeEventListener("fullscreenchange", fullscreen); doc.documentElement.removeAttribute(FULLSCREEN); unmark(); };
   return { update, refresh, release, marked: () => marked.map(({ el, kind }) => ({ kind, tag: el.tagName, className: String(el.className).slice(0, 80) })) };
 }

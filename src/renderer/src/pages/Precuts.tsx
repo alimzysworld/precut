@@ -3,7 +3,6 @@ import { refreshShootWhenQuiet } from "../hooks/quietShoot";
 import { pieceName } from "../../../shared/clip-name";
 import { selectionBatch } from "../components/timeline/selection";
 import { useModelAccess, openModelSignIn } from "../components/ModelAccess";
-import { useAskWorkspace, setAskWorkspace } from "../components/finish/askWorkspace";
 import { LibraryView } from "../components/library/LibraryView";
 import { sourceRange, sourcePlacement, sourceDestination, type SourceRange } from "../components/library/source";
 import type { FootageItem } from "../components/footage/model";
@@ -38,13 +37,16 @@ import { ExportModal } from "../components/ExportModal";
 import { MissingMediaBanner } from "../components/MissingMediaBanner";  // EXP3
 import { VersionMenu, followDecision, versionLabel } from "../components/VersionMenu";
 import { WhatChanged } from "../components/WhatChanged";
-import { ProducedRow } from "../components/ProducedRow";  // PRO1
+import { ProducedRow } from "../components/ProducedRow";  // UI09: follow-ups in Claude
+import { EditSwitcher } from "../components/edits/EditSwitcher";  // POLISH1
+import { EditsSidebarToggle, useEditsSidebar } from "../components/edits/editsSidebar";  // POLISH1
 import { selectedSources } from "../components/footage/selection";
 import type { LiveLook } from "../components/LivePlayer";
 import { ShotOrderDialog } from "../components/ShotOrderDialog";
 import { InspectorHeader } from "../components/finish/InspectorHeader";
 import { FinishPanel, type FinishOptions } from "../components/FinishPanel";
 import { ClipMenu } from "../components/ClipMenu";
+import { ShowWhatISay, showWhatISay } from "../components/ShowWhatISay";  // BROLL2
 import { ownBalance } from "../hooks/useBalance";
 import { editShortcuts, panelShortcuts, type EditsPanel, useShortcuts, useShuttle } from "../hooks/useShortcuts";
 import { ShortcutSheet } from "../components/ShortcutSheet";
@@ -56,6 +58,10 @@ import { timelinePrefs } from "../components/timeline/prefs";
 import { selectOverlay, useOverlaySession } from "../components/OverlayHandles";
 import { sourceTime } from "../components/LivePlayer";
 import { Rail } from "../components/edits/Rail";
+import { showClaude } from "../components/edits/ClaudePane";
+import { toggleClaude, useEditorNarrow } from "../components/edits/claudeLayout";
+import { useClaudeScreen } from "../components/edits/claudeScreen";
+import type { AskScreenContext } from "../components/finish/AskPanel";
 import { Sheet } from "../components/edits/Sheet";
 import { usePageActive } from "../hooks/usePageActivity";
 import { prefetchCuts, prefetchDraft, takeCuts, takeDraft } from "./openCache";
@@ -170,6 +176,17 @@ function Workspace({ shoot, onShootChange }: { shoot: Shoot; onShootChange: (sho
   useEffect(() => { if (active) setExportHost(document.getElementById("edits-topbar-export")); }, [active]);
   const [versionHost, setVersionHost] = useState<HTMLElement | null>(null);
   useEffect(() => { if (active) setVersionHost(document.getElementById("edits-topbar-version")); }, [active]);
+  // The top bar holds the one switcher and sidebar toggle; finishing touches live in Claude.
+  const [topHosts, setTopHosts] = useState<{ produce: HTMLElement | null; edit: HTMLElement | null; sidebar: HTMLElement | null }>({ produce: null, edit: null, sidebar: null });
+  useEffect(() => { if (active) setTopHosts({ produce: document.getElementById("claude-finishing-touches"), edit: document.getElementById("edits-topbar-edit"), sidebar: document.getElementById("edits-topbar-sidebar") }); }, [active]);
+  useEffect(() => {
+    if (!active) return;
+    const find = () => setTopHosts(previous => ({ ...previous, produce: document.getElementById("claude-finishing-touches") }));
+    find(); window.addEventListener("precut:claude-compose-ready", find);
+    return () => window.removeEventListener("precut:claude-compose-ready", find);
+  }, [active]);
+  const sidebar = useEditsSidebar(active);
+  const [askScreen, setAskScreen] = useState<AskScreenContext | null>(null);
   const [justNew, setJustNew] = useState<number | null>(null);
   const justNewTimer = useRef<number>();
   const prevLatestRef = useRef(new Map<string, number>());
@@ -307,15 +324,15 @@ function Workspace({ shoot, onShootChange }: { shoot: Shoot; onShootChange: (sho
   const [undoNotice, setUndoNotice] = useState(false);
   const [shortcuts, setShortcuts] = useState(false);
   const [progress, setProgress] = useState<number | null>(null);
-  const [narrow, setNarrow] = useState(() => window.innerWidth < 1280);
-  const ask = useAskWorkspace(shoot.root);
-  const [localPanel, setLocalPanel] = useState<EditsPanel | null>(null);
+  // CH2: the edits list collapses when the editor pane (the window less Claude's pane) is under 1280 px.
+  const narrow = useEditorNarrow();
+  const [panel, setLocalPanel] = useState<EditsPanel | null>(null);
   const [browsing, setBrowsing] = useState(false);  // RAIL1: Clips' footage browser (the old Media panel) is open
-  const panel = ask.open ? "ask" : localPanel === "ask" ? null : localPanel;
   const setPanel = (next: EditsPanel | null | ((current: EditsPanel | null) => EditsPanel | null)) => {
     const value = typeof next === "function" ? next(panel) : next;
+    // CH2: Ask is Claude's pane now. Anything that opened the Ask sheet shows that pane and leaves the open panel be.
+    if (value === "ask") { showClaude(); return; }
     if (!(value === "clips" && panel === "clips")) { setSource(null); setBrowsing(false); }
-    setAskWorkspace(shoot.root, { open: value === "ask" });
     setLocalPanel(value);
   };
   const [scope, setScope] = useState<"edit" | "clip">("edit");
@@ -339,18 +356,12 @@ function Workspace({ shoot, onShootChange }: { shoot: Shoot; onShootChange: (sho
   const menuId = useId();
   const { reduced } = useMotionPresets();
   useEffect(() => {
-    const query = window.matchMedia("(max-width: 1279px)");
-    const changed = () => setNarrow(query.matches);
-    query.addEventListener("change", changed);
-    return () => query.removeEventListener("change", changed);
-  }, []);
-  useEffect(() => {
     if (!undoNotice) return;
     const timer = window.setTimeout(() => setUndoNotice(false), 6000);
     return () => window.clearTimeout(timer);
   }, [undoNotice, undo]);
   useEffect(() => getApi().onActivity?.(activity => {
-    if (activity.root === shoot.root && activity.state === 'done' && ['Preparing background', 'Measuring clip colour', 'Preparing sound', 'Preparing voice waveform', 'Reversing clip', 'Measuring music', 'Arranging music'].includes(activity.label)) setPreparationRevision(value => value + 1);
+    if (activity.root === shoot.root && activity.state === 'done' && ['Preparing background', 'Measuring clip colour', 'Preparing sound', 'Preparing voice waveform', 'Reversing clip', 'Measuring music', 'Arranging music', 'Following a pinned thing'].includes(activity.label)) setPreparationRevision(value => value + 1);
   }), [shoot.root]);
   useEffect(() => getApi().onProgress((event) => {
     if (event.root === shoot.root && event.clipId === state.selection?.cutId && event.stage === "proxy") setProgress(event.pct);
@@ -415,7 +426,9 @@ function Workspace({ shoot, onShootChange }: { shoot: Shoot; onShootChange: (sho
     const own = ownLinks.current.indexOf(`${urlCut}:${urlVersion}`);
     if (own >= 0) { ownLinks.current = ownLinks.current.slice(own + 1); return; }
     const remembered = lastShootCut(shoot.root);
-    const chosen = cuts.find((entry) => entry.cutId === urlCut) ?? cuts.find((entry) => entry.cutId === state.selection?.cutId) ?? cuts.find((entry) => entry.cutId === remembered) ?? cuts[0];
+    // POLISH1: with nothing named or remembered, the most recent edit (the newest saved version), never just the first listed.
+    const newest = [...cuts].sort((a, b) => (b.versions.at(-1)?.createdAt ?? "").localeCompare(a.versions.at(-1)?.createdAt ?? ""))[0];
+    const chosen = cuts.find((entry) => entry.cutId === urlCut) ?? cuts.find((entry) => entry.cutId === state.selection?.cutId) ?? cuts.find((entry) => entry.cutId === remembered) ?? newest;
     const latest = chosen?.versions.at(-1);
     if (!chosen || !latest) return;
     const linked = chosen.versions.find((entry) => entry.version === Number(urlVersion));
@@ -1048,6 +1061,17 @@ function Workspace({ shoot, onShootChange }: { shoot: Shoot; onShootChange: (sho
     });
     return ()=>{alive=false;off?.();};
   },[shoot.root,cut?.cutId,version?.version]);
+  // CH3: an Undo receipt in Claude's pane undoes its change while that version is still the one on screen, as the Undo pill does.
+  useEffect(() => {
+    const undoClaude = (event: Event) => {
+      const detail = (event as CustomEvent<{ cutId: string; version: number; done?: (ok: boolean) => void }>).detail;
+      const ok = !!detail && cut?.cutId === detail.cutId && version?.version === detail.version && !editing;
+      if (ok) { history.undo(); setUndoNotice(false); }
+      detail?.done?.(ok);
+    };
+    window.addEventListener("precut:claude-undo", undoClaude);
+    return () => window.removeEventListener("precut:claude-undo", undoClaude);
+  }, [cut?.cutId, version?.version, editing, history]);
   useEffect(()=>{const undoBalance=(event:Event)=>{const detail=(event as CustomEvent).detail;if(cut?.cutId===detail.cutId) {openCut(detail.cutId,detail.version,true);setUndoNotice(false);}};window.addEventListener("precut:balance-undo",undoBalance);return ()=>window.removeEventListener("precut:balance-undo",undoBalance);},[cut?.cutId]);
   // The player's clock (not React's time, which lags it while playing), to the end of the voice past the picture.
   const shuttle = useShuttle(player, () => timeNow.current, stageTimeline ? playbackExtent(stageTimeline) : timeline?.durationS ?? version?.lengthS ?? 0, playbackKey, timeline?.fps ?? 25);
@@ -1227,6 +1251,9 @@ function Workspace({ shoot, onShootChange }: { shoot: Shoot; onShootChange: (sho
     onUndo: () => { if (!editingRef.current) history.undo(); },
     onAddRecording: addRecording,
   });
+  // CH2b: Claude's pane (App's, on every page) sees this edit, its playhead and what is selected while Edits is active.
+  useClaudeScreen("precuts", { cutId: cut?.cutId, version: documentVersion?.version ?? version?.version ?? 0,
+    screenContext: { ...askScreen, playheadS: time, panel: "ask", editingPanel: askScreen?.panel ?? null } }, active);
   const shortcutList = useShortcuts("precuts", [
     ...editShortcuts({
       toggle: shuttle.toggle, shuttle: shuttle.shuttle, step: shuttle.step,
@@ -1234,7 +1261,7 @@ function Workspace({ shoot, onShootChange }: { shoot: Shoot; onShootChange: (sho
       undo: orHold(() => { if (!editingRef.current) history.undo(); }), redo: orHold(() => { if (!editingRef.current) history.redo(); }),
       search: () => setPanel("search"), help: () => setShortcuts(true), bypassLook: () => setLookBypassed(value => !value),
     }, fps),
-    ...panelShortcuts(togglePanel, closeSheet),
+    ...panelShortcuts(togglePanel, closeSheet, toggleClaude),
     ...([-1, 1] as const).map(direction => ({ id: `cut-${direction}`, scope: "precuts", keys: [direction < 0 ? "ArrowUp" : "ArrowDown"], label: direction < 0 ? "Previous edit" : "Next edit", handler: () => {
       const index = cards.findIndex(card => card.id === selectedId);
       const next = cards[Math.max(0, Math.min(cards.length - 1, index + direction))]; if (next) focusCut(next.id);
@@ -1249,6 +1276,9 @@ function Workspace({ shoot, onShootChange }: { shoot: Shoot; onShootChange: (sho
     { id: "make-better", scope: "precuts", keys: ["Cmd+Shift+b"], label: "Make it better", enabled: !!cut && !!version, handler: () => { void askBetter(); } },
     { id: "trim", scope: "precuts", keys: ["t"], label: "Trim current clip", handler: trimCurrent },
     { id: "fullscreen", scope: "precuts", keys: ["f"], label: "Full screen", handler: fullscreen },
+    // POLISH1: ⌃⌘S (the macOS sidebar key; nothing in the UX audit's map uses it) is listened for in editsSidebar.tsx,
+    // by its physical key, so it works from any focus on Edits. Listed here for the shortcut sheet only.
+    { id: "edits-sidebar", scope: "precuts", keys: ["Cmd+Ctrl+s"], label: sidebar.hidden ? "Show edits" : "Hide edits", handler: () => {}, enabled: false },
   ].map(shortcut => ({ ...shortcut, enabled: (!("enabled" in shortcut) || shortcut.enabled !== false) && !shotOrderTarget && !menuOpen && !shortcuts && !voice.prompt && !voice.working })), active && page === "precuts");
   useShortcuts("precuts", [
     { id: "vo-stop", scope: "precuts", keys: ["Escape"], label: "Stop recording", handler: () => { void voice.stop(); } },
@@ -1289,8 +1319,12 @@ function Workspace({ shoot, onShootChange }: { shoot: Shoot; onShootChange: (sho
   // Clip names across the whole history follow an undo in a background render, not in its frame.
   const namesVersion = typeof useDeferredValue === "function" ? useDeferredValue(version) : version;
   const exportAction = <ExportModal time={time} timeline={timeline} onEdit={edit => { void editCut(edit); }} root={shoot.root} cuts={cuts} cut={cut} version={activeVersion} busy={regenerating || Boolean(stageActivity)} onError={setError} />;
-  return <ClipNames shoot={shoot} version={namesVersion} versions={cut?.versions} onSelect={(piece, at, targetVersion) => { if (targetVersion === version?.version) { selectPiece(piece); player.current?.seek(at); } else if (cut) { pendingSearch.current = { id: `shot-${piece}`, label: pieceName(shoot, cut.versions.find(v => v.version === targetVersion)!, piece), detail: "Shot", cutId: cut.cutId, version: targetVersion, piece, time: at }; openCut(cut.cutId, targetVersion); } }}><ClipMenu onShotOrder={cut && version && !editing ? piece=>setShotOrderTarget({cutId:cut.cutId,version:version.version,pieces:selectedPieces.includes(piece)?[...selectedPieces]:[piece]}) : undefined} shoot={shoot} onShootChange={onShootChange} history={history.history} onAutoCorrect={cut && version ? piece=>{ownBalance(shoot.root,version.pieces?.[piece]?.clipId);return getApi().balanceClips(shoot.root,cut.cutId,version.version,{piece});} : undefined} canReplace={piece=>!editing && version?.pieces?.[piece]?.kind === "broll"} onReplace={piece => browseMedia(piece)}><div ref={workspace} data-precuts-workspace data-saving={history.history.saving || history.history.busy ? "true" : undefined} className="grid h-full min-h-0 min-w-0 gap-0 pb-[2px] st-editor-type" style={{ gridTemplateColumns: `${printsCollapsed ? "136px" : `clamp(240px, ${listWidth}px, 24vw)`} 8px minmax(0, 1fr)` }}><EditActivities root={shoot.root} onChange={setEditActivities} />
-    <EditsList onShotOrder={(cutId,version)=>{openCut(cutId,version);setShotOrderTarget({cutId,version});}} root={shoot.root} onBlank={() => void saveNewEdit()} busy={savingCut} onStar={starSavedCut} onDuplicate={(cutId, version) => { if (cutId === cut?.cutId && version === history.history.version) duplicateEdit(); else void saveNewEdit({ cutId, version }); }} items={listItems} ideas={[...(state.messages ?? [])].reverse().flatMap(message => message.ideas ?? [])} selectedId={selectedId} version={version?.version} collapsed={printsCollapsed} onCollapse={() => { setCollapsed(!collapsed); savePane("collapsed", !collapsed); }} onSelect={focusCut} onVersion={openCut}>
+  return <ClipNames shoot={shoot} version={namesVersion} versions={cut?.versions} onSelect={(piece, at, targetVersion) => { if (targetVersion === version?.version) { selectPiece(piece); player.current?.seek(at); } else if (cut) { pendingSearch.current = { id: `shot-${piece}`, label: pieceName(shoot, cut.versions.find(v => v.version === targetVersion)!, piece), detail: "Shot", cutId: cut.cutId, version: targetVersion, piece, time: at }; openCut(cut.cutId, targetVersion); } }}><ClipMenu onShowWhatISay={cut && version && !editing ? piece=>{const chosen=(selectedPieces.includes(piece)?selectedPieces:[piece]).map(i=>version.pieces?.[i]).filter(p=>!!p);if(chosen.length)showWhatISay(Math.min(...chosen.map(p=>p!.timelineS)),Math.max(...chosen.map(p=>p!.timelineS+p!.lengthS)));} : undefined} onShotOrder={cut && version && !editing ? piece=>setShotOrderTarget({cutId:cut.cutId,version:version.version,pieces:selectedPieces.includes(piece)?[...selectedPieces]:[piece]}) : undefined} shoot={shoot} onShootChange={onShootChange} history={history.history} onAutoCorrect={cut && version ? piece=>{ownBalance(shoot.root,version.pieces?.[piece]?.clipId);return getApi().balanceClips(shoot.root,cut.cutId,version.version,{piece});} : undefined} canReplace={piece=>!editing && version?.pieces?.[piece]?.kind === "broll"} onReplace={piece => browseMedia(piece)}><div ref={workspace} data-precuts-workspace data-saving={history.history.saving || history.history.busy ? "true" : undefined} className="grid h-full min-h-0 min-w-0 gap-0 pb-[2px] st-editor-type" data-edits-hidden={sidebar.hidden || undefined} style={{ gridTemplateColumns: sidebar.hidden ? "minmax(0, 1fr)" : `${printsCollapsed ? "136px" : `clamp(240px, ${listWidth}px, 24vw)`} 8px minmax(0, 1fr)` }}><EditActivities root={shoot.root} onChange={setEditActivities} />
+    {active && topHosts.sidebar && createPortal(<EditsSidebarToggle hidden={sidebar.hidden} onToggle={sidebar.toggle} />, topHosts.sidebar)}
+    {active && topHosts.edit && createPortal(<EditSwitcher root={shoot.root} shootName={shoot.name} onNew={() => void saveNewEdit()} items={listItems} selectedId={selectedId} onSelect={focusCut} />, topHosts.edit)}
+    {active && topHosts.produce && cut && activeVersion && createPortal(<ProducedRow root={shoot.root} cutId={cut.cutId} version={activeVersion} busy={editing || regenerating || Boolean(stageActivity)} onEdit={editCut} onOpen={next => openCut(cut.cutId, next)} />, topHosts.produce)}
+    {/* POLISH1: hidden, the edits sidebar is not drawn at all (no strip); the top-left toggle, View > Show edits and ⌃⌘S bring it back. */}
+    {!sidebar.hidden && <EditsList onShotOrder={(cutId,version)=>{openCut(cutId,version);setShotOrderTarget({cutId,version});}} root={shoot.root} onBlank={() => void saveNewEdit()} busy={savingCut} onStar={starSavedCut} onDuplicate={(cutId, version) => { if (cutId === cut?.cutId && version === history.history.version) duplicateEdit(); else void saveNewEdit({ cutId, version }); }} items={listItems} ideas={[...(state.messages ?? [])].reverse().flatMap(message => message.ideas ?? [])} selectedId={selectedId} version={version?.version} collapsed={printsCollapsed} onCollapse={() => { setCollapsed(!collapsed); savePane("collapsed", !collapsed); }} onSelect={focusCut} onVersion={openCut}>
       <div className="st-button-primary mb-4 flex shrink-0 items-stretch rounded-xl text-small text-white">
         <button ref={menuButton} type="button" disabled={savingCut} onClick={() => setMenuOpen(value => !value)} title="New edit" aria-label="New edit options" aria-haspopup="menu" aria-expanded={menuOpen} aria-controls={menuId} className={`flex min-w-0 flex-1 items-center justify-center gap-2 rounded-xl py-3 disabled:opacity-40 ${FOCUS}`}><Plus size={16} />{!printsCollapsed && <>New edit<ChevronDown size={14} /></>}</button>
       </div>
@@ -1301,15 +1335,15 @@ function Workspace({ shoot, onShootChange }: { shoot: Shoot; onShootChange: (sho
           <MenuOption type="button" role="menuitem" disabled={savingCut} onClick={() => void saveNewEdit()} className={`block w-full rounded-xl px-3 py-2.5 text-left text-small hover:bg-ink/[0.05] ${FOCUS}`}>Blank</MenuOption>
         </MenuSurface> : null}</AnimatePresence>
       </div>
-    </EditsList>
-    <div className={printsCollapsed ? "pointer-events-none invisible" : ""}><PaneHandle label="Resize edits list" value={listWidth} onChange={setListWidth} min={240} max={360} reset={292} /></div>
+    </EditsList>}
+    {!sidebar.hidden && <div className={printsCollapsed ? "pointer-events-none invisible" : ""}><PaneHandle label="Resize edits list" value={listWidth} onChange={setListWidth} min={240} max={360} reset={292} /></div>}
     <section aria-label="Edit workspace" className="relative flex min-h-0 min-w-0 flex-col overflow-hidden">
       {active && exportHost && createPortal(exportAction, exportHost)}
       {active && versionHost && cut && version && createPortal(<VersionMenu cut={cut} current={version} poster={(entry) => printPoster(shoot, entry)} onOpen={(next) => openCut(cut.cutId, next)} justNew={justNew === version.version}
         milestones={history.history.driven && typeof getApi().listVersionMilestones === "function" ? { history: history.history, restore: restoreMilestone, list: () => getApi().listVersionMilestones!(shoot.root, cut.cutId), save: typeof getApi().saveVersion === "function" ? name => getApi().saveVersion!(shoot.root, cut.cutId, name) : undefined } : undefined} />, versionHost)}
-      {cut && <SectionHeader as="h2" data-open-edit-title className="mb-2 line-clamp-2 shrink-0 px-1 text-small font-medium">{activeTitle}</SectionHeader>}
+      {/* POLISH1: the edit's name is in the top bar (EditSwitcher), not a line above the viewer. */}
       {cut ? <MissingMediaBanner editor shoot={shoot} onShootChange={onShootChange} onRelink={root => go("precuts", { shoot: root, cut: cut.cutId })} /> : null}{/* EXP3 */}
-      {cut && activeVersion ? <ProducedRow root={shoot.root} cutId={cut.cutId} version={activeVersion} busy={editing || regenerating || Boolean(stageActivity)} onEdit={editCut} onOpen={next => openCut(cut.cutId, next)} /> : null}{/* PRO1 */}
+      {/* Finishing touches and their follow-ups live in Claude. */}
       <div className="edits-stage-row">
       <div data-player-container data-source-open={!!source || undefined} data-aspect={aspect < 1 ? "vertical" : "horizontal"} style={{ "--edit-aspect": aspect } as React.CSSProperties} className="edits-player relative min-h-0 min-w-0 flex-1 overflow-hidden rounded-2xl bg-black" onLoadedDataCapture={event => {
         if (event.target instanceof HTMLVideoElement && !event.target.closest('[data-source-preview]') && event.target.getAttribute("aria-label") !== "Take preview") setLiveMedia({ key: draftKey, failed: false });
@@ -1330,11 +1364,12 @@ function Workspace({ shoot, onShootChange }: { shoot: Shoot; onShootChange: (sho
         </Stage></PanelBoundary>
       </div>
       <Sheet selectedName={selectedPiece === null || !documentVersion ? undefined : pieceName(shoot, documentVersion, selectedPiece)} selectedCount={selectedPieces.length} panel={panel} browsing={panel === "clips" && browsing} scope={scope} selectedPiece={selectedPiece} onScope={setScope} onClose={closeSheet}>
-        {panel === "clips" && browsing && version ? <div data-clips-browse className="flex min-h-0 flex-1 flex-col"><button type="button" onClick={backToClips} className={`self-start px-3.5 pb-1 text-[15px] font-semibold text-accent ${FOCUS}`}>‹ Clips</button><LibraryView key={`${cut?.cutId}:media:${replaceTarget ?? "all"}`} root={shoot.root} media={{ shoot, cuts, version, replacePiece: replaceTarget, busy: editing, source, getSource:()=>sourceRangeNow.current, onSource:previewSource, onEscape:()=>source?setSource(null):backToClips(), onEdit: editCut, onClose: closeSheet, onShootChange }} /></div> : cut && version ? <PanelBoundary label="this panel" resetKey={`${draftKey}:${panel}`}><FinishPanel transformMode={transformMode} onTransformMode={setTransformMode} selectedPieces={selectedPieces} onLookFinish={async options => !!await saveLiveLook(options)} onLookEdit={saveLiveLook} onPreviewEdit={previewEdit} onLiveTexture={setLookTexture} onPreviewPiece={setLookPreviewPiece} panel={panel} onPanelChange={setPanel} voice={voice} scope={scope} cut={cut} drafting={regenerating || stageActivity?.kind === "cut"} onRegenerate={regenerate} actionsDisabled={savingCut || Boolean(state.pending)} selectedJoin={panel === "pace" ? selectedJoin : null} onCloseJoin={() => setSelectedJoin(null)} searchControl={searchControl} selectedPiece={selectedPiece} onClosePiece={clearPiece} onSelectPiece={selectPiece} onEdit={editCut} player={player} timeline={timeline} key={cut.cutId} cutId={cut.cutId} shoot={shoot} version={documentVersion!} skills={skills} time={time} aspect={aspect} busy={editing || regenerating || Boolean(stageActivity)} captionSource={(timeline as (DraftTimeline & { captionSource?: CaptionSource }) | null)?.captionSource} onLiveTitles={titles => setLiveTitles({ key: draftKey, titles })} onLiveLook={choice => setLiveChoice({ key: playbackKey, look: choice })} onFinish={finishCut} /></PanelBoundary> : <p className="p-5 text-small text-muted">Choose an edit to adjust its finish.</p>}
+        {panel === "clips" && browsing && version ? <div data-clips-browse className="flex min-h-0 flex-1 flex-col"><button type="button" onClick={backToClips} className={`self-start px-3.5 pb-1 text-[15px] font-semibold text-accent ${FOCUS}`}>‹ Clips</button><LibraryView key={`${cut?.cutId}:media:${replaceTarget ?? "all"}`} root={shoot.root} media={{ shoot, cuts, version, replacePiece: replaceTarget, busy: editing, source, getSource:()=>sourceRangeNow.current, onSource:previewSource, onEscape:()=>source?setSource(null):backToClips(), onEdit: editCut, onClose: closeSheet, onShootChange }} /></div> : cut && version ? <PanelBoundary label="this panel" resetKey={`${draftKey}:${panel}`}><FinishPanel transformMode={transformMode} onTransformMode={setTransformMode} selectedPieces={selectedPieces} onLookFinish={async options => !!await saveLiveLook(options)} onLookEdit={saveLiveLook} onPreviewEdit={previewEdit} onLiveTexture={setLookTexture} onPreviewPiece={setLookPreviewPiece} panel={panel} onPanelChange={setPanel} onAskContext={setAskScreen} voice={voice} scope={scope} cut={cut} drafting={regenerating || stageActivity?.kind === "cut"} onRegenerate={regenerate} actionsDisabled={savingCut || Boolean(state.pending)} selectedJoin={panel === "pace" ? selectedJoin : null} onCloseJoin={() => setSelectedJoin(null)} searchControl={searchControl} selectedPiece={selectedPiece} onClosePiece={clearPiece} onSelectPiece={selectPiece} onEdit={editCut} player={player} timeline={timeline} key={cut.cutId} cutId={cut.cutId} shoot={shoot} version={documentVersion!} skills={skills} time={time} aspect={aspect} busy={editing || regenerating || Boolean(stageActivity)} captionSource={(timeline as (DraftTimeline & { captionSource?: CaptionSource }) | null)?.captionSource} onLiveTitles={titles => setLiveTitles({ key: draftKey, titles })} onLiveLook={choice => setLiveChoice({ key: playbackKey, look: choice })} onFinish={finishCut} /></PanelBoundary> : <p className="p-5 text-small text-muted">Choose an edit to adjust its finish.</p>}
       </Sheet>
       <Rail panel={panel} onToggle={togglePanel} />
       </div>
       {cut && version ? <>
+        <ShowWhatISay shoot={shoot} cutId={cut.cutId} version={documentVersion ?? version} busy={editing} onEdit={editCut} onSeek={at => player.current?.seek(at)} />
         <PaneHandle label="Resize player and timeline" value={timelineHeight} onChange={setTimelineHeight} min={180} max={420} reset={306} horizontal reverse />
         <div data-edits-timeline-region className="edits-timeline-region" style={{ height: timelineHeight }} onPointerDownCapture={event => {
           setSource(null);

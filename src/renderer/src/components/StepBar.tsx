@@ -1,8 +1,8 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { ChevronDown as CaretDown, ChevronRight as CaretRight, Check, Film as FilmStrip, Gear as GearSix, Library as House, Ask as Lightbulb, Play, Plus, Video as VideoCamera } from "./icons";
 import { AnimatePresence, motion } from "framer-motion";
-import type { ShootSteps, ShootSummary, StepId, ResourceState } from "../../../shared/schema";
-import { getApi } from "../data";
+import type { Cut, ShootSteps, ShootSummary, StepId, ResourceState } from "../../../shared/schema";
+import { formatDuration, getApi } from "../data";
 import { instant, instantFade, pop, spring } from "../motion";
 import { go, openShoot, type PageId } from "../nav";
 import { openSettings } from "./SettingsSheet";
@@ -11,6 +11,8 @@ import { pickAndAddShoot, useShootStill } from "../pages/Shoots";
 import { useShortcuts } from "../hooks/useShortcuts";
 import { StatusLine, type shootStatusLine } from "./StatusLine";
 import { UpdateLine } from "./UpdateLine";
+import { ClaudeToggle } from "./edits/ClaudePane";
+import { useClaudeLayout } from "./edits/claudeLayout";
 
 function Dock({ children, className, label }: { children: ReactNode; className: string; label?: string }) {
   const props = { className, style: { WebkitAppRegion: "no-drag" } as CSSProperties };
@@ -65,6 +67,7 @@ export function StepBar({ page, root, shootName, thumbnail, statusLine, calm, re
   onRetry?: (stage: import("../../../shared/schema").ProcessingStageId | import("../../../shared/schema").OptionalCheckId) => Promise<void>;
   unread?: Partial<Record<"ideas" | "precuts", boolean>>;
 }) {
+  const claude = useClaudeLayout();
   useShortcuts("global", STEPS.map((step, index) => ({
     id: `page-${step.page}`, keys: [`Cmd+${index + 1}`], label: `Go to ${step.label.toLowerCase()}`, scope: "global",
     handler: () => {
@@ -81,6 +84,7 @@ export function StepBar({ page, root, shootName, thumbnail, statusLine, calm, re
   
   const [open, setOpen] = useState(false);
   const [recent, setRecent] = useState<ShootSummary[]>([]);
+  const [edits, setEdits] = useState<Cut[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
   const [adding, setAdding] = useState(false);
@@ -93,6 +97,7 @@ export function StepBar({ page, root, shootName, thumbnail, statusLine, calm, re
     if (!open) return;
     let alive = true;
     setLoading(true); setError(undefined);
+    if (root) void api.listCuts(root).then(saved => { if (alive) setEdits(saved); }).catch(() => { if (alive) setError("Could not load edits. Reopen to try again."); });
     void api.listShoots().then((saved) => {
       if (alive) setRecent(saved.sort((a, b) => (b.lastActivityAt ?? "").localeCompare(a.lastActivityAt ?? "")));
     }).catch(() => { if (alive) setError("Could not load shoots. Close and reopen to try again."); })
@@ -128,9 +133,14 @@ export function StepBar({ page, root, shootName, thumbnail, statusLine, calm, re
 
   const control = "st-bar-control outline-none hover:bg-ink/[0.06] focus-visible:bg-ink/[0.08]";
 
-  return <><MotionSurfaces /><header aria-label="App navigation" className="st-taskbar fixed top-0 inset-x-0 z-[60] grid h-[60px] grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 px-4"
-    style={{ WebkitAppRegion: "drag" } as CSSProperties}>
-    <div ref={switcher} className="relative col-start-1 row-start-1 ml-[72px] h-9 min-w-0 max-w-[calc(100%_-_72px)] justify-self-start"
+  // CH2: the top bar ends where Claude's pane starts (--claude-reserve, on every page since CH2b).
+  return <><MotionSurfaces /><header aria-label="App navigation" className="st-taskbar fixed top-0 left-0 z-[60] grid h-[60px] grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 px-4"
+    style={{ WebkitAppRegion: "drag", right: "var(--claude-reserve, 0px)" } as CSSProperties}>
+    {/* POLISH1: the start of the bar, after the window's traffic lights (main sets them on this bar's line): the edits
+        sidebar toggle on Edits, the shoot, then on Edits the open edit (its switcher). */}
+    <div data-topbar-start className="col-start-1 row-start-1 ml-[72px] flex h-9 min-w-0 max-w-[calc(100%_-_72px)] items-center gap-1 justify-self-start">
+    {page === "precuts" && <div id="edits-topbar-sidebar" className="flex shrink-0 empty:hidden" style={{ WebkitAppRegion: "no-drag" } as CSSProperties} />}
+    {page !== "precuts" && <div ref={switcher} data-shoot-switcher className="relative h-9 min-w-[72px] shrink"
       style={{ WebkitAppRegion: "no-drag" } as CSSProperties}
       onBlur={(event) => { if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget as Node)) setOpen(false); }}>
       {root && <button ref={trigger} type="button" aria-label={root ? `Switch shoot: ${shootName ?? "Shoot"}` : "Shoots"}
@@ -140,7 +150,7 @@ export function StepBar({ page, root, shootName, thumbnail, statusLine, calm, re
         onKeyDown={(event) => { if (root && (event.key === "ArrowUp" || event.key === "ArrowDown")) { event.preventDefault(); setOpen(true); } }}
         className={`glass-floating flex h-full max-w-full items-center gap-2 rounded-full px-3 text-small font-medium text-ink ${control}`}>
         {root && <ShootThumbnail root={root} src={thumbnail} />}
-        <span className="max-w-[180px] truncate">{root ? shootName ?? "Shoot" : "Shoots"}</span>
+        <span data-shoot-name className="max-w-[160px] truncate">{root ? shootName ?? "Shoot" : "Shoots"}</span>
         {root && <CaretDown size={16} className="shrink-0 text-ink/70" aria-hidden="true" />}
       </button>}
       <AnimatePresence>{root && open && <motion.div ref={menu} id="shoot-switcher-menu" role="menu" aria-label="Shoot switcher"
@@ -156,7 +166,11 @@ export function StepBar({ page, root, shootName, thumbnail, statusLine, calm, re
         style={{ WebkitAppRegion: "no-drag" } as CSSProperties}
         className="st-pop absolute top-[calc(100%_+_8px)] left-0 w-[300px] max-w-[calc(100vw-104px)] rounded-3xl p-1.5">
         <div className="max-h-[min(360px,calc(100dvh-200px))] overflow-y-auto" role="group" aria-label="Recent shoots">
-          {loading ? <p role="status" className="px-3 py-3 text-micro text-muted">Loading shoots…</p> : recent.map((entry) => <button key={entry.root} type="button" role="menuitemradio" aria-checked={entry.root === root}
+          <p className="px-3 py-2 text-micro text-muted">This shoot's edits</p>
+          {edits.map(edit => <button key={edit.cutId} type="button" role="menuitem" onClick={() => { setOpen(false); go("precuts", { cut: edit.cutId }); }} className={`flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-small ${control}`}><FilmStrip size={16} /><span className="min-w-0"><span className="block truncate">{edit.title}</span><span className="block truncate text-micro text-muted">{[edit.versions.at(-1)?.lengthS != null ? formatDuration(edit.versions.at(-1)!.lengthS!) : null, edit.versions.at(-1)?.createdAt ? new Date(edit.versions.at(-1)!.createdAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : null].filter(Boolean).join(" · ")}</span></span></button>)}
+          <button type="button" role="menuitem" onClick={() => { if (!root) return; void api.createCut(root, {}).then(edit => { setOpen(false); go("precuts", { cut: edit.cutId, v: String(edit.version) }); }).catch(() => setError("Couldn't start an edit. Try again.")); }} className={`flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-small ${control}`}><Plus size={16} />New edit</button>
+          <p className="px-3 py-2 text-micro text-muted">Other shoots</p>
+          {loading ? <p role="status" className="px-3 py-3 text-micro text-muted">Loading shoots…</p> : recent.filter(entry => entry.root !== root).map((entry) => <button key={entry.root} type="button" role="menuitemradio" aria-checked={entry.root === root}
             disabled={!entry.online} onClick={() => selectShoot(entry.root)}
             className={`flex w-full items-center gap-2.5 rounded-full px-2.5 py-2 text-left disabled:opacity-45 ${control}`}>
             <ShootThumbnail root={entry.root} online={entry.online} src={entry.root === root ? thumbnail ?? entry.thumb ?? undefined : entry.thumb ?? undefined} />
@@ -170,6 +184,8 @@ export function StepBar({ page, root, shootName, thumbnail, statusLine, calm, re
         <button type="button" role="menuitem" onClick={() => { setOpen(false); go("shoots"); }} className={`flex w-full items-center gap-2.5 rounded-full px-2.5 py-2 text-small text-ink ${control}`}><House size={16} aria-hidden="true" />All shoots</button>
         <button type="button" role="menuitem" disabled={adding} onClick={() => void addShoot()} className={`flex w-full items-center gap-2.5 rounded-full px-2.5 py-2 text-small text-ink disabled:opacity-45 ${control}`}><Plus size={16} aria-hidden="true" />{adding ? "Adding shoot…" : "Add shoot"}</button>
       </motion.div>}</AnimatePresence>
+    </div>}
+    {page === "precuts" && <div id="edits-topbar-edit" className="flex min-w-[96px] shrink empty:hidden" />}
     </div>
     {root && <Dock label="Workflow" className="glass-floating col-start-2 row-start-1 flex h-9 items-center gap-1 rounded-full p-1">
       {STEPS.map((step, index) => {
@@ -201,6 +217,8 @@ export function StepBar({ page, root, shootName, thumbnail, statusLine, calm, re
         className={`flex size-9 shrink-0 items-center justify-center rounded-full bg-surface text-muted hover:text-ink focus-visible:text-ink ${control}`}>
         <GearSix size={16} aria-hidden="true" />
       </DockTile>
+      {/* CH2b: hidden, Claude's toggle sits at the bar's end on every page, the pixel it has in Claude's header. */}
+      <div id="edits-topbar-claude" className="shrink-0 empty:hidden">{!claude.open && <ClaudeToggle />}</div>
     </Dock>
   </header></>;
 }

@@ -1,10 +1,26 @@
-.st-timeline { --timeline-film-height: 64px; --timeline-row-height: 32px; padding: 10px 14px; gap: 6px; }
-.st-timeline-bar, .st-timeline-tools { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
-.st-timeline-bar { min-height: 28px; font-size: 12px; color: var(--ink); }
-.st-timeline-tool { display: inline-flex; height: 28px; align-items: center; justify-content: center; gap: 6px; padding: 0 10px; border-radius: 8px; white-space: nowrap; }
-.st-timeline-tool:hover:not(:disabled), .st-timeline-eye:hover { background: var(--surface-hover); }
-.st-timeline-tool:disabled { opacity: .4; }
-.st-timeline-time { margin-left: auto; padding: 0 10px; white-space: nowrap; }
+.st-timeline { --timeline-film-height: 64px; --timeline-row-height: 32px; padding: 8px 12px 10px; gap: 6px; }
+/* CH4: the toolbar. Groups by job sit 14 px apart, never a divider; inside a group, 2 px. Every state is a fill:
+   no outline, ring, border, shadow or stroke, at rest, on hover or on keyboard focus. */
+.st-timeline-bar { display: flex; align-items: center; gap: 14px; min-height: 28px; flex-shrink: 0; font-size: 12px; color: var(--ink); }
+.st-timeline-tools, .st-timeline-group { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.st-timeline-edit-tools { gap: 14px; }
+.st-timeline-icon, .st-timeline-toggle { position: relative; display: inline-flex; width: 28px; height: 28px; align-items: center; justify-content: center; flex-shrink: 0; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--ink); }
+.st-timeline-icon:hover:not(:disabled), .st-timeline-eye:hover { background: var(--surface-hover); }
+/* Dimmed in place: a disabled clip action keeps its size and spot, so selecting a clip moves nothing. */
+.st-timeline-icon:disabled { color: color-mix(in oklab, var(--ink) 34%, transparent); }
+.st-timeline-toggle { color: var(--muted); }
+.st-timeline-toggle:hover { background: var(--surface-hover); color: var(--ink); }
+.st-timeline-toggle[aria-pressed="true"] { background: var(--on); color: var(--ink); }
+.st-timeline-toggle[aria-pressed="true"]:hover { background: var(--focus); }
+.st-timeline-seg { display: inline-grid; grid-auto-flow: column; padding: 2px; border-radius: 9px; background: color-mix(in oklab, var(--ink) 6%, transparent); }
+.st-timeline-seg-button { display: inline-flex; height: 24px; align-items: center; gap: 5px; padding: 0 8px; border: 0; border-radius: 7px; color: var(--muted); font-size: 12px; font-weight: 550; white-space: nowrap; }
+.st-timeline-seg-button:hover { color: var(--ink); }
+.st-timeline-seg-button[aria-pressed="true"] { background: var(--on); color: var(--ink); }
+/* Keyboard focus: one step deeper than the on fill, so a focused toggle that is on still shows where focus is. */
+.st-timeline :is(.st-timeline-icon, .st-timeline-toggle, .st-timeline-seg-button):focus-visible { background-color: var(--focus) !important; color: var(--ink); }
+.st-timeline-corner { position: absolute; top: 0; left: 0; z-index: 47; display: flex; align-items: flex-start; gap: 2px; height: 37px; }
+.st-timeline-time { margin-left: auto; white-space: nowrap; }
+.st-timeline-total { color: var(--muted); }
 .st-timeline-lanes { gap: 8px; }
 .st-timeline-labels { width: 112px; flex-shrink: 0; padding-top: 25px; }
 .st-timeline-label { display: flex; align-items: center; gap: 6px; margin-bottom: 7px; font-size: 14px; font-weight: 500; color: var(--ink); }
@@ -50,15 +66,17 @@
 .st-timeline-music { background: linear-gradient(90deg, var(--timeline-music-fill), var(--timeline-music-fill) calc(100% - var(--timeline-music-fade, 0px)), transparent); }
 .st-timeline-overlay { background: var(--timeline-overlay-fill); color: var(--timeline-overlay-ink); }
 .st-timeline-broll { top: 2px; height: calc(100% - 4px); z-index: 10; }
-.st-timeline-head { position: absolute; left: -4px; top: 13px; width: 9px; height: 9px; border-radius: 50%; background: var(--accent); }
-.st-timeline-badge { position: absolute; top: 0; left: 0; transform: translateX(-50%); border-radius: 4px; padding: 0 4px; font-size: 10px; white-space: nowrap; background: var(--accent); color: var(--timeline-playhead-ink); }
+/* CH4: the playhead's label owns the ruler's top row, with a small notch onto its line (no separate dot). */
+.st-timeline-badge { position: absolute; top: 0; left: 0; transform: translateX(calc(-50% + var(--badge-shift, 0px))); border-radius: 4px; padding: 0 5px; font-size: 10px; line-height: 14px; font-weight: 600; white-space: nowrap; background: var(--accent); color: var(--timeline-playhead-ink); }
+.st-timeline-badge::after { content: ''; position: absolute; left: 50%; bottom: -4px; margin-left: calc(-4px - var(--badge-shift, 0px)); width: 8px; height: 5px; background: var(--accent); clip-path: polygon(0 0, 100% 0, 50% 100%); }
+.st-ruler-second { line-height: 14px; transition: opacity .12s ease; }
+.st-ruler-second[data-covered="true"] { opacity: 0; }
 @media (max-height: 800px) {
   .st-timeline { --timeline-film-height: 40px; --timeline-row-height: 22px; }
   .st-timeline-block { font-size: 12px; }
 }
 @media (max-width: 1100px) {
-  .st-timeline-bar { flex-wrap: wrap; }
-  .st-timeline-tool { padding: 0 5px; }
+  .st-timeline-bar { flex-wrap: wrap; row-gap: 4px; }
 }
 
 .st-clip-sound { background: var(--timeline-voice-fill, var(--surface-hover)); color: var(--timeline-voice-ink, var(--accent)); margin-right: 3px; }
@@ -97,7 +115,8 @@
 .st-beat-guides [data-guide-kind="bar"] { opacity: .24; }
 .st-beat-guides [data-guide-kind="beat"] { opacity: .09; }
 [data-beat-detail="false"] .st-beat-guides [data-guide-kind="beat"] { display: none; }
-.st-ruler-bar { height: 16px; padding-left: 4px; color: var(--ink); font-size: 11px; font-weight: 650; }
+/* Bar numbers keep the lower row, in muted type, under the playhead label's row. */
+.st-ruler-bar { height: 16px; padding-left: 4px; color: var(--muted); font-size: 10px; font-weight: 600; }
 .st-ruler-bar::before { content: ''; position: absolute; left: 0; bottom: 0; width: 2px; height: 12px; background: var(--timeline-music-ink); }
 .st-ruler-beat { width: 1px; height: 5px; background: var(--muted); }
 .st-music-tick { width: 2px; height: 9px; opacity: .8; }
@@ -144,3 +163,14 @@
 .st-music-edge > span { display: block; width: 3px; height: 36%; margin: auto; border-radius: 2px; background: var(--timeline-music-ink); opacity: .7; }
 .st-music-edge:hover, .st-music-edge:focus-visible { background: color-mix(in srgb, var(--timeline-music-ink) 28%, transparent); }
 .st-music-readout { font-variant-numeric: tabular-nums; }
+/* MOT1b: a motion graphic's element ticks are soft marks (a fill, never a stroke); the picked one takes the accent. */
+.st-motion-tick { background: color-mix(in srgb, currentColor 42%, transparent); }
+.st-motion-tick:hover { background: color-mix(in srgb, currentColor 70%, transparent); }
+.st-motion-tick[data-selected] { background-color: var(--accent) !important; }
+.st-motion-tick[data-selected]:focus-visible { background-color: color-mix(in srgb, var(--accent) 72%, white) !important; }
+/* CAP4: a punch's tick on its clip block: a solid accent fill (no stroke); hover, focus and dragging lighten it. */
+.st-punch-tick { background: var(--accent); }
+.st-punch-tick:hover, .st-punch-tick:focus-visible, .st-punch-tick[data-moving] { background: color-mix(in srgb, var(--accent) 62%, white); }
+.st-motion-tick:focus-visible { background-color: color-mix(in srgb, var(--accent) 70%, transparent) !important; }
+/* MOT1b: in the Motion section, the picked element's row is already the selection fill; focus on it is an accent tint. */
+[data-motion-controls] [data-motion-element]:focus-visible { background-color: color-mix(in srgb, var(--accent) 24%, transparent) !important; }

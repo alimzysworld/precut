@@ -4,6 +4,8 @@ import { defineConfig, externalizeDepsPlugin } from "electron-vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
+const SERIF = resolve("src/main/titles/fonts/instrument-serif");
+
 export default defineConfig({
   main: {
     build: { rollupOptions: { input: { index: resolve("src/main/index.ts"), "grade-worker": resolve("src/main/grade-worker.ts"), "balance-worker": resolve("src/main/balance-worker.ts") } } },
@@ -13,9 +15,9 @@ export default defineConfig({
       name: "title-template",
       generateBundle() {
         const faces: string[] = ["/* Bundled font licences:\n" + ["@fontsource/outfit", "@fontsource-variable/inter", "@fontsource/montserrat", "@fontsource/poppins", "@fontsource/bebas-neue", "@fontsource/archivo-black", "@fontsource/caveat"]
-          .map(pkg => readFileSync(resolve("node_modules", pkg, "LICENSE"), "utf8")).join("\n\n") + "\n*/"];
+          .map(pkg => readFileSync(resolve("node_modules", pkg, "LICENSE"), "utf8")).join("\n\n") + "\n\n" + readFileSync(resolve(SERIF, "LICENSE"), "utf8") + "\n*/"];
         const embed = (family: string, file: string, weight: string, style: string, range: string) => {
-          const data = readFileSync(resolve("node_modules", file)).toString("base64");
+          const data = readFileSync(file.startsWith("/") ? file : resolve("node_modules", file)).toString("base64");
           faces.push(`@font-face{font-family:"${family}";font-weight:${weight};font-style:${style};font-display:block;src:url(data:font/woff2;base64,${data}) format("woff2");unicode-range:${range}}`);
         };
         const ranges = {
@@ -37,6 +39,11 @@ export default defineConfig({
         for (const [family, slug] of [["Montserrat", "montserrat"], ["Poppins", "poppins"]] as const) {
           embed(family, `@fontsource/${slug}/files/${slug}-latin-800-italic.woff2`, "100 800", "italic", ranges.latin);
           embed(family, `@fontsource/${slug}/files/${slug}-latin-900-italic.woff2`, "900", "italic", ranges.latin);
+        }
+        // CAP4: Instrument Serif (SIL OFL 1.1, vendored with its licence in src/main/titles/fonts, so nothing downloads), the
+        // Film captions' serif. One weight: its face covers every weight a cue asks for, so it is never drawn faux bold.
+        for (const [subset, range] of Object.entries(ranges)) for (const style of ["normal", "italic"]) {
+          embed("Instrument Serif", resolve(SERIF, `instrument-serif-${subset}-400-${style}.woff2`), "100 900", style, range);
         }
         const template = readFileSync(resolve("src/main/titles/template.html"), "utf8");
         this.emitFile({ type: "asset", fileName: "titles/template.html", source: template.replace("/*__TITLE_FONTS__*/", faces.join("\n")) });

@@ -28,7 +28,7 @@ function disposeCache(): void { cached?.off(); cached?.terminal.dispose(); cache
 
 /** Keep the xterm parser and scrollback alive when the sheet detaches its DOM. */
 export async function mountTerminal(host: HTMLElement, api: TerminalApi, input: TerminalRequest,
-  onState: (snapshot: TerminalSnapshot) => void, onError: (error: unknown) => void): Promise<TerminalView> {
+  onState: (snapshot: TerminalSnapshot) => void, onError: (error: unknown) => void, { focus = true }: { focus?: boolean } = {}): Promise<TerminalView> {
   let pending: TerminalEvent[] = [];
   let entry: Cached | undefined;
   let off = api.onTerminal(event => { if (entry) receive(entry, event); else pending.push(event); });
@@ -57,7 +57,11 @@ export async function mountTerminal(host: HTMLElement, api: TerminalApi, input: 
         return true;
       });
       terminal.write(snapshot.output);
-    } else { off(); off = () => {}; host.appendChild(cached.element); }
+    } else {
+      // The cached terminal outlives the sheet: a theme switched while it was closed is picked up here.
+      off(); off = () => {}; host.appendChild(cached.element);
+      cached.terminal.options.theme = terminalTheme(getComputedStyle(document.documentElement));
+    }
     entry = cached!;
     entry.status = onState;
     pending.forEach(event => receive(entry!, event)); pending = [];
@@ -74,7 +78,8 @@ export async function mountTerminal(host: HTMLElement, api: TerminalApi, input: 
   observer.observe(host);
   const theme = new MutationObserver(() => { if (entry) entry.terminal.options.theme = terminalTheme(getComputedStyle(document.documentElement)); });
   theme.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "style"] });
-  fit(); entry!.terminal.focus();
+  // CH2: Claude's pane mounts with the Edits page, so it only takes the cursor when it is asked for.
+  fit(); if (focus) entry!.terminal.focus();
   return {
     clear() { entry?.terminal.clear(); },
     async restart(request) {

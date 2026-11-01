@@ -86,7 +86,7 @@ export function appendLayoutComposite(filters: string[], parts: LayoutPicture[],
       const animated=animatedShape||part.layoutRegionKeys?.some(k=>Math.abs(k.w-region.w)>1e-7||Math.abs(k.h-region.h)>1e-7);
       if(animated){filters.push(`[${picture}]format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='255*(${shapeExpression('opacity')})*clip(0.5-(${distance}),0,1)'[${label}circle]`);}
       else{
-        filters.push(`color=c=black:s=${Math.round(region.w*width)}x${Math.round(region.h*height)}:r=${fps},trim=end_frame=1,format=gray,geq=lum='255*clip(0.5-(${distance}),0,1)',loop=loop=-1:size=1:start=0,trim=duration=${duration},setpts=N/(${fps}*TB)[${label}mask]`);
+        filters.push(`color=c=black:s=${Math.round(region.w*width)}x${Math.round(region.h*height)}:r=${fps},trim=end_frame=1,format=gray,geq=lum='255*(${shapeExpression('opacity')})*clip(0.5-(${distance}),0,1)',loop=loop=-1:size=1:start=0,trim=duration=${duration},setpts=N/(${fps}*TB)[${label}mask]`);
         filters.push(`[${picture}][${label}mask]alphamerge[${label}circle]`);
       }
       picture=`${label}circle`;

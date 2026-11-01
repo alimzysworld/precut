@@ -357,8 +357,9 @@ export async function prepareEditorLayers(i: EditorInput, folder: string): Promi
   for (const [n, o] of graphics.entries()) {
     const g = o.graphic!, d = o.e - o.s;
     if (![o.s, o.e].every(Number.isFinite) || o.s < 0 || d <= 0 || o.e > duration(i) + 1e-6) throw new Error(`Graphic outside the cut: ${o.id}`);
-    // PRO4b: a card's picture is drawn in from the shoot's card cache.
-    const local = { ...o, s: 0, e: d, ...(g.media ? { mediaUrl: (await import("./overlays")).cardMediaUrl(i.root, g.media) } : {}) };
+    // PRO4b: a card's picture is drawn in from the shoot's card cache. SCN1b: a scene's frames the same way.
+    const { cardMediaUrl } = await import("./overlays");
+    const local = { ...o, s: 0, e: d, ...(g.media ? { mediaUrl: cardMediaUrl(i.root, g.media) } : {}), ...(g.frames?.length ? { framesUrl: g.frames.map(f => cardMediaUrl(i.root, f)) } : {}) };
     const options = { width: i.template.width, height: i.template.height, fps: i.template.fps, durationS: d, layer: "all" as const, overlays: [local as typeof local & { url: string }] };
     const track = { font: "Outfit", cues: [], prompt: null, skillIds: [] };
     const cached = await cachedLayer(i, { kind: "graphic-prores", track, options: { ...options, overlays: [{ ...local, url: "" }] } }, ".mov", async out => {
@@ -374,9 +375,10 @@ export async function prepareEditorLayers(i: EditorInput, folder: string): Promi
     layers.video.push({ file: await copy(cached, `${name}.mov`), name: `Graphic: ${g.template ?? "custom"}`, s: o.s, d, track: behindTrack, kind: behindGraphic ? "behind" : "front" });
     const sources = path.join(folder, "graphics", name);
     await fs.mkdir(sources, { recursive: true });
-    // PRO4b: a card's picture goes beside its html, which shows it from there.
+    // PRO4b: a card's picture goes beside its html, which shows it from there. SCN1b: a scene's frames too.
     if (g.media) await fs.copyFile(path.join(i.root, ".sidething", "overlays", g.media), path.join(sources, "picture.webp"));
-    const html = g.media ? g.html.split('src="#card-media"').join('src="picture.webp"') : g.html;
+    for (const [k, f] of (g.frames ?? []).entries()) await fs.copyFile(path.join(i.root, ".sidething", "overlays", f), path.join(sources, `frame-${k}.webp`));
+    const html = (g.frames ?? []).reduce((h, _f, k) => h.split(`src="#frame-${k}"`).join(`src="frame-${k}.webp"`), g.media ? g.html.split('src="#card-media"').join('src="picture.webp"') : g.html);
     await fs.writeFile(path.join(sources, "graphic.html"), `<!doctype html><meta charset="utf-8"><style>${g.css}</style><div id="gfx">${html}</div>${g.js ? `<script>${g.js}</script>` : ""}`);
     await fs.writeFile(path.join(sources, "composition.json"), JSON.stringify({ ...g, placement: { x: o.x, y: o.y, w: o.w, rotate: o.rotate ?? 0 }, startS: o.s, endS: o.e }, null, 1));
   }

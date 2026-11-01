@@ -1,4 +1,6 @@
 import { TransformPanel } from "./TransformPanel";
+import { LockGroup } from "./LockGroup";
+import { PunchControls } from "./PunchControls";
 import { ClipSoundCleaning } from "./ClipSoundCleaning";
 import { clipLaneDb, defaultClipMuted } from '../../../../shared/lane-levels';
 import { previewLiveSound, type LiveSoundTimeline } from "../liveMix";
@@ -175,6 +177,7 @@ export function PiecePanel({ transformMode, onTransformMode, shoot, piece, index
     {piece.broll && version ? <button type="button" disabled={busy} onClick={() => window.dispatchEvent(new CustomEvent("sidething:browse-media", { detail: { root: shoot.root, piece: index } }))} className="w-full rounded-lg bg-ink/[0.06] px-3 py-2 text-left outline-none hover:bg-ink/[0.1] focus-visible:bg-ink/[0.1]">Replace</button> : null}
     {!piece.broll ? <ClipTakes shoot={shoot} piece={piece} index={index} busy={busy} onEdit={onEdit} player={player} onPreviewInContext={previewInContext} /> : null}
     {version ? <TransformPanel viewer={transformMode} onViewer={onTransformMode} version={version} index={index} indexes={indexes} timeline={timeline} busy={busy} onEdit={onEdit} /> : null}
+    {version && clip && !clip.missing && (indexes?.length ?? 0) <= 1 ? <LockGroup version={version} index={index} timeline={timeline} busy={busy} /> : null}
     <AngleControls shoot={shoot} piece={piece} index={index} time={time} timeline={timeline} cuts={angleCuts} busy={busy} onEdit={onEdit} />
     <section aria-label="Trim piece" className="space-y-2">
       <p className="text-[11px] text-muted">Move where it starts and ends. Voice trims snap to words.</p>
@@ -199,6 +202,7 @@ export function PiecePanel({ transformMode, onTransformMode, shoot, piece, index
       <p className="text-[11px] text-muted">Faster or slower; voice keeps its pitch. Click the number to type.</p>
       <Slider label="Speed" aria-label="Clip speed" data-control="clip-speed" min={.1} max={10} rangeMin={.1} rangeMax={10} detent={1} defaultValue={1} step={.01} unit="x" value={fx.speed ?? 1} disabled={busy}
         onChange={speed => { setFx(previous => ({ ...previous, speed })); onPreviewEdit?.({kind:"pieceFx",piece:index,fx:{...fx,speed}}); }} onRelease={speed => void commitFx({ ...fx, speed })} />
+      <PunchControls fx={fx} index={index} time={time} timeline={timeline} busy={busy} onPreview={next => onPreviewEdit?.({ kind: "pieceFx", piece: index, fx: next })} onCommit={next => { setFx(next); void commitFx(next); }} />
       {piece.broll ? <div className="space-y-2">
         <p className="text-[11px] text-muted">Plays backwards; its own sound is muted.</p>
         <Row as="label" className="flex items-center justify-between gap-3 text-small">Reverse<Switch aria-label="Reverse" checked={fx.reverse ?? false} data-control="clip-reverse" disabled={busy}

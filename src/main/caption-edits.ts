@@ -1,14 +1,26 @@
-import type { CutEdit, Segment } from '../shared/schema';
+import type { CutEdit, CutVersion, Segment, TitleTrack } from '../shared/schema';
+import { buildCaptionTrack, isCaptionStyle, type CaptionTrack } from './titles/captions';
 import { alignCaptionTrack, updateCaptionWord } from '../shared/caption-words';
 import { finishStoredVersion, PREVIEW_REV, savePlaybackChange } from './sidekick';
 import { runActivity, withRenderSlot } from './activity';
 
+/** CAP4: a code-built caption track's lines again from its own words (captionSource, Big marks included) and style, its
+ * opening lines kept as they are. A track without a style or words (a model's own subtitles) is left as it is. */
+export function rebuildCaptionLines(track: TitleTrack | null | undefined, bigLines: CutVersion['bigLines']): TitleTrack | null | undefined {
+  const caption = track as CaptionTrack | null | undefined;
+  if (!caption?.captionStyle || !caption.captionSource?.words.length || !isCaptionStyle(caption.captionStyle)) return track;
+  return buildCaptionTrack(caption.captionSource.words, caption, caption.captionStyle, caption.captionSource.safeArea, bigLines);
+}
 export function editCaption(root: string, cutId: string, version: number, edit: Extract<CutEdit, { kind: 'captionWord' | 'retimeCaptions' }>) {
   return savePlaybackChange(root, cutId, version, base =>
     runActivity({ kind: 'edit', root, target: { cutId, version: base }, label: edit.kind === 'captionWord' ? 'Updating caption word' : 'Re-timing words', cancelable: true }, activity =>
       finishStoredVersion(root, cutId, base, true, async (record, assembly, baseVersion) => {
         record.assembly = assembly;
-        if (edit.kind === 'captionWord') record.titles = updateCaptionWord(record.titles, edit, record.lengthS);
+        if (edit.kind === 'captionWord') {
+          record.titles = updateCaptionWord(record.titles, edit, record.lengthS);
+          // CAP4: Big changes which words share a line, so the lines are built again from the same words and style.
+          if (edit.big !== undefined) record.titles = rebuildCaptionLines(record.titles, record.bigLines);
+        }
         else {
           if (record.captionLanguage) throw Error('Re-time the spoken captions before translating them.');
           const { buildTitlesInput } = await import('./titles');

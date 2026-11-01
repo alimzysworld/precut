@@ -1,3 +1,5 @@
+import { soundTime, needsSoundResolution, migrateSounds as migrateSoundList, validSoundAnchor } from './sound-attachments';
+export { soundTime, resolveSounds, coupledSoundShape } from './sound-attachments';
 import { sourceAudioInput } from './source-audio';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
@@ -5,7 +7,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { app } from 'electron';
-import type { Api, CutEdit, CutVersion, SfxItem, SoundRole } from '../shared/schema';
+import type { CutEdit, CutVersion, SfxItem, SoundRole } from '../shared/schema';
 import { validMusicShape } from '../shared/music-shape';
 import { laneDb } from '../shared/lane-levels';
 import type { StoredVersion } from './sidekick';
@@ -13,14 +15,18 @@ import type { FxPlan } from './edits-fx';
 import type { CaptionTrack } from './titles/captions';
 import { planFx, mapTime } from './edits-fx';
 import { currentActivity, runActivity } from './activity';
-import { soundDuration, soundEvents, synthSound } from './sfx';
+import { soundDuration, synthSound } from './sfx';
 import { measureLoudness } from './audio';
 import { sourceIdentity } from './voice-isolation';
 import { tool } from './tools';
 
+export function migrateSounds(record: StoredVersion) {
+  if (!needsSoundResolution(record)) return record;
+  return migrateSoundList(record, planFx(record.assembly.cutList, record.assembly.template.fps, record), record.assembly.template.fps);
+}
 const kinds = ['whoosh', 'hit', 'pop', 'riser', 'impact', 'ambience', 'roomtone', 'ui', 'other'];
 const synthKinds = ['whoosh', 'hit', 'pop', 'riser', 'impact'] as const;
-type LibrarySound = { id: string; name: string; kind: SfxItem['kind']; lengthS: number; file: string; role?: SoundRole; hitS?: number; punchDb?: number };
+type LibrarySound = { id: string; name: string; kind: SfxItem['kind']; lengthS: number; file: string; role?: SoundRole; hitS?: number; punchDb?: number; category?: string; tags?: string[]; hidden?: boolean };
 const roles: SoundRole[] = ['hit', 'accent', 'ui', 'ambience'];
 /** PRO3a: each role's level against the edit's voice: the sound's loudest 50 ms (RMS dBFS) minus the voice's integrated
  * loudness (LUFS) as it plays in the mix. The launch video's 109 cues, measured the same way against its lead (music 0.6,
@@ -97,9 +103,9 @@ async function safeSoundCache(root: string): Promise<string> {
 export async function resolveSound(root: string, id: string): Promise<string> {
   if (typeof id !== 'string') throw new Error('Choose a sound from the library.');
   if (id.startsWith('lib:')) {
-    const found = (await libraryFiles([])).find(s => s.id === id);
+    const found = (await libraryFiles([], false)).find(s => s.id === id);
     if (!found) throw new Error('That sound is not in the library.');
-    return found.file;
+    return found.file || await synthSound(id.slice('lib:synth-'.length) as typeof synthKinds[number]);
   }
   const directory = await fs.realpath(path.join(root, '.sidething/sfx'));
   const realRoot = await fs.realpath(root);
@@ -112,7 +118,7 @@ export async function libraryFiles(roots?: string[], prepare = true): Promise<Li
   const directory = sfxDirectory();
   const manifest = JSON.parse(await fs.readFile(path.join(directory, 'manifest.json'), 'utf8'));
   const result: LibrarySound[] = manifest.sounds.map((s: LibrarySound) => ({ ...s, file: path.join(directory, s.file) }));
-  for (const kind of synthKinds) result.push({ id: `lib:synth-${kind}`, name: `soft ${kind}`, kind, lengthS: soundDuration[kind], file: prepare ? await synthSound(kind) : '' });
+  for (const kind of synthKinds) if (!result.some(s => s.id === `lib:synth-${kind}`)) result.push({ id: `lib:synth-${kind}`, name: `soft ${kind}`, kind, lengthS: soundDuration[kind], file: prepare ? await synthSound(kind) : '' });
   for (const root of roots ?? await shootRoots()) {
     const cache = path.join(root, '.sidething/sfx');
     for (const name of await fs.readdir(cache).catch(() => [])) {
@@ -126,8 +132,12 @@ export async function libraryFiles(roots?: string[], prepare = true): Promise<Li
   }
   return result;
 }
-export async function soundLibrary(): ReturnType<Api['soundLibrary']> {
-  return (await libraryFiles()).map(({ file: _file, punchDb: _punch, ...s }) => ({ ...s, url: `st-media://local/sounds/${encodeURIComponent(s.id)}` }));
+export type SoundFilter = { category?: string; query?: string; tags?: string[]; includeHidden?: boolean; bundledOnly?: boolean };
+export async function soundLibrary(filter: SoundFilter = {}) {
+  const query = (filter.query ?? '').toLowerCase().trim();
+  return (await libraryFiles(filter.bundledOnly ? [] : undefined, false)).filter(s => (!s.id.startsWith('lib:synth-') && (filter.includeHidden || !s.hidden)) &&
+    (!filter.category || s.category === filter.category) && (!query || [s.name, s.category, ...(s.tags ?? [])].join(' ').toLowerCase().includes(query)) &&
+    (!filter.tags?.length || filter.tags.every(t => s.tags?.some(tag => tag.toLowerCase() === t.toLowerCase())))).map(({ id, name, kind, category, tags, lengthS, hitS, role }) => ({ id, name, kind, category, tags, lengthS, hitS, role, url: `st-media://local/sounds/${encodeURIComponent(id)}` }));
 }
 export function validateSfx(item: SfxItem, duration: number): SfxItem {
   if (!item || typeof item.file !== 'string' || !item.file || typeof item.name !== 'string' || !item.name.trim() ||
@@ -135,7 +145,8 @@ export function validateSfx(item: SfxItem, duration: number): SfxItem {
     !Number.isFinite(item.gainDb) || item.gainDb < -24 || item.gainDb > 6 ||
     (item.lengthS !== undefined && (!Number.isFinite(item.lengthS) || item.lengthS <= 0 || item.lengthS > duration - item.atS + 1e-6)) ||
     (item.reason !== undefined && typeof item.reason !== 'string') || (item.role !== undefined && !roles.includes(item.role))) throw new Error('Choose a sound, a time inside the edit, gain from -24 to 6 dB and a role of hit, accent, ui or ambience.');
-  return { id: item.id, file: item.file, name: item.name.trim(), atS: item.atS, gainDb: item.gainDb, kind: item.kind, auto: item.auto,
+  if (item.offsetFrames !== undefined && (!Number.isInteger(item.offsetFrames) || Math.abs(item.offsetFrames) > 48) || item.stretch !== undefined && typeof item.stretch !== 'boolean' || item.anchor && !validSoundAnchor(item.anchor)) throw new Error('Choose a valid attachment and an offset from -48 to 48 frames.');
+  return { ...item, sound: item.file, id: item.id, file: item.file, name: item.name.trim(), atS: item.atS, gainDb: item.gainDb, kind: item.kind, auto: item.auto,
     ...(item.lengthS === undefined ? {} : { lengthS: item.lengthS }), ...(item.reason === undefined ? {} : { reason: item.reason }), ...(item.role === undefined ? {} : { role: item.role }) };
 }
 
@@ -235,7 +246,7 @@ export async function roomTone(root: string, record: Pick<StoredVersion, 'assemb
 
 /** Pure placement. Stable ids suppress duplicates when the person has moved a sound. */
 export function autoSounds(version: CutVersion, plan: FxPlan, room: string | null, authored?: SfxItem[], suppressed: string[] = []): SfxItem[] {
-  const manual = (version.sfx ?? []).filter(s => !s.auto), placed: SfxItem[] = [];
+  const manual = (version.sfx ?? []).filter(s => !s.auto || s.anchor), placed: SfxItem[] = [];
   const add = (id: string, item: Omit<SfxItem, 'id' | 'auto'>) => {
     if (!suppressed.includes(id) && !manual.some(s => s.id === id) && item.atS < plan.durationS) placed.push({ ...item, id, auto: true });
   };
@@ -317,26 +328,39 @@ async function soundLevel(file: string) {
   return levels.get(key)!;
 }
 export type PreparedEffect = { id?: string; atS: number; file: string; sound?: import('../shared/schema').TransitionSound; lengthS?: number; gainDb?: number; normalizeDb?: number; loopSamples?: number; bed?: boolean };
-export async function prepareDesignSounds(root: string, plan: FxPlan, version: Pick<CutVersion, 'sfx' | 'audio' | 'overlays'> & Partial<Pick<CutVersion, 'voiceover' | 'laneLevels'>> & { assembly?: Pick<StoredVersion['assembly'], 'reel'> }): Promise<PreparedEffect[]> {
+export async function prepareDesignSounds(root: string, plan: FxPlan, version: Pick<CutVersion, 'sfx' | 'audio' | 'overlays'> & Partial<Pick<CutVersion, 'pieces' | 'pieceFx'>> & Partial<Pick<CutVersion, 'voiceover' | 'laneLevels'>> & { assembly?: Pick<StoredVersion['assembly'], 'reel'> }, fps = (version as StoredVersion).assembly?.template?.fps ?? 30): Promise<PreparedEffect[]> {
+  migrateSoundList(version, plan, fps);
   const items = version.sfx ?? [];
   // PRO3a: a sound with a role sits at that role's level against this edit's voice, whatever its file's loudness.
   const voice = items.some(s => s.role) ? await voiceReferenceDb(version, root) : 0;
-  // A saved auto pass owns join sounds. Overlays always retain their own sound.
-  const events = soundEvents(version.sfx !== undefined ? { ...plan, joins: [] } : plan, version);
   const output: PreparedEffect[] = [];
-  for (const event of events) output.push({ ...event, file: await synthSound(event.sound) });
   for (const item of items) {
-    if (item.atS >= plan.durationS || item.atS < 0) continue;
+    if (!item.anchor && (item.atS >= plan.durationS || item.atS < 0)) continue;
     if (item.auto && version.audio?.design === false) continue;
-    const file = await resolveSound(root, item.file), bed = item.kind === 'roomtone' || item.kind === 'ambience';
-    const level = bed || item.role ? null : await soundLevel(file);
+    const timing = soundTime(version, item, plan, fps);
+    if (!timing) continue;
+    let file = await resolveSound(root, item.file);
+    if (timing.rate !== 1 || timing.sourceStartS > 0) {
+      const directory = await safeSoundCache(root), output = path.join(directory, `attached-${hash([await sourceIdentity(file), timing.rate, timing.sourceStartS])}.wav`);
+      if (!await fs.access(output).then(() => true, () => false)) {
+        const temporary = path.join(directory, `${randomUUID()}.wav`);
+        try {
+          const { tempoChain } = await import('./music-space');
+          await execute(tool('ffmpeg'), ['-v', 'error', '-nostdin', '-y', ...await sourceAudioInput(file), '-af', `${tempoChain(timing.rate)},atrim=start=${timing.sourceStartS},asetpts=PTS-STARTPTS`, '-ar', '48000', '-ac', '2', '-c:a', 'pcm_f32le', temporary], { signal: currentActivity()?.signal });
+          await fs.rename(temporary, output);
+        } finally { await fs.rm(temporary, { force: true }); }
+      }
+      file = output;
+    }
+    const bed = item.kind === 'roomtone' || item.kind === 'ambience';
+    const level = bed || item.role || item.legacyMix === 'synth' ? null : await soundLevel(file);
     const roleDb = item.role ? ROLE_LEVEL_DB[item.role] + voice - (await soundShape(root, item.file)).punchDb : undefined;
     let loopSamples: number | undefined;
     if (bed && item.lengthS) {
       const probe = await execute(tool('ffprobe'), ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', file], { signal: currentActivity()?.signal });
       loopSamples = Math.round(Number(probe.stdout) * 48000);
     }
-    output.push({ id:item.id, atS: item.atS, file, lengthS: Math.min(item.lengthS ?? plan.durationS, plan.durationS - item.atS), gainDb: item.gainDb, normalizeDb: roleDb !== undefined ? Math.round(Math.max(-60, Math.min(24, roleDb)) * 100) / 100 : level ? Math.max(-24, Math.min(24, -22 - level.input_i)) : 0, loopSamples, bed });
+    output.push({ id:item.id, atS: timing.atS, file, lengthS: Math.min(timing.lengthS ?? plan.durationS, plan.durationS - timing.atS), gainDb: item.gainDb, normalizeDb: roleDb !== undefined ? Math.round(Math.max(-60, Math.min(24, roleDb)) * 100) / 100 : level ? Math.max(-24, Math.min(24, -22 - level.input_i)) : 0, loopSamples, bed });
   }
   return output;
 }
@@ -345,7 +369,8 @@ export function editSounds(root: string, cutId: string, version: number, edit: E
     if (!['add', 'update', 'remove', 'musicShape'].includes(edit.op)) throw new Error('Choose add, update or remove for a sound, or musicShape.');
     const { finishStoredVersion, renderStoredPreview } = await import('./sidekick');
     return finishStoredVersion(root, cutId, version, true, async (record, assembly) => {
-      const duration = planFx(assembly.cutList, assembly.template.fps, record).durationS, items = [...(record.sfx ?? [])];
+      migrateSounds(record);
+      const plan = planFx(assembly.cutList, assembly.template.fps, record), duration = plan.durationS, items = [...(record.sfx ?? [])];
       if (edit.op === 'musicShape') {
         // PRO3a: the music's stillnesses and hit dips live on the music, so every mix that reads the music reads them.
         const music = record.music !== undefined ? record.music : assembly.reel.music ? { file: assembly.reel.music.file, startS: assembly.reel.music.startS, gainDb: assembly.reel.music.gainDb,
@@ -354,6 +379,7 @@ export function editSounds(root: string, cutId: string, version: number, edit: E
         const shape = edit.shape === null ? [] : validMusicShape(edit.shape, duration);
         const { shape: _old, ...rest } = music;
         record.music = shape.length ? { ...rest, shape } : rest;
+        record.feedback = shape.length ? 'Shaped the music' : 'Took the music shaping out';   // REL09e
         record.assembly = assembly;
         await renderStoredPreview(root, cutId, record, assembly);
         return { cutId, version: record.version };
@@ -364,11 +390,31 @@ export function editSounds(root: string, cutId: string, version: number, edit: E
         const { landAtS, ...given } = edit.op === 'add' ? edit.item : edit.patch;
         const merged = edit.op === 'add' ? { ...given, id: randomUUID(), auto: false } as SfxItem : { ...items[index], ...given, id: items[index].id, auto: false };
         if (landAtS !== undefined) { await resolveSound(root, merged.file); merged.atS = await placeByLanding(root, merged.file, landAtS); }
+        if (merged.anchor !== undefined && merged.anchor !== null && !validSoundAnchor(merged.anchor)) throw new Error('Choose a valid sound attachment.');
+        if (given.anchor === null || given.atS !== undefined && given.anchor === undefined || landAtS !== undefined && given.anchor === undefined) {
+          merged.anchor = undefined;
+          if (given.offsetFrames === undefined) merged.offsetFrames = 0;
+        }
+        if (given.file !== undefined || merged.anchor && merged.sourceHitS === undefined || merged.role && merged.sourceHitS === undefined) {
+          const shape = await soundShape(root, merged.file); merged.sourceHitS = shape.hitS;
+          const lib = (await libraryFiles([], false)).find(s => s.id === merged.file); merged.sourceLengthS = lib?.lengthS;
+        }
+        if (given.file !== undefined || given.anchor !== undefined) { delete merged.legacyMix; delete merged.startOffsetS; }
+        if (!merged.anchor && merged.reason === "The scene's first landing") {
+          const graphic = record.overlays?.find(o => o.graphic?.template?.startsWith('scene-') && Math.abs(o.s + (o.graphic.motion?.elements[0]?.at ?? 0) - (merged.atS + (merged.sourceHitS ?? 0))) < .01);
+          const element = graphic?.graphic?.motion?.elements[0];
+          if (graphic && element) merged.anchor = { to: 'element', id: graphic.id, element: element.id, edge: 'land' };
+        }
+        const timing = soundTime(record, merged, plan, assembly.template.fps);
+        if (!timing) throw new Error('That sound attachment is no longer in the edit.');
+        if (merged.anchor) merged.atS = timing.atS;
         const item = validateSfx(merged, duration);
         await resolveSound(root, item.file);
         if (edit.op === 'add') items.push(item); else items[index] = item;
+        record.feedback = `${edit.op === 'add' ? 'Added' : 'Changed'} a sound${item.name ? `: ${item.name}` : ''}`;   // REL09e: not the parent's words
       } else {
         if (items[index].id.startsWith('auto:')) record.soundDesign = { ...record.soundDesign, suppressed: [...(record.soundDesign?.suppressed ?? []), items[index].id] };
+        record.feedback = `Removed a sound${items[index].name ? `: ${items[index].name}` : ''}`;
         items.splice(index, 1);
       }
       record.sfx = items; record.assembly = assembly;

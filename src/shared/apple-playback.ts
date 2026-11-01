@@ -11,6 +11,7 @@ import { duckGainAt, musicDuckKeys, stemDuckKeys } from "./music-duck";
 import { laneDb, laneMuted, duckedUnder, heardPiece, mixOutputDb, musicEnd, musicStems } from "./lane-levels";
 import { blurAt, frameAtTime, opacityAt } from "./picture-keys";
 import { gradientParameters, rgb } from "./layout-effects";
+import { playbackEndS } from "./picture-extent";
 import { TITLE_CARD_BASE, type LayoutPicture } from "../main/layout-math";
 import type { LayoutBackground } from "./layout-presets";
 
@@ -246,7 +247,9 @@ export interface AppleVoicePiece { id: string; url: string; startS: number; endS
 
 export interface AppleManifest {
   version: 1;
-  width: number; height: number; fps: number; durationS: number;
+  /** How long the player runs: the picture, or on to the last voice piece's end over black (playbackEndS, the rule
+   * the Chrome viewer plays to). `pictureS` is where the picture (and the export) ends. */
+  width: number; height: number; fps: number; durationS: number; pictureS?: number;
   video: AppleVideoSegment[];
   audio: AppleAudioSegment[];
   finish?: AppleFinishPlan | null;
@@ -422,7 +425,10 @@ export function buildAppleManifest(
     }
   }
   const eq = sound?.audio?.eq;
-  return { version: 1, width: timeline.width, height: timeline.height, fps: timeline.fps ?? 25, durationS: timeline.durationS, video, audio,
+  // PLAY1: the plan runs as long as the Chrome viewer plays (VO7-9): past the picture's end to the last voice piece,
+  // over black. With durationS at the picture, the native player clamped every seek there, so the playhead snapped
+  // back, the voice past it never played and L stopped at the picture's end. Music still stops at the picture.
+  return { version: 1, width: timeline.width, height: timeline.height, fps: timeline.fps ?? 25, durationS: playbackEndS(timeline.durationS, timeline.voiceover), pictureS: timeline.durationS, video, audio,
     finish: null, sound: { eq: [eq?.low ?? 0, eq?.mid ?? 0, eq?.high ?? 0], auto: sound?.audio?.auto !== false, outDb: sound ? mixOutputDb(sound) : 0 } };
 }
 

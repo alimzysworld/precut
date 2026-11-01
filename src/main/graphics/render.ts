@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import { bundledFile } from "../bundle-paths";
 import { createHash, randomUUID } from "node:crypto";
-import type { MotionGraphic } from "../../shared/schema";
+import type { MotionGraphic, OverlayItem } from "../../shared/schema";
 import { currentActivity, withRenderSlot } from "../activity";
 import { GraphicError, graphicKey } from "./sanitize";
 import { captureFrame, captureWindow, framePng, withinBudget } from "../capture-frame";
@@ -25,7 +25,8 @@ function plainError(error: unknown): GraphicError {
   return new GraphicError("Couldn't draw that graphic. Check its html, css and js.");
 }
 
-async function withPage<T>(width: number, height: number, graphic: MotionGraphic, backdrop: string | null, root: string | null, work: (page: Page, stage: { width: number; height: number }) => Promise<T>): Promise<T> {
+async function withPage<T>(width: number, height: number, graphic: MotionGraphic, backdrop: string | null, root: string | null, work: (page: Page, stage: { width: number; height: number }) => Promise<T>,
+  place?: Partial<OverlayItem>): Promise<T> {
   await app.whenReady();
   // CAP3: the shared capture window (one row taller than the still, for the capture token).
   const window = captureWindow(width, height, 60);
@@ -34,9 +35,9 @@ async function withPage<T>(width: number, height: number, graphic: MotionGraphic
   try {
     signal?.throwIfAborted();
     await window.loadFile(bundledFile("titles/template.html"));
-    // PRO4b: a card's picture comes from its shoot's cache; with no shoot (the frame check) it is drawn as an empty picture.
-    const media = graphic.media ? root ? { mediaData: await (await import("../overlays")).cardMediaData(root, graphic.media) } : { mediaBlank: true } : {};
-    const item = { id: "preview", file: "", url: "", graphic, s: 0, e: graphic.durationS + 1, x: 0.5, y: 0.5, w: 1, corner: "square", enter: "none", exit: "none", sound: null, ...media };
+    // PRO4b: a card's picture (MOT1: a scene's frames) comes from its shoot's cache; with no shoot (the frame check) it is drawn empty.
+    const media = graphic.media || graphic.frames?.length ? root ? await (await import("../overlays")).graphicPictureData(root, graphic) : { mediaBlank: true } : {};
+    const item = { id: "preview", file: "", url: "", graphic, s: 0, e: graphic.durationS + 1, x: 0.5, y: 0.5, w: 1, corner: "square", enter: "none", exit: "none", sound: null, ...place, ...media };
     const track = { font: "Outfit", cues: [], prompt: null, skillIds: [] };
     const run = (code: string) => withinBudget(window, window.webContents.executeJavaScript(code), tooSlow);
     await run(`window.titleRenderer.init(${JSON.stringify(track)}, ${JSON.stringify({ width, height, layer: "all", overlays: [item] })})`);
@@ -64,6 +65,36 @@ export function renderGraphicStills(graphic: MotionGraphic, times: number[], opt
     for (const t of times) out.push(await capture(Math.max(0, Math.min(graphic.durationS, t))));
     return out;
   }));
+}
+
+/** LOOK1: raw frames (BGRA, premultiplied, as Chromium captures them) at a given size, and how long each took to draw:
+ *  what the look's auto dim measures and the designed background's render-cost check times. */
+export function renderGraphicBitmaps(graphic: MotionGraphic, times: number[], size: { width: number; height: number }, root: string | null = null): Promise<{ bitmaps: Buffer[]; ms: number[] }> {
+  return slot(() => withPage(size.width, size.height, graphic, null, root, async ({ window }) => {
+    const bitmaps: Buffer[] = [], ms: number[] = [];
+    for (const t of times) {
+      const started = Date.now();
+      bitmaps.push(Buffer.from(await captureFrame(window, size.width, size.height, Math.max(0, Math.min(graphic.durationS, t)), tooSlow)));
+      ms.push(Date.now() - started);
+    }
+    return { bitmaps, ms };
+  }));
+}
+
+/** SCN1b: an item as it sits in the edit (its time, place and size in a frame of the edit's shape), at reel seconds,
+ *  each over its own backdrop (a colour, or a data image: the picture under an overlay). */
+export function renderItemStills(item: OverlayItem, frame: { width: number; height: number }, times: number[], options: { root?: string | null; backdrops?: string[] } = {}): Promise<Buffer[]> {
+  const { id: _id, file: _file, graphic, ...place } = item;
+  if (!graphic) throw new GraphicError("That item isn't a graphic.");
+  return slot(() => withPage(frame.width, frame.height, graphic, null, options.root ?? null, async ({ run, capture }) => {
+    const out: Buffer[] = [];
+    for (const [i, t] of times.entries()) {
+      const b = options.backdrops?.[i] ?? "#000";
+      await run(`document.body.style.background=${JSON.stringify(b.startsWith("data:image/") ? `#000 center / cover no-repeat url("${b}")` : b)}`);
+      out.push(await capture(t));
+    }
+    return out;
+  }, place));
 }
 
 /** Runs every sampled frame under the time budget. Throws a GraphicError in plain words when the graphic cannot be drawn. */

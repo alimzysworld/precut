@@ -100,14 +100,20 @@ export function zoomAbout(base: NonNullable<DraftPiece['frame']>[number], cut: C
   return { ...base, x: ax - (ax - base.x) / scale, y: ay - (ay - base.y) / scale, w: base.w / scale, h: base.h / scale };
 }
 
+type FaceBox = { x: number; y: number; w: number; h: number };
+/** The measured face at a source second (centre and size, fractions of the source), between its two nearest samples. */
+export function craftFace(cut: CutItem, sourceS: number): FaceBox | undefined {
+  const track = faces(cut).sort((a, b) => a.t - b.t);
+  if (!track.length) return undefined;
+  let n = track.findIndex(p => p.t >= sourceS); if (n < 0) n = track.length - 1;
+  const b = track[n], a = track[Math.max(0, n - 1)], u = a === b ? 0 : Math.max(0, Math.min(1, (sourceS - a.t) / (b.t - a.t)));
+  return { x: a.x + (b.x - a.x) * u, y: a.y + (b.y - a.y) * u, w: Math.max(a.w, b.w), h: Math.max(a.h, b.h) };
+}
 /** Face box plus headroom constrains every crop, including tracking motion. */
 export function craftRect(base: NonNullable<DraftPiece['frame']>[number], cut: CutItem, sourceS: number, scale: number) {
   if (scale <= 1) return base;
-  const track = faces(cut).sort((a, b) => a.t - b.t);
-  if (!track.length) return base;
-  let n = track.findIndex(p => p.t >= sourceS); if (n < 0) n = track.length - 1;
-  const b = track[n], a = track[Math.max(0, n - 1)], u = a === b ? 0 : Math.max(0, Math.min(1, (sourceS - a.t) / (b.t - a.t)));
-  const face = { x: a.x + (b.x - a.x) * u, y: a.y + (b.y - a.y) * u, w: Math.max(a.w, b.w), h: Math.max(a.h, b.h) };
+  const face = craftFace(cut, sourceS);
+  if (!face) return base;
   const left = face.x - face.w * .7, right = face.x + face.w * .7, top = face.y - face.h, bottom = face.y + face.h * .7;
   scale = Math.min(scale, base.w / (right - left), base.h / (bottom - top));
   const w = base.w / scale, h = base.h / scale;
@@ -115,4 +121,18 @@ export function craftRect(base: NonNullable<DraftPiece['frame']>[number], cut: C
   const lowY = Math.max(base.y, bottom - h), highY = Math.min(base.y + base.h - h, top);
   if (scale <= 1 || lowX > highX || lowY > highY) return base;
   return { ...base, x: Math.max(lowX, Math.min(highX, face.x - w / 2)), y: Math.max(lowY, Math.min(highY, face.y - h / 2)), w, h };
+}
+
+/** FACE1: craftRect for a face-matched cut. The punch tightens around the face where `base` already shows it, so the face
+ * stays put on screen and only grows; the same face-plus-headroom limits apply, moving it only as far as they need. */
+export function craftAbout<R extends FaceBox>(base: R, face: FaceBox | undefined, scale: number): R {
+  if (scale <= 1 || !face) return base;
+  const left = face.x - face.w * .7, right = face.x + face.w * .7, top = face.y - face.h, bottom = face.y + face.h * .7;
+  scale = Math.min(scale, base.w / (right - left), base.h / (bottom - top));
+  const w = base.w / scale, h = base.h / scale;
+  const lowX = Math.max(base.x, right - w), highX = Math.min(base.x + base.w - w, left);
+  const lowY = Math.max(base.y, bottom - h), highY = Math.min(base.y + base.h - h, top);
+  if (scale <= 1 || lowX > highX || lowY > highY) return base;
+  const x = face.x - (face.x - base.x) / scale, y = face.y - (face.y - base.y) / scale;
+  return { ...base, x: Math.max(lowX, Math.min(highX, x)), y: Math.max(lowY, Math.min(highY, y)), w, h };
 }

@@ -2,10 +2,12 @@
 .edits-sheet { display: flex; flex: 0 0 340px; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; border-radius: 16px; background: var(--surface); }
 .edits-sheet[hidden] { display: none; }
 .edits-rail { width: 68px; flex: 0 0 68px; display: flex; flex-direction: column; min-height: 0; padding-top: 4px; container: edits-rail / size; }
-.edits-rail-scroll { min-height: 0; flex: 1; overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; }
-.edits-rail-button { display: flex; width: 62px; min-height: 48px; flex-direction: column; align-items: center; justify-content: center; gap: 3px; padding: 6px 0; border: 0; border-radius: 10px; color: var(--muted); font-size: 11px; line-height: 14px; }
+.edits-rail-scroll { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 2px; overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; }
+/* POLISH1: the rail uses the height it has. Each item takes an eighth of the rail (six tools, Search and some air),
+   between 48 and 66 px, so a tall player gives the items room instead of bunching them at the top. */
+.edits-rail-button { display: flex; flex-shrink: 0; width: 62px; min-height: clamp(48px, calc((100cqh - 16px) / 8), 66px); flex-direction: column; align-items: center; justify-content: center; gap: 5px; padding: 6px 0; border: 0; border-radius: 12px; color: var(--muted); font-size: 11px; line-height: 14px; }
 .edits-rail-button:hover { background: var(--surface-hover); }
-.edits-rail-icon { display: flex; width: 40px; height: 26px; align-items: center; justify-content: center; border-radius: 13px; }
+.edits-rail-icon { display: flex; width: 44px; height: 30px; align-items: center; justify-content: center; border-radius: 15px; }
 .edits-rail-button[aria-pressed="true"] { color: var(--ink); }
 .edits-rail-button[aria-pressed="true"] .edits-rail-icon { background: var(--selection-fill); color: var(--accent); }
 .edits-rail-search { flex-shrink: 0; padding-top: 2px; background: var(--ground); }
@@ -26,6 +28,7 @@
 /* RAIL1: all nine items and their labels fit whatever height the player leaves (1280 x 800 leaves about 390 px).
    Shorter rails tighten the spacing first, then drop to icons with their tooltips; never scroll, never hide an item. */
 @container edits-rail (max-height: 500px) {
+  .edits-rail-scroll { gap: 0; }
   .edits-rail-button { min-height: 0; gap: 1px; padding: 3px 0; }
   .edits-rail-icon { height: 22px; }
   .edits-rail-label { font-size: 10.5px; line-height: 12px; }
@@ -41,3 +44,40 @@
 @container edits-rail (max-height: 288px) {
   .edits-rail-icon { height: 22px; }
 }
+/* CH2: two panes, like two windows tiled. POLISH1: the editor (App's surface, with the top bar) and Claude sit side by
+   side on the window's ground, split by one hairline (--hair), the one line in the shell: a pane divider, not a control.
+   Claude reads as its own module by its own surface tone and its header. The line is also the resize handle: an
+   invisible 9 px strip centred on it takes the drag, with a soft fill on hover and while dragging. */
+html.st-vibrant body[data-claude-pane], body[data-claude-pane] { background: var(--ground); }
+.claude-region { position: fixed; z-index: 55; top: 0; right: 0; bottom: 0; display: flex; width: var(--claude-reserve, 0px); overflow: hidden; background: var(--ground); }
+.claude-region[data-hidden] { visibility: hidden; }
+.claude-gutter { position: fixed; z-index: 56; top: 0; bottom: 0; right: calc(var(--claude-reserve, 0px) - 5px); width: 9px; cursor: col-resize; -webkit-app-region: no-drag; background: transparent; }
+.claude-gutter::after { content: ""; position: absolute; top: 0; bottom: 0; left: 4px; width: 1px; background: var(--hair); pointer-events: none; }
+body .claude-region .claude-gutter:hover, body .claude-region .claude-gutter:focus-visible { background: color-mix(in oklab, var(--ink) 8%, transparent) !important; }
+body .claude-region .claude-gutter:active, body .claude-region .claude-gutter[data-dragging] { background: color-mix(in oklab, var(--ink) 14%, transparent) !important; }
+.claude-pane { display: flex; flex: 0 0 var(--claude-width, 340px); width: var(--claude-width, 340px); min-width: 0; min-height: 0; margin-left: 1px; flex-direction: column; overflow: hidden; background: var(--surface); color: var(--ink); }
+/* Level with the top bar (60 px), and the toggle on the pixel the corner toggle takes when Claude is hidden. */
+.claude-head { display: flex; height: 60px; flex-shrink: 0; align-items: center; gap: 8px; padding: 0 16px; -webkit-app-region: drag; }
+/* Show and hide slide: the editor's edge, the top bar's end and Claude's pane move together. Only the toggle slides;
+   a page switch, a window resize or a drag of the gutter lands at once. Hidden, the pane turns invisible after the slide. */
+body[data-claude-sliding] .st-editor-pane { transition: margin-right 220ms cubic-bezier(.2, .8, .2, 1); }
+body[data-claude-sliding] .st-taskbar { transition: right 220ms cubic-bezier(.2, .8, .2, 1); }
+body[data-claude-sliding] .claude-region { transition: width 220ms cubic-bezier(.2, .8, .2, 1); }
+body[data-claude-sliding] .claude-region[data-hidden] { transition: width 220ms cubic-bezier(.2, .8, .2, 1), visibility 0s linear 220ms; }
+/* CH2: the top bar ends where Claude starts, so it tightens as the editor pane narrows (claudeLayout.ts sets
+   data-top-bar from the bar's width). Tight: Versions keeps its picture. Tighter: the shoot keeps its thumbnail, the
+   steps their names, and the steps sit between the ends instead of on the centre. Tightest: Export keeps its icon. */
+body[data-top-bar~="tight"] #edits-topbar-version [data-version-button] > span[aria-live] { display: none; }
+body[data-top-bar~="tighter"] .st-taskbar { grid-template-columns: auto minmax(0, 1fr) auto; }
+body[data-top-bar~="tighter"] .st-taskbar > nav[aria-label="Workflow"] { justify-self: center; }
+body[data-top-bar~="tighter"] .st-taskbar nav[aria-label="Workflow"] > svg { display: none; }
+body[data-top-bar~="tighter"] .st-taskbar [data-step] { padding-inline: 8px; }
+body[data-top-bar~="tighter"] .st-taskbar > [data-topbar-start] { max-width: none; }
+/* Keep both lines of the one switcher at every header width. */
+#edits-topbar-edit [data-edit-name], #edits-topbar-edit [data-switcher-shoot] { max-width: 280px; }
+body[data-top-bar~="snug"] .st-taskbar [data-step] > span > svg, body[data-top-bar~="snug"] .st-taskbar [data-step] > span > [aria-label="Done"] { display: none; }
+body[data-top-bar~="tight"] #edits-topbar-edit [data-edit-name], body[data-top-bar~="tight"] #edits-topbar-edit [data-switcher-shoot] { max-width: 160px; }
+body[data-top-bar~="tighter"] #edits-topbar-edit [data-edit-name], body[data-top-bar~="tighter"] #edits-topbar-edit [data-switcher-shoot] { max-width: 96px; }
+body[data-top-bar~="tighter"] .st-taskbar [data-step] > span > svg, body[data-top-bar~="tighter"] .st-taskbar [data-step] > span > [aria-label="Done"] { display: none; }
+body[data-top-bar~="tightest"] .st-taskbar nav[aria-label="Workflow"] > svg { display: none; }
+body[data-top-bar~="tightest"] #edits-topbar-export button[aria-label="Export"] > span.relative { gap: 0; font-size: 0; }

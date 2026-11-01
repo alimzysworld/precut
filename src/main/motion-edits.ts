@@ -6,7 +6,8 @@
 import type { CutEdit, MotionEdit, PieceFx } from "../shared/schema";
 import { timedCaptionWords } from "../shared/caption-words";
 import { standardFrameRate } from "../shared/frame-rate";
-import { mapSource, planFx, validExposure, validPunches, type FxPlan } from "./edits-fx";
+import { planFx, validExposure, validPunches, type FxPlan } from "./edits-fx";
+import { punchSourceAt } from "../shared/punch-keys";
 import type { BatchStep, StoredVersion } from "./sidekick";
 
 export const MOTION_KINDS = ["clipPunch", "clipExposure", "cutOnWord"] as const;
@@ -20,11 +21,9 @@ function pieceAt(plan: FxPlan, t: number): number {
   return item.piece;
 }
 /** The source second the piece shows on the frame at reel second t (its own frame clock, as the export draws it). */
+// CAP4: the one mapping (shared/punch-keys.ts), also used by the inspector's Punch row, so both write the same record.
 function sourceAt(plan: FxPlan, piece: number, t: number, fps: number): number {
-  const item = plan.items.find(i => i.piece === piece && t >= i.startS - 1e-6 && t < i.endS - 1e-6);
-  if (!item) throw new Error(`That clip isn't on the picture at ${t.toFixed(2)} s.`);
-  if (item.reverse) throw new Error("This clip plays backwards; punches and exposure keys need it forwards.");
-  return Math.round(mapSource(item.timeMap, item.startS + Math.round((t - item.startS) * fps) / fps) * 1e6) / 1e6;
+  return punchSourceAt(plan.items, piece, t, fps);
 }
 
 /** clipPunch / clipExposure: the clip's settings with its new list, as one pieceFx edit. */
@@ -37,7 +36,7 @@ export function motionFx(record: StoredVersion, edit: Extract<MotionEdit, { kind
   const fx: PieceFx = { ...record.pieceFx?.[piece] };
   if (edit.kind === "clipPunch") {
     const punches = edit.punches?.map(({ atS, ...p }) => ({ ...p, sourceS: sourceAt(plan, piece, atS, fps) }));
-    if (punches && !validPunches(punches)) throw new Error("A punch scales 1 to 1.3, settles over 1 to 60 frames and creeps at most 0.005 a frame.");
+    if (punches && !validPunches(punches)) throw new Error("A punch scales 1 to 1.6, settles over 1 to 60 frames and creeps at most 0.005 a frame.");
     if (punches) fx.punches = punches; else delete fx.punches;
   } else {
     const keys = edit.keys?.map(k => ({ sourceS: sourceAt(plan, piece, k.atS, fps), levels: k.levels }));

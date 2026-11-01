@@ -45,6 +45,9 @@ export function validateScene(value:LayoutChoice,record:StoredVersion,s:number,e
   if(value.transition!==undefined&&!['smooth','cut'].includes(value.transition))throw new Error('Choose Smooth or Hard cut.');
   const out:LayoutChoice={kind:'scene',id:value.id,s,e,swap:!!value.swap,radius:clamp(value.radius??16,0,48),padding:clamp(value.padding??.04,0,.12),background:normalizeLayoutBackground(value.background),transition:value.transition??'smooth',sources:{}};
   out.reason=value.reason?.slice(0,1000);out.followCamera=value.followCamera===true;
+  // BROLL2: an over layout's top picture can be see-through (the screen over a desk shot), and a cutaway keeps its words.
+  if(value.opacity!==undefined){if(!Number.isFinite(value.opacity))throw new Error('Choose an opacity.');if(value.id==='clip-over-camera'||value.id==='phone-over-camera')out.opacity=clamp(value.opacity,.2,.95);}
+  if(value.cutaway){if(typeof value.cutaway.phrase!=='string')throw new Error('A cutaway names the words it shows.');out.cutaway={phrase:value.cutaway.phrase.slice(0,300),...(Number.isInteger(value.cutaway.word)&&value.cutaway.word!>=0?{word:value.cutaway.word}:{})};}
   if(value.screenLoop){const loop=value.screenLoop;if(![loop.s,loop.e].every(Number.isFinite)||loop.s<0||loop.e<=loop.s)throw Error('Choose a valid repeating screen segment.');out.screenLoop={...loop};}
   if(value.boxes){out.boxes={};for(const key of ['a','b'] as const)if(value.boxes[key])out.boxes[key]=cleanBox(value.boxes[key]!);}
   const {shoot}=record.assembly, piece=record.pieces?.find(p=>s>=(p.timelineS??0)&&s<(p.timelineS??0)+p.lengthS)??record.pieces?.[0];
@@ -145,7 +148,8 @@ export function scenePictures(pictures:DraftPiece[],record:Pick<StoredVersion,'l
           layoutBackground:layer===1?l.background:undefined,layoutImage:l.background?.kind==='image'?overlayUrl(shoot.root,l.background.image!):undefined};
         const keys=[...new Set([s,e,...Array.from({length:Math.ceil(Math.min(e-s,LAYOUT_TRANSITION_S)*fps)+1},(_,n)=>Math.min(e,s+n/fps))])].sort((a,b)=>a-b);
         piece.layoutRegionKeys=keys.map(t=>({t,...at(t).box}));
-        piece.layoutShapeKeys=keys.map(t=>({t,radius:at(t).radius,opacity:at(t).opacity}));
+        const see=entry.sourceSlot==='a'?sourceScene.opacity??1:1;   // BROLL2: the screen laid over a desk shot
+        piece.layoutShapeKeys=keys.map(t=>({t,radius:at(t).radius,opacity:at(t).opacity*see}));
         const cropKeys=clip.subject?.samples?.length?[...new Set([...keys,...Array.from({length:Math.ceil((e-s)*fps)},(_,n)=>Math.min(e,s+n/fps))])].sort((a,b)=>a-b):keys;
         piece.frame=cropKeys.map(t=>{
           const box=at(t).box;

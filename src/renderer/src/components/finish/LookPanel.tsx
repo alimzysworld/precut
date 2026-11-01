@@ -240,9 +240,9 @@ function gradeFor(version: CutVersion, piece: number | undefined): PanelGrade {
 }
 
 /** One sheet for the edit grade and the selected clip's optional override. */
-export function LookPanel({ shoot, root, cutId, version, timeline, selectedPieces, selectedPiece, scope, disabled, onFinish, onEdit, onLiveLook, onTexture, onPreviewPiece, seek, playing = false }: {
+export function LookPanel({ shoot, root, cutId, version, timeline, selectedPieces, selectedPiece, scope, time = 0, disabled, onFinish, onEdit, onLiveLook, onTexture, onPreviewPiece, seek, playing = false }: {
   shoot?: {clips: import("../../../../shared/schema").Clip[]};
-  root: string; cutId?: string; version: CutVersion; timeline?: DraftTimeline | null; selectedPieces?: number[]; selectedPiece?: number | null; scope: "edit" | "clip"; disabled: boolean;
+  root: string; cutId?: string; version: CutVersion; timeline?: DraftTimeline | null; selectedPieces?: number[]; selectedPiece?: number | null; scope: "edit" | "clip"; time?: number; disabled: boolean;
   onFinish: (options: { filmFade?: number; preset?: string; intensity?: number; basic?: BasicAdjust; mixer?: Grade["mixer"]; matchClips?: boolean; matchRef?: number | null; detail?: DetailChoice | null; grain?: GrainChoice | null; vignette?: VignetteChoice | null }) => Promise<boolean>;
   onEdit?: (edit: CutEdit) => void | Promise<unknown>;
   onLiveLook?: (look: LiveLook) => void; onTexture?: (texture: Pick<Grade, "detail" | "grain" | "vignette">) => void;
@@ -267,7 +267,7 @@ export function LookPanel({ shoot, root, cutId, version, timeline, selectedPiece
   const gradeRef = useRef(grade); gradeRef.current = grade;
   const [texture, setTexture] = useState<Pick<Grade, "detail" | "grain" | "vignette">>(() => ({ detail: version.grade?.detail, grain: version.grade?.grain, vignette: version.grade?.vignette }));
   const textureRef = useRef(texture); textureRef.current = texture;
-  const [images, setImages] = useState<LookImage[]>(cachedSampleLooks);
+  const [images, setImages] = useState<LookImage[]>([]);
   const [isPlaying, setIsPlaying] = useState(playing);
   useEffect(() => { const read = (event: Event) => setIsPlaying(!!(event as CustomEvent).detail); window.addEventListener("sidething:playing", read); window.dispatchEvent(new CustomEvent("sidething:playing-request")); return () => window.removeEventListener("sidething:playing", read); }, []);
   const [open, setOpen] = useState(readAccordions), [clipping, setClipping] = useState(false);
@@ -279,12 +279,35 @@ export function LookPanel({ shoot, root, cutId, version, timeline, selectedPiece
   const textureCommitted = useRef(JSON.stringify(texture));
   const queuedGrade = useRef(JSON.stringify(grade)), queuedTexture = useRef(JSON.stringify(texture));
   const reduced = useReducedMotion();
+  const frameTime = piece === undefined ? time : timeline?.pieces.find(entry => entry.piece === piece)?.startS ?? version.pieces?.[piece]?.timelineS ?? time;
   useEffect(() => {
-    let active = true;
+    if (!timeline || !cutId) return;
+    const controller = new AbortController();
+    let renderer: ReturnType<typeof createLookThumbnailRenderer> | undefined;
     setError(null);
-    const off = loadSampleLooks(result => { if (active) setImages(result); }, () => { if (active) setError("Couldn't load some look previews. Try again."); });
-    return () => { active = false; off(); };
-  }, [retry]);
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        const frame = await grabLookFrame(timeline, frameTime, controller.signal);
+        if (controller.signal.aborted) return;
+        renderer = createLookThumbnailRenderer();
+        const index = frame.piece.piece ?? timeline.pieces.indexOf(frame.piece);
+        const dpr = window.devicePixelRatio || 1, width = Math.round(100 * dpr), height = Math.round(142 * dpr);
+        const next: LookImage[] = [];
+        for (const look of ["Film", "Warm", "Cool", "Soft", "Mono", "Clean"].flatMap(family => EDIT_LOOKS.filter(look => look.family === family))) {
+          if (controller.signal.aborted) return;
+          const ids = await getApi().pieceLuts(root, cutId, version.version, { ...gradeRef.current, preset: look.id, now: true,
+            ...(piece === undefined ? {} : { previewPiece: piece, previewLook: { ...clipLookRef.current, preset: look.id } }) } as Parameters<Api["pieceLuts"]>[3]);
+          if (controller.signal.aborted) return;
+          const id = ids[index]; if (!id) throw Error("Couldn't find this frame's look.");
+          const image = await renderer.thumbnail(frame, id, width, height);
+          if (controller.signal.aborted) return;
+          next.push({ ...look, image });
+          setImages([...next]);
+        }
+      })().catch(() => { if (!controller.signal.aborted) setError("Couldn't show the looks on this frame. Try again."); });
+    }, 100);
+    return () => { controller.abort(); clearTimeout(timer); renderer?.dispose(); };
+  }, [root, cutId, timeline, frameTime, piece, retry]);
   useEffect(() => {
     const key = JSON.stringify([root, cutId, piece, targets]);
     const retain = scopeKey.current === key && (writing.current || JSON.stringify(gradeRef.current) !== committed.current || JSON.stringify(textureRef.current) !== textureCommitted.current);
@@ -515,6 +538,7 @@ export function LookPanel({ shoot, root, cutId, version, timeline, selectedPiece
   return <div className="look-panel" aria-label="Look controls">
     {mixed(g=>g.preset) ? <p className="text-micro text-muted">Look: Mixed</p> : null}
     <p role="status" className="min-h-4 text-micro text-muted">{render && (measuring || matchPending.current) ? `Applies when this render finishes${eta ? ` · ${eta} left` : ""}` : render ? eta ? `Rendering, ${eta} left` : "Rendering in the background" : working ? "Saving your look" : null}</p>
+    <div className="flex flex-wrap items-baseline gap-x-2 text-micro"><b className="text-small">{EDIT_LOOKS.find(look => look.id === grade.preset)?.name ?? "Mixed"}</b><span className="text-muted">On your frame at {Math.floor(frameTime / 60)}:{(frameTime % 60).toFixed(1).padStart(4, "0")}</span></div>
     <LookGallery mixedIntensity={mixed(g=>g.intensity ?? .7)} images={images} value={{ preset: mixed(g=>g.preset) ? "" : picked ?? grade.preset ?? "clean", intensity: grade.intensity }} disabled={locked} tilesDisabled={false} error={error} onChoose={pick} onPreview={hoverLook} onShown={presets => { shownLooks.current = presets; setShownKey(presets.join()); }} onIntensity={(amount, release) => change({ intensity: amount }, release)} />
     <div className="flex min-h-5 flex-wrap items-center gap-2">{piece!==undefined && !handTouched && version.balances?.[clipId ?? ""]?.owner==="auto" ? <span className="rounded-full bg-ground px-2 py-0.5 text-micro">Auto</span> : null}{piece!==undefined && version.balanceReference===clipId ? <span className="rounded-full bg-ground px-2 py-0.5 text-micro">Reference</span> : null}</div>
     <div className="space-y-1">
@@ -559,16 +583,17 @@ export function LookGallery({ images, mixedIntensity = false, value, disabled, t
   onChoose: (preset: string) => void; onPreview?: (preset: string | null) => void; onShown?: (presets: string[]) => void; onIntensity: (amount: number, release: boolean) => void;
 }) {
   const [family, setFamily] = useState("All");
-  const visible = EDIT_LOOKS.filter(image => family === "All" || image.family === family).slice(0, 9).map(look => images.find(image => image.id === look.id) ?? { ...look, image: "" });
+  const visible = EDIT_LOOKS.filter(image => family === "All" || image.family === family).map(look => images.find(image => image.id === look.id) ?? { ...look, image: "" });
   useEffect(() => { onShown?.(visible.map(look => look.id)); }, [family]);
   return <>
-    <div role="group" aria-label="Look gallery" className="grid grid-cols-3 gap-2" onMouseLeave={() => onPreview?.(null)}>
-      {visible.map(image => <Tile key={image.id} type="button" aria-label={image.name} aria-pressed={value.preset === image.id} title={image.description} disabled={tilesDisabled} onMouseEnter={() => onPreview?.(image.id)} onFocus={() => onPreview?.(image.id)} onBlur={() => onPreview?.(null)} onClick={() => onChoose(image.id)} className={`look-stock ${FOCUS} hover:[&_.look-stock-label]:bg-[var(--selection-fill)] focus-visible:[&_.look-stock-label]:bg-[var(--selection-fill)]`}>
+    <div role="group" aria-label="Look families" className="flex flex-wrap gap-1">{["All", "Film", "Warm", "Cool", "Soft", "Mono", "Clean"].map(name => <Tile key={name} type="button" aria-pressed={family === name} onClick={() => setFamily(name)} className={`look-chip ${FOCUS}`}>{name}</Tile>)}</div>
+    <div role="group" aria-label="Look gallery" className="grid max-h-[min(280px,28dvh)] grid-cols-4 gap-2 overflow-y-auto" onMouseLeave={() => onPreview?.(null)}>
+      {["Film", "Warm", "Cool", "Soft", "Mono", "Clean"].filter(name => family === "All" || family === name).map(name => <section key={name} aria-label={`${name} looks`} className="col-span-4 grid grid-cols-4 gap-2"><h4 className="sticky top-0 col-span-4 bg-surface py-1 text-micro text-muted">{name}</h4>{visible.filter(image => image.family === name).map(image => <Tile key={image.id} type="button" aria-label={image.name} aria-pressed={value.preset === image.id} title={image.description} disabled={tilesDisabled} onMouseEnter={() => onPreview?.(image.id)} onFocus={() => onPreview?.(image.id)} onBlur={() => onPreview?.(null)} onClick={() => onChoose(image.id)} className={`look-stock ${FOCUS} hover:[&_.look-stock-label]:bg-[var(--selection-fill)] focus-visible:[&_.look-stock-label]:bg-[var(--selection-fill)]`}>
         {image.image ? <img src={image.image} alt={image.description} /> : <span aria-label={`Loading ${image.name} preview`} className="block aspect-[4/3] bg-ink/[0.05]" />}<span className="look-stock-label">{image.name}<span>{image.family}</span></span>
-      </Tile>)}
+      </Tile>)}</section>)}
     </div>
     {!images.length && !error ? <p role="status" className="text-micro text-muted">Loading looks…</p> : null}
-    <div role="group" aria-label="Look families" className="flex flex-wrap gap-1">{["All", "Film", "Warm", "Cool", "Soft", "Mono", "Clean"].map(name => <Tile key={name} type="button" aria-pressed={family === name} onClick={() => setFamily(name)} className={`look-chip ${FOCUS}`}>{name}</Tile>)}</div>
+
     <Slider mixed={mixedIntensity} label="Intensity" tip={CONTROL_TIPS.intensity} min={0} max={100} defaultValue={70} value={Math.round((value.intensity ?? .7) * 100)} disabled={disabled} onChange={amount => onIntensity(amount / 100, false)} onRelease={amount => onIntensity(amount / 100, true)} />
   </>;
 }

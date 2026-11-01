@@ -51,9 +51,10 @@ import { renameCut } from "./sidekick";
 import { current as revisionState, undo as undoRevision, redo as redoRevision, listMilestones as listVersionMilestones, saveVersion, restoreVersion } from "./revisions";  // VO7-1
 import { chatSend, chatThread, chatStop, chatAnswer, setChatForwarder } from "./chat";
 import { terminalOpen, terminalWrite, terminalResize, terminalContext, terminalRestart, terminalClose, closeAllTerminals, setTerminalForwarder, type TerminalRequest } from "./terminal";
+import { claudeOpen, claudeSend, claudeInterrupt, claudeAnswer, claudeMode, claudeClear, claudeResume, claudeRestart, claudeSessions, claudeFiles, claudeContext, claudeClose, closeAllClaude, setClaudeForwarder, type ChatRequest } from "./claude-chat";
 export { listMusic } from "./music";
 
-type Handlers = { [K in Exclude<keyof Api, "onBalanceApplied" | "onRecordLevel" | "onRecordWords" | "onProgress" | "onQuestionsChanged" | "onSkillsChanged" | "onSidekickChanged" | "onStepsChanged" | "onActivity" | "onResourceState" | "onNavigate" | "onOpenVersion" | "onChat" | "pathForFile" | "ask" | "renderFinished" | "retryStep" | "setEditor" | "saveTemplate" | "exportCut" | "getShootFocus" | "setShootFocus" | "makePrecut" | "listTemplates" | "listPrecuts" | "getEditor" | "getAutopilot" | "setAutopilot" | "appleSetEdit" | "appleControl" | "onAppleEvent">]: (...args: Parameters<NonNullable<Api[K]>>) => ReturnType<NonNullable<Api[K]>> };  // VO7-1: NonNullable admits optional channels; AV1 channels register below with the sender
+type Handlers = { [K in Exclude<keyof Api, "onBalanceApplied" | "onRecordLevel" | "onRecordWords" | "onProgress" | "onQuestionsChanged" | "onSkillsChanged" | "onSidekickChanged" | "onStepsChanged" | "onActivity" | "onResourceState" | "onNavigate" | "onMenu" | "onOpenVersion" | "onChat" | "pathForFile" | "ask" | "renderFinished" | "retryStep" | "setEditor" | "saveTemplate" | "exportCut" | "getShootFocus" | "setShootFocus" | "makePrecut" | "listTemplates" | "listPrecuts" | "getEditor" | "getAutopilot" | "setAutopilot" | "appleSetEdit" | "appleControl" | "onAppleEvent" | "pinEdit" | "onPinProgress" | "lockEdit" | "lookEdit">]: (...args: Parameters<NonNullable<Api[K]>>) => ReturnType<NonNullable<Api[K]>> };  // VO7-1: NonNullable admits optional channels; AV1 channels register below with the sender
 
 const handlers: Handlers = {
   // ARCH2: a version the page draws stays whole in its listings for a while (noteShownVersion).
@@ -139,6 +140,7 @@ const handlers: Handlers = {
   addMusicTracks,        // D5 (was N5)
   pickMusicTracks,     // D5 (was N5)
   pickOverlayFiles,
+  showWhatYouSay: (root, cutId, version, options) => import("./broll-plan").then(m => m.showWhatYouSay(root, cutId, version, options)),  // BROLL2
   motionStatus,
   chatSend,
   chatThread,
@@ -236,6 +238,23 @@ export function registerIpc(): void {
   ipcMain.handle("terminal:context", (event, id: string, context) => terminalContext(event.sender.id, id, context));
   ipcMain.handle("terminal:restart", (event, id: string, input: TerminalRequest) => terminalRestart(event.sender.id, id, input));
   app.on("before-quit", closeAllTerminals);
+  // CH3: Claude's pane, Claude Code's streaming JSON drawn as a chat. Same owner rule as the terminal.
+  setClaudeForwarder((owner, event) => {
+    const contents = BrowserWindow.getAllWindows().filter(win => !win.isDestroyed()).map(win => win.webContents).find(value => !value.isDestroyed() && value.id === owner);
+    if (contents && !contents.isDestroyed()) contents.send("claude:event", event);
+  });
+  ipcMain.handle("claude:open", (event, input: ChatRequest) => claudeOpen(event.sender.id, input));
+  ipcMain.handle("claude:send", (event, id: string, text: string, context) => claudeSend(event.sender.id, id, text, context));
+  ipcMain.handle("claude:interrupt", (event, id: string) => claudeInterrupt(event.sender.id, id));
+  ipcMain.handle("claude:answer", (event, id: string, request: string, allow: boolean, message?: string) => claudeAnswer(event.sender.id, id, request, allow === true, message));
+  ipcMain.handle("claude:mode", (event, id: string, mode: string) => claudeMode(event.sender.id, id, mode));
+  ipcMain.handle("claude:clear", (event, id: string) => claudeClear(event.sender.id, id));
+  ipcMain.handle("claude:resume", (event, id: string, chat: string) => claudeResume(event.sender.id, id, chat));
+  ipcMain.handle("claude:restart", (event, id: string) => claudeRestart(event.sender.id, id));
+  ipcMain.handle("claude:sessions", (event, id: string) => claudeSessions(event.sender.id, id));
+  ipcMain.handle("claude:files", (event, id: string, query: string) => claudeFiles(event.sender.id, id, query));
+  ipcMain.handle("claude:context", (event, id: string, context) => claudeContext(event.sender.id, id, context));
+  app.on("before-quit", closeAllClaude);
   const cancelHiddenLooks = async () => {
     const urls = BrowserWindow.getAllWindows().filter(win => !win.isDestroyed() && !win.webContents.isDestroyed()).map(win => win.webContents.getURL());
     // R8b: leaving keeps clip colour measuring. It runs on the background lane, so the next open reuses it instead of starting over.
@@ -248,9 +267,11 @@ export function registerIpc(): void {
       if (!mainFrame) return;
       const next = openEdit(url);
       if (next && edit && (next.root !== edit.root || next.cutId !== edit.cutId)) void terminalClose(owner);
+      // Claude's chat follows the shoot, not the edit: another edit in the same shoot keeps the conversation.
+      if (next && edit && next.root !== edit.root) void claudeClose(owner);
       if (next) edit = next;
     });
-    win.webContents.on("destroyed", () => { void terminalClose(owner); });
+    win.webContents.on("destroyed", () => { void terminalClose(owner); void claudeClose(owner); });
     win.webContents.on("did-navigate-in-page", (_event, _url, mainFrame) => { if (mainFrame) void cancelHiddenLooks(); });
     win.webContents.on("destroyed", () => { void cancelHiddenLooks(); });
   });
@@ -277,6 +298,45 @@ export function registerIpc(): void {
   // AV1: the Apple player. The sender rides along so its clock returns to the right window.
   ipcMain.handle("api:appleSetEdit", (event, root: string, cutId: string, version: number, request: import("../shared/schema").AppleSetEditRequest) =>
     import("./apple-player").then(m => m.appleSetEdit(event.sender, { root, cutId, version, state: { player: request.player, reason: request.reason, appleEnabled: request.appleEnabled }, timeline: request.timeline, rotations: request.rotations, voice: request.voice, at: request.at, look: request.look, sentAt: request.sentAt, layers: request.layers })));
+  // TRK1c: stick a graphic to a thing by hand: the MCP's pin handlers, with the tracker's progress sent to the asking window.
+  // LOOK1: a scene's look changed in the inspector: its pictures and dim made here, the edit sent back (the inspector
+  // saves it as one version, like any overlay change).
+  ipcMain.handle("api:lookEdit", async (_event, root: string, cutId: string, version: number, input: { itemId: string; all?: boolean; change: import("../shared/look").LookChange; file?: string }) => {
+    if (typeof root !== "string" || typeof cutId !== "string" || !Number.isInteger(version) || typeof input?.itemId !== "string") throw new Error("Choose a scene in an open edit.");
+    const record = await (await import("./sidekick")).loadDraftVersion(root, cutId, version);
+    const { edit, changed, notes, look } = await (await import("./graphics/look")).lookUpdate(root, record, input);
+    return { edit, changed, notes, look };
+  });
+  ipcMain.handle("api:pinEdit", async (event, root: string, cutId: string, version: number, name: string, input: Record<string, unknown>) => {
+    if (!["pin_graphic", "update_pin", "unpin"].includes(name) || typeof root !== "string" || typeof cutId !== "string" || !Number.isInteger(version)) throw new Error("Choose a graphic in an open edit to stick.");
+    const { itemId, ...request } = input ?? {};
+    if (typeof itemId !== "string" || !itemId) throw new Error("Choose a graphic to stick.");
+    const pin = await import("./tracking/pin");
+    let last = -1;
+    const onProgress = (share: number) => {
+      const pct = Math.round(share * 100);
+      if (pct === last || event.sender.isDestroyed()) return;
+      last = pct; try { event.sender.send("api:pin-progress", { cutId, itemId, pct }); } catch { /* window closed */ }
+    };
+    if (name === "unpin") return pin.unpin(root, cutId, version, itemId);
+    const asked = request as import("./tracking/pin").PinRequest;
+    return name === "pin_graphic" ? pin.pinItem(root, cutId, version, itemId, asked, { onProgress }) : pin.updatePin(root, cutId, version, itemId, asked, { onProgress });
+  });
+  // TRK2: lock a clip's frame on a thing by hand: the MCP's lock handlers, the tracker's progress to the asking window.
+  ipcMain.handle("api:lockEdit", async (event, root: string, cutId: string, version: number, name: string, input: Record<string, unknown>) => {
+    if (!["lock_on", "update_lock", "unlock"].includes(name) || typeof root !== "string" || typeof cutId !== "string" || !Number.isInteger(version)) throw new Error("Choose a clip in an open edit to lock.");
+    const request = (input ?? {}) as import("./tracking/lock").LockRequest & { piece?: number };
+    if (!Number.isInteger(request.piece)) throw new Error("Choose a clip to lock.");
+    const lock = await import("./tracking/lock");
+    let last = -1;
+    const onProgress = (share: number) => {
+      const pct = Math.round(share * 100);
+      if (pct === last || event.sender.isDestroyed()) return;
+      last = pct; try { event.sender.send("api:pin-progress", { cutId, itemId: `lock:${request.piece}`, pct }); } catch { /* window closed */ }
+    };
+    if (name === "unlock") return lock.unlock(root, cutId, version, request);
+    return name === "lock_on" ? lock.lockOn(root, cutId, version, request, { onProgress }) : lock.updateLock(root, cutId, version, request, { onProgress });
+  });
   // AV2: plan folders a crash or a kill left behind (precut-apple-* in the temp folder) go a few seconds after launch.
   setTimeout(() => { void import("./apple-player").then(m => m.cleanupStaleApplePlans()).catch(() => {}); }, 3000).unref?.();
   ipcMain.handle("api:appleControl", (event, action: string, payload?: { at?: number; rate?: number; x?: number; y?: number; w?: number; h?: number; visible?: boolean; muted?: boolean; frames?: number; look?: string }) =>

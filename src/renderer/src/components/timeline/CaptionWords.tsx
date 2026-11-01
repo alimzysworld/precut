@@ -1,5 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { CutEdit, TitleTrack } from '../../../../shared/schema';
+import type { CaptionAccentForm, CutEdit, TitleTrack } from '../../../../shared/schema';
+import { ContextMenu } from '../ContextMenu';
+import { MenuOption } from '../ui';
+
+// CAP4: the caption word menu (right-click a word, or the menu key / Shift-F10 on it): stress it, choose how it is
+// stressed (its own form beats the caption style's), and make it Big (its own line, much bigger, in caps). Each choice
+// is one captionWord edit, one undoable version, the same update_caption_word makes. Selection is a fill, never a ring.
+const FORMS: [CaptionAccentForm, string][] = [['colour', 'Colour'], ['italic', 'Italic'], ['caps', 'Caps'], ['bigger', 'Bigger'], ['tag', 'Tag']];
+const item = 'block w-full rounded-lg px-3 py-1.5 text-left text-small hover:bg-ink/[0.06] focus:bg-ink/[0.08] outline-none';
 import { isCaptionCue, retimeCaptionEdge, timedCaptionWords, type TimedCaptionWord } from '../../../../shared/caption-words';
 
 type Props = { track: TitleTrack | null | undefined; scale: number; time: number; duration: number; fps: number; busy: boolean;
@@ -21,11 +29,12 @@ export function CaptionWords({ track, scale, time, duration, fps, busy, blocks, 
   },[time,track,scale]);
   const [editing, setEditing] = useState<{ index: number; text: string } | null>(null);
   const [retiming, setRetiming] = useState(false);
+  const [menu, setMenu] = useState<{ index: number; x: number; y: number; target: HTMLElement } | null>(null);
   const click = useRef<ReturnType<typeof setTimeout> | null>(null);
   const drag = useRef<{ pointer: number; x: number; index: number; edge: 's' | 'e'; node: HTMLElement; value: number; moved: boolean; words: TimedCaptionWord[]; scale: number } | null>(null);
   const targets = useRef<number[]>([]);
   useEffect(() => { targets.current = (track as TitleTrack & {speechOnsets?:number[]} | undefined)?.speechOnsets ?? words.filter(w => !w.estimated).flatMap(w => [w.s, w.e]); }, [words]);
-  useEffect(() => { setEditing(null); }, [track]);
+  useEffect(() => { setEditing(null); setMenu(null); }, [track]);
   useEffect(() => () => { if (click.current) clearTimeout(click.current); if (drag.current) preview(null); }, []);
   async function persist(edit: CutEdit) {
     try { const result = await save(edit); if (result === undefined || result === false) error('Could not save that word. Try again.'); }
@@ -66,17 +75,22 @@ export function CaptionWords({ track, scale, time, duration, fps, busy, blocks, 
   const coarse = lineBlocks.length ? [...lineBlocks, ...blocks.filter(b => b.big)] : blocks;
   const estimated = words.some(w => w.estimated);
   // The clock changes only tint. Retain the 400 chip elements across scrub frames.
-  const deps=[track,scale,busy,editing,retiming,blocks];
+  const deps=[track,scale,busy,editing,retiming,blocks,menu];
   if(!drawing.current || deps.some((value,index)=>!Object.is(value,drawing.current!.deps[index]))) drawing.current={deps,tree:<div ref={lane} className="absolute inset-0">
     {detailed ? words.map(word => <div key={word.index} role="button" tabIndex={0} data-caption-word={word.index} data-active={time >= word.s && time < word.e} data-accent={!!word.accent} data-estimated={word.estimated}
       aria-label={`${word.text}${word.estimated ? ', approximate timing' : ''}${word.accent ? ', accented' : ''}`}
-      title={`${word.text}${word.estimated ? ' · Approximate timing' : ''} · Click to edit · Double-click to accent`}
+      title={`${word.text}${word.estimated ? ' · Approximate timing' : ''} · Click to edit · Double-click to accent · Right-click for how it is stressed`}
+      data-accent-as={word.accentAs} data-big={word.big || undefined}
       className="st-timeline-block st-timeline-caption st-caption-word absolute rounded-lg"
       style={{ left: word.s * scale, width: (word.e - word.s) * scale }}
       onPointerDown={event => event.stopPropagation()}
       onClick={event => { event.stopPropagation(); if (click.current) clearTimeout(click.current); if (event.detail < 2) click.current = setTimeout(() => { click.current = null; beginEdit(word); }, 240); }}
       onDoubleClick={event => { event.preventDefault(); event.stopPropagation(); if (click.current) clearTimeout(click.current); setEditing(null); if (!busy) void persist({ kind: 'captionWord', index: word.index, accent: !word.accent }); }}
-      onKeyDown={event => { if (event.key === 'Enter' && !editing) { event.preventDefault(); event.stopPropagation(); beginEdit(word); } }}>
+      onContextMenu={event => { event.preventDefault(); event.stopPropagation(); if (click.current) clearTimeout(click.current); if (!busy) setMenu({ index: word.index, x: event.clientX, y: event.clientY, target: event.currentTarget }); }}
+      onKeyDown={event => {
+        if (event.key === 'Enter' && !editing) { event.preventDefault(); event.stopPropagation(); beginEdit(word); }
+        if ((event.key === 'ContextMenu' || event.shiftKey && event.key === 'F10') && !busy) { event.preventDefault(); event.stopPropagation(); const box = event.currentTarget.getBoundingClientRect(); setMenu({ index: word.index, x: box.left, y: box.bottom, target: event.currentTarget }); }
+      }}>
       <span className="st-caption-word-label">{word.estimated ? '≈ ' : ''}{word.text}</span>
       {(['s', 'e'] as const).map(edge => <span key={edge} data-caption-edge={edge} className="st-caption-edge" onClick={event => event.stopPropagation()} onPointerDown={event => start(event, word, edge)} onPointerMove={move} onPointerUp={event => end(event)} onPointerCancel={event => end(event, true)} onLostPointerCapture={event => end(event, true)} />)}
     </div>) : coarse.map(cue => <button key={cue.id} type="button" data-caption-block data-s={cue.s} data-e={cue.e} data-big={cue.big} data-active={time >= cue.s && time < cue.e} title={`${cue.text} · Double-click to fix its words`} aria-label={cue.big ? `${cue.text} (big)` : cue.text}
@@ -91,6 +105,19 @@ export function CaptionWords({ track, scale, time, duration, fps, busy, blocks, 
         if (event.key === 'Escape') { event.preventDefault(); setEditing(null); }
         if (event.key === 'Enter') { event.preventDefault(); const edit = editing; setEditing(null); if (edit.text.trim() !== words[edit.index].text) void persist({kind:'captionWord',index:edit.index,text:edit.text}); }
       }} />}
+    {menu && words[menu.index] && (() => {
+      const word = words[menu.index], styleForm = track?.captionStyle?.accentAs ?? 'colour', own = word.accentAs, stressed = !!word.accent;
+      const choose = (edit: Omit<Extract<CutEdit, { kind: 'captionWord' }>, 'kind' | 'index'>) => { setMenu(null); void persist({ kind: 'captionWord', index: word.index, ...edit }); };
+      const label = FORMS.find(([form]) => form === styleForm)?.[1] ?? 'Colour';
+      return <ContextMenu x={menu.x} y={menu.y} label={`Caption word ${word.text}`} onClose={() => setMenu(null)} returnFocus={menu.target} wide>
+        <MenuOption data-word-menu="stress" className={item} onClick={() => choose({ accent: !stressed })}>{stressed ? 'Unstress this word' : 'Stress this word'}</MenuOption>
+        <p className="px-3 pb-0.5 pt-1.5 text-micro text-muted">Stressed as</p>
+        <MenuOption role="menuitemradio" aria-checked={stressed && !own} data-word-menu="style" className={`${item} ${stressed && !own ? 'bg-accent/15' : ''}`} onClick={() => choose(own ? { accentAs: null, accent: true } : { accent: true })}>Caption style ({label})</MenuOption>
+        {FORMS.map(([form, name]) => <MenuOption key={form} role="menuitemradio" aria-checked={stressed && own === form} data-word-menu={form} className={`${item} ${stressed && own === form ? 'bg-accent/15' : ''}`} onClick={() => choose({ accentAs: form })}>{name}</MenuOption>)}
+        <p className="px-3 pb-0.5 pt-1.5 text-micro text-muted">Size</p>
+        <MenuOption role="menuitemcheckbox" aria-checked={!!word.big} data-word-menu="big" className={`${item} ${word.big ? 'bg-accent/15' : ''}`} onClick={() => choose({ big: !word.big })}>{word.big ? 'Big (back to normal)' : 'Big: its own line, in caps'}</MenuOption>
+      </ContextMenu>;
+    })()}
     {estimated && <button type="button" data-editor-widget disabled={busy || retiming} className="st-caption-retime sticky left-2 rounded-lg px-2" onPointerDown={event => event.stopPropagation()} onClick={async () => { setRetiming(true); try { await persist({kind:'retimeCaptions'}); } finally { setRetiming(false); } }}>{retiming ? 'Re-timing words' : 'Re-time words'}</button>}
   </div>};
   return drawing.current.tree;

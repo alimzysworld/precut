@@ -17,6 +17,12 @@ export async function prepareGraphic(root: string, input: unknown): Promise<{ gr
   // PRO4b: a card's picture must be in this shoot's own card cache (add_card put it there).
   if (graphic.media && !await (await import("node:fs")).promises.stat((await import("node:path")).join(root, ".sidething", "overlays", graphic.media)).then(s => s.isFile() && s.size > 0, () => false))
     throw new GraphicError("That card's picture isn't in this shoot. Make the card again with add_card.");
+  // SCN1b: a scene's frames must each be in this shoot's own cache too (add_scene put them there).
+  if (graphic.frames?.length) {
+    const fs = (await import("node:fs")).promises, path = await import("node:path");
+    const missing = (await Promise.all(graphic.frames.map(f => fs.stat(path.join(root, ".sidething", "overlays", f)).then(s => s.isFile() && s.size > 0, () => false)))).filter(ok => !ok).length;
+    if (missing) throw new GraphicError(`${missing === 1 ? "One of that scene's frames isn't" : `${missing} of that scene's frames aren't`} in this shoot. Make the scene again with add_scene.`);
+  }
   const { vetGraphic, graphicPoster } = await import("./render");
   await vetGraphic(graphic);
   return { graphic, file: await graphicPoster(root, graphic) };
@@ -39,6 +45,20 @@ export function defaultPlacement(graphic: MotionGraphic, frame: { width: number;
   const portrait = frame.width < frame.height, aspect = graphic.widthPx / graphic.heightPx;
   const base = aspect >= 2.6 ? 0.82 : aspect >= 1.6 ? 0.62 : aspect >= 1.1 ? 0.5 : 0.34;
   return { x: 0.5, y: 0.5, w: portrait ? Math.min(0.92, base * 1.45) : base };
+}
+
+// ---- TASTE1: a full-screen scene replaces the picture, so nothing that sits on the picture (a key word, a pinned item)
+// is placed under it: the title page hides one there (src/shared/caption-asides.ts), and the tools say so instead.
+
+const clockAt = (t: number, round: (n: number) => number) => { const s = Math.max(0, round(t)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
+/** The full-screen graphic a span sits under (by more than a frame), if any. */
+export function fullScreenOver(overlays: readonly OverlayItem[] | null | undefined, s: number, e: number, exceptId?: string): OverlayItem | null {
+  return (overlays ?? []).find(o => o.id !== exceptId && o.graphic?.frame === "full" && Math.min(e, o.e) - Math.max(s, o.s) > 1 / 30) ?? null;
+}
+/** What the tools answer for an item placed under a full-screen graphic: when it is, and where it would show. */
+export function underFullScreen(item: Pick<OverlayItem, "s" | "e" | "graphic">): string {
+  const what = /^scene-/.test(item.graphic?.template ?? "") || /data-gfx-template="scene-/.test(item.graphic?.html ?? "") ? "scene" : "graphic";
+  return `That's under the full-screen ${what} at ${clockAt(item.s, Math.round)}; move it after ${clockAt(item.e, Math.ceil)}.`;
 }
 
 /** When the person changes how long a starter is on screen, rebuild it to that length (so its exit lands on the last frame). */

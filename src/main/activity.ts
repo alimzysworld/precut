@@ -33,7 +33,7 @@ subscribe("child_process", message => {
   }
   child.once("spawn", () => syncChildPause(child));
   child.once("spawn", () => {
-    if (!child.pid || !/^(?:ffmpeg|python(?:\d+(?:\.\d+)*)?|swift(?:c)?|matte|subject|quality|screen-read)$/.test(basename(child.spawnfile))) return;
+    if (!child.pid || !/^(?:ffmpeg|python(?:\d+(?:\.\d+)*)?|swift(?:c)?|matte|subject|quality|screen-read|track)$/.test(basename(child.spawnfile))) return;
     const task = requestedTask.getStore();
     if (task?.active && (task.awaiting || governor.isFullSpeedTask(task.id))) return;
     try { setPriority(child.pid, 10); }
@@ -52,8 +52,10 @@ const heldChildren = new Set<ChildProcess>();
 const backgroundChildren = new WeakSet<ChildProcess>();
 const childSlots = new WeakMap<ChildProcess, RenderSlot>();
 function syncChildPause(child: ChildProcess) {
-  const paused = childSlots.get(child)?.paused || heldChildren.has(child) && governor.profile.pauseBackground
-    || backgroundChildren.has(child) && governor.playbackBusy;
+  // DEAD1: shared work a running render awaits is never held by that render's lane or by playback; heat still holds it.
+  const slot = childSlots.get(child), lent = !!slot && lentTo(slot.shares, new Set([slot]));
+  const paused = !lent && (slot?.paused || backgroundChildren.has(child) && governor.playbackBusy)
+    || heldChildren.has(child) && governor.profile.pauseBackground;
   if (child.pid) { try { child.kill(paused ? "SIGSTOP" : "SIGCONT"); } catch { /* gone */ } }
 }
 // A quit during playback must not strand one of our workers in SIGSTOP after
@@ -271,20 +273,91 @@ type RenderLane = "draft" | "finished" | "waited" | "background";
 // inherit this lane too, including callers that explicitly requested finished.
 const activityLanes = new WeakMap<ActivityHandle, RenderLane>();
 const pinnedBackground = new WeakSet<ActivityHandle>();
-type RenderSlot = { active: boolean; paused: boolean; lane: RenderLane; children: Set<ChildProcess> };
+type RenderSlot = { active: boolean; paused: boolean; lane: RenderLane; children: Set<ChildProcess>;
+  /** DEAD1: the shared work this slot runs, and the shared work it is waiting on. */
+  shares?: Set<SharedWork>; lends?: Set<SharedWork> };
 const renderSlot = new AsyncLocalStorage<RenderSlot>();
 let owner: RenderSlot | undefined;
 let suspended: RenderSlot | undefined;
 let backgroundOwner: RenderSlot | undefined;
-const renderWaiters: { lane: RenderLane; start: () => void }[] = [];
+const renderWaiters: { lane: RenderLane; slot: RenderSlot; start: (lent?: boolean) => void }[] = [];
 /** Long-lived worker pools yield at a clip boundary for other cache producers. */
 export function backgroundWorkWaiting(): boolean { return renderWaiters.some(waiter => waiter.lane === 'background'); }
 function pauseSlot(slot: RenderSlot, paused: boolean) {
   if (slot.paused === paused) return;
   slot.paused = paused;
-  for (const child of slot.children) syncChildPause(child);
+  syncSlot(slot);
 }
+function syncSlot(slot: RenderSlot, seen = new Set<RenderSlot>()) {
+  if (seen.has(slot)) return;
+  seen.add(slot);
+  for (const child of slot.children) syncChildPause(child);
+  for (const work of slot.lends ?? []) for (const producer of work.slots) syncSlot(producer, seen);
+}
+
+// DEAD1: cache work several callers await (one recorder WAV's sound scan) runs in whichever lane started it, usually
+// background. A render that awaits it lends it its own lane: while that render runs, the work's slots run too (a held
+// one continues, a queued one starts at once), so an export never waits on work its own slot paused (31 Oct: a 290 MB
+// scan a timeline read started stayed stopped for 24 min under the export that needed it). Work nobody running awaits
+// still yields as before.
+type SharedWork = { slots: Set<RenderSlot>; lenders: Map<RenderSlot, number>; wake: Set<() => void> };
+const sharedWork = new AsyncLocalStorage<SharedWork>();
+const sharedJobs = new WeakMap<Promise<unknown>, SharedWork>();
+/** Slots started for a render that awaited them: no lane owner, held like the background owner once nobody waits. */
+const borrowed = new Set<RenderSlot>();
+function running(slot: RenderSlot, seen: Set<RenderSlot>): boolean {
+  if (seen.has(slot)) return false;
+  seen.add(slot);
+  return slot.active && (!slot.paused || lentTo(slot.shares, seen));
+}
+function lentTo(works: Iterable<SharedWork> | undefined, seen = new Set<RenderSlot>()): boolean {
+  for (const work of works ?? []) for (const slot of work.lenders.keys()) if (running(slot, seen)) return true;
+  return false;
+}
+/** Run cache work other callers may await with awaitShared. */
+export function shareWork<T>(work: () => Promise<T>): Promise<T> {
+  const shared: SharedWork = { slots: new Set(), lenders: new Map(), wake: new Set() };
+  const slot = renderSlot.getStore();
+  if (slot?.active) { shared.slots.add(slot); (slot.shares ??= new Set()).add(shared); }
+  const job = sharedWork.run(shared, work);
+  sharedJobs.set(job, shared);
+  return job;
+}
+/** Await shared work. Inside a render slot it runs in that slot's lane until it settles or the render ends. */
+export async function awaitShared<T>(job: Promise<T>): Promise<T> {
+  const work = sharedJobs.get(job), slot = renderSlot.getStore();
+  if (!work || !slot?.active) return job;
+  work.lenders.set(slot, (work.lenders.get(slot) ?? 0) + 1);
+  (slot.lends ??= new Set()).add(work);
+  relend(work);
+  try { return await job; }
+  finally {
+    const count = (work.lenders.get(slot) ?? 1) - 1;
+    if (count) work.lenders.set(slot, count);
+    else { work.lenders.delete(slot); slot.lends.delete(work); }
+    relend(work);
+  }
+}
+function relend(work: SharedWork) {
+  if (lentTo([work])) for (const wake of [...work.wake]) wake();
+  advanceRenderLane();
+  for (const slot of work.slots) syncSlot(slot);
+}
+/** A lane or playback wait that ends early once a running render awaits this shared work. Other work waits exactly
+ * as before (the same promise, no extra turns: lane order between simultaneous requests depends on it). */
+function unlessLent(work: SharedWork | undefined, wait: (signal: AbortSignal) => Promise<void>, signal: AbortSignal): Promise<void> {
+  if (!work) return wait(signal);
+  if (lentTo([work])) return Promise.resolve();
+  const lent = new AbortController(), wake = () => lent.abort();
+  work.wake.add(wake);
+  return wait(AbortSignal.any([signal, lent.signal])).catch(error => { if (signal.aborted || !lent.signal.aborted) throw error; })
+    .finally(() => work.wake.delete(wake));
+}
+
 function advanceRenderLane() {
+  for (const waiter of [...renderWaiters]) if (lentTo(waiter.slot.shares, new Set([waiter.slot]))) {
+    renderWaiters.splice(renderWaiters.indexOf(waiter), 1); waiter.start(true);
+  }
   if (!owner) {
     const draft = renderWaiters.findIndex(w => w.lane === "draft");
     if (draft >= 0) renderWaiters.splice(draft, 1)[0].start();
@@ -298,6 +371,7 @@ function advanceRenderLane() {
   }
   // A thermal change must never continue a child still held by the other lane.
   if (backgroundOwner) pauseSlot(backgroundOwner, !!owner || governor.playbackBusy);
+  for (const slot of borrowed) if (slot.lane === "background") pauseSlot(slot, !!owner || governor.playbackBusy);
   if (!owner && !backgroundOwner && !governor.profile.pauseBackground && !governor.playbackBusy) renderWaiters.shift()?.start();
 }
 export async function withRenderSlot<T>(activity: ActivityHandle, work: () => Promise<T>,
@@ -310,14 +384,17 @@ export async function withRenderSlot<T>(activity: ActivityHandle, work: () => Pr
   // including older helpers which explicitly asked for background scheduling.
   else if (groupedActivity.getStore() && activityLanes.has(activity)) lane = activityLanes.get(activity)!;
   const slot: RenderSlot = { active: true, paused: false, lane, children: new Set() };
+  const shared = sharedWork.getStore();
+  if (shared) { shared.slots.add(slot); slot.shares = new Set([shared]); }
   if (lane === "background") {
-    await governor.whenMemoryAllows(activity.signal);
-    await governor.whenRunnable({ signal: activity.signal });
+    await unlessLent(shared, signal => governor.whenMemoryAllows(signal), activity.signal);
+    await unlessLent(shared, signal => governor.whenRunnable({ signal }), activity.signal);
   }
   await new Promise<void>((resolve, reject) => {
     activity.signal.throwIfAborted();
-    const waiter = { lane, start: () => {
-      if (lane === "background") backgroundOwner = slot;
+    const waiter = { lane, slot, start: (lent?: boolean) => {
+      if (lent) borrowed.add(slot);
+      else if (lane === "background") backgroundOwner = slot;
       else owner = slot;
       activity.signal.removeEventListener("abort", abort);
       activity.progress(null, ""); resolve();
@@ -345,7 +422,11 @@ export async function withRenderSlot<T>(activity: ActivityHandle, work: () => Pr
     if (owner === slot) owner = undefined;
     if (suspended === slot) { pauseSlot(slot, false); suspended = undefined; }
     if (backgroundOwner === slot) { pauseSlot(slot, false); backgroundOwner = undefined; }
+    if (borrowed.delete(slot)) pauseSlot(slot, false);
+    shared?.slots.delete(slot);
     advanceRenderLane();
+    // Shared work this render was waiting on yields again.
+    for (const work of slot.lends ?? []) for (const producer of work.slots) syncSlot(producer);
   }
 }
 /** Await a shared sound cache without holding the slot its producer needs.
@@ -391,7 +472,7 @@ export async function runActivity<T>(input: ActivityInput, work: (activity: Acti
   const releaseTask = task !== inheritedTask ? governor.beginTask(task.id, task.awaiting, priority) : undefined;
   try {
     activity.signal.throwIfAborted();
-    await governor.whenRunnable({ personStarted: !!waited, signal: activity.signal });
+    await unlessLent(sharedWork.getStore(), signal => governor.whenRunnable({ personStarted: !!waited, signal }), activity.signal);
     const result = await requestedTask.run(task, () => current.run(activity, () => groupedActivity.run(!!options.groupChildren, () => input.kind === "render" && !options.deferRenderSlot
       ? withRenderSlot(activity, () => work(activity), lane) : work(activity))));
     activity.signal.throwIfAborted();
